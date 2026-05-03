@@ -1,0 +1,71 @@
+[project]
+name = "waraq"
+version = "0.1.0"
+description = "Waraq translation platform — backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "psycopg2-binary>=2.9",
+    "celery[redis]>=5.4",
+    "redis>=5.2",
+    "bcrypt>=4.2",
+    "python-jose[cryptography]>=3.3",
+    "python-multipart>=0.0.17",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "factory-boy>=3.3",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["waraq*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+asyncio_mode = "auto"
+addopts = "-v --strict-markers --tb=short"
+markers = [
+    "h1: T-H1 tests (lock-flag protection)",
+    "h2: T-H2 tests (lock-flag protection level 2)",
+    "h4: T-H4 tests (no revision-UUID for check operations)",
+    "h5: T-H5 tests (UUID immutability)",
+    "h6: T-H6 tests (no silent conflict resolution)",
+    "h7: T-H7 tests (no auto-promotion to Stilregel)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["E501", "N818"]  # N818: GuardViolation matches canonical "Guard-Verletzung"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["N801"]  # test class names trace canonical T-* IDs from DBB
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true

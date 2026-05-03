@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local data / artefacts
+*.sqlite
+*.db
+uploads/
+artefacts/
+local-data/
+
+# OS
+Thumbs.db
+
+# Pandoc binary (local install)
+/tmp/pandoc-dl/
+
+# TEMPORARY: keep planning + canon docs local-only.
+# Will be selectively removed from gitignore as needed.
+# Only the root README.md is tracked; everything else (CLAUDE.md, WORKLOG.md,
+# MILESTONES.md, all docs/canon/**/*.md, all *.docx) stays local for now.
+*.md
+!/README.md
+*.docx
