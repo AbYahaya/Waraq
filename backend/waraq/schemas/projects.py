@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from waraq.db.base import Base, TimestampMixin
 from waraq.invariant.enums import LockFlag
+from waraq.schemas.enums import OcrStatus
 
 
 class Project(Base, TimestampMixin):
@@ -34,6 +35,21 @@ class Page(Base, TimestampMixin):
         nullable=False,
     )
     page_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Per T-4.3.1 / Sprint 1 §2: page-level OCR review state machine. Fresh
+    # pages enter at `ausstehend`; the LINEAGE/OCR pipeline transitions them
+    # through `in_review` to one of the terminal go-states. The `no_go → go`
+    # transition is gated on an explicit user-resolution Decision Event.
+    ocr_status: Mapped[OcrStatus] = mapped_column(
+        SAEnum(
+            OcrStatus,
+            name="ocr_status",
+            native_enum=False,
+            length=32,
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        nullable=False,
+        server_default=OcrStatus.AUSSTEHEND.value,
+    )
 
 
 class Block(Base, TimestampMixin):

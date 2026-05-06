@@ -22,8 +22,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
+from alembic import op
 
 revision: str = "0006"
 down_revision: str | None = "0005"
@@ -95,9 +96,7 @@ def downgrade() -> None:
     op.drop_constraint(
         "fk_provenance_objects_author_uuid", "provenance_objects", type_="foreignkey"
     )
-    op.drop_constraint(
-        "fk_decision_events_actor_uuid", "decision_events", type_="foreignkey"
-    )
+    op.drop_constraint("fk_decision_events_actor_uuid", "decision_events", type_="foreignkey")
     op.drop_constraint("fk_revisions_author_uuid", "revisions", type_="foreignkey")
     op.drop_index("ix_projects_account_uuid", table_name="projects")
     op.drop_constraint("fk_projects_account_uuid", "projects", type_="foreignkey")

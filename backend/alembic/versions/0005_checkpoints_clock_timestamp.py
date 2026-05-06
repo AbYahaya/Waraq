@@ -16,11 +16,13 @@ decision_events, log_entries, provenance_objects) still use now() — the
 ordering ambiguity there is acceptable for now and can be revisited if a
 real use case surfaces.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0005"

@@ -193,14 +193,20 @@ class TestT_1_3_2_SegmentCurrentRevFkWired:
 
 
 class TestT_1_3_2_SatzUuidStillScoped:
-    """Reaffirm Abkürzung 2: only segments (PK) and revisions (segment-scoped
-    FK) carry satz_uuid. Provenance must not (T-1.3.3 will re-check)."""
+    """Reaffirm Abkürzung 2: only legitimate segment-scoped event tables
+    (segments PK; revisions FK; conflict_instances FK from T-5.1.2) carry
+    satz_uuid. Provenance must not (T-1.3.3 will re-check). The Abkürzung
+    targets the *Provenance-Tabelle* and the implicit 'every event row
+    carries satz_uuid' anti-pattern; legitimate domain-specific segment-
+    scoped event tables remain canonically permitted."""
 
-    def test_satz_uuid_only_on_segments_and_revisions(self) -> None:
+    ALLOWLIST = frozenset({"segments", "revisions", "conflict_instances"})
+
+    def test_satz_uuid_only_on_allowlisted_tables(self) -> None:
         offenders = [
             t.name
             for t in Base.metadata.tables.values()
-            if t.name not in {"segments", "revisions"} and "satz_uuid" in t.columns
+            if t.name not in self.ALLOWLIST and "satz_uuid" in t.columns
         ]
         assert offenders == [], f"satz_uuid leaked into tables: {offenders}"
 

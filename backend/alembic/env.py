@@ -3,16 +3,15 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from waraq.db.base import Base
-from waraq.db.session import get_settings
-
 # Importing the schemas package registers all ORM models on Base.metadata.
 import waraq.schemas  # noqa: F401
+from alembic import context
+from waraq.db.base import Base
+from waraq.db.session import get_settings
 
 config = context.config
 if config.config_file_name is not None:

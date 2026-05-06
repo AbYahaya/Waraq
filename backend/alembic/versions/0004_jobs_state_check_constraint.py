@@ -12,6 +12,7 @@ Canonical states: pending | running | paused | completed | failed.
 Transition graph enforced by waraq.jobs.service (the value set is enforced
 here in Postgres).
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

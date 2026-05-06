@@ -8,14 +8,16 @@ DBB §B Abkürzung 2: provenance_objects must NOT have a satz_uuid column at all
 Addressing is `scope_type` + `scope_uuid`, polymorphic across the five canonical
 scope_type values. Test in tests/schemas/test_provenance.py locks this in.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
+from alembic import op
 
 revision: str = "0003"
 down_revision: str | None = "0002"

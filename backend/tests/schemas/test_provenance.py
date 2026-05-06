@@ -203,14 +203,17 @@ class TestT_1_3_3_ConceptShape:
 
 
 class TestT_1_3_3_SatzUuidAllowlistStillHolds:
-    """After T-1.3.3 lands four more tables, satz_uuid must STILL only appear
-    on segments and revisions. provenance_objects, jobs, checkpoints,
-    concepts must all be satz_uuid-free."""
+    """satz_uuid only on legitimate segment-scoped event tables.
+    provenance_objects, jobs, checkpoints, concepts, ocr_error_instances,
+    decision_events, log_entries — none may carry satz_uuid. Sprint 1
+    extends the allowlist by `conflict_instances` (T-5.1.2)."""
+
+    ALLOWLIST = frozenset({"segments", "revisions", "conflict_instances"})
 
     def test_no_new_table_introduced_satz_uuid(self) -> None:
         offenders = [
             t.name
             for t in Base.metadata.tables.values()
-            if t.name not in {"segments", "revisions"} and "satz_uuid" in t.columns
+            if t.name not in self.ALLOWLIST and "satz_uuid" in t.columns
         ]
         assert offenders == [], f"satz_uuid leaked into tables: {offenders}"

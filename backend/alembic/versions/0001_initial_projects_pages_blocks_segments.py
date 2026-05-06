@@ -8,13 +8,15 @@ Hand-written; no autogenerate. Establishes the four canonical entity tables
 for Sprint 0 T-1.3.1. Identity-types (Revision, Decision Event, Log-Eintrag)
 arrive in 0002 / T-1.3.2; Job, Checkpoint, Provenance in 0003 / T-1.3.3.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
+from alembic import op
 
 revision: str = "0001"
 down_revision: str | None = None

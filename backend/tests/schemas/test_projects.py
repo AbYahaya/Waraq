@@ -170,12 +170,20 @@ class TestT_1_3_1_TimestampMixinAppliedEverywhere:
 
 class TestT_1_3_1_SatzUuidOnlyOnAllowlistedTables:
     """DBB §B Abkürzung 2: `satz_uuid NOT NULL` outside legitimate
-    segment-scoped contexts is a structural failure mode. Genuine
-    segment-scoped event tables (revisions) carry it as an FK; everything
-    else (decision_events, log_entries, provenance, jobs, ...) must use
-    scope_type + scope_uuid instead."""
+    segment-scoped contexts is a structural failure mode. Genuine segment-
+    scoped event tables (revisions, conflict_instances) carry it as an FK
+    where the canon explicitly anchors the row to a Segment. Tables that
+    might *appear* segment-scoped (decision_events, log_entries, provenance,
+    jobs, ...) but should accept other scopes must use scope_type +
+    scope_uuid instead.
 
-    ALLOWED_TABLES: ClassVar[set[str]] = {"segments", "revisions"}
+    Conflict_instances is allowlisted per Sprint 1 §2 ("conflict_instance
+    row with `state = offen`, `conflict_uuid`, `satz_uuid` FK..."). The
+    Abkürzung specifically targets the *Provenance* table and the implicit
+    'every event row carries satz_uuid' anti-pattern; legitimate domain-
+    specific segment-scoped event tables remain canonically permitted."""
+
+    ALLOWED_TABLES: ClassVar[set[str]] = {"segments", "revisions", "conflict_instances"}
 
     def test_satz_uuid_only_on_allowlisted_tables(self) -> None:
         offenders = [

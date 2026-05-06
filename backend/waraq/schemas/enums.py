@@ -92,6 +92,46 @@ class JobState(StrEnum):
     FAILED = "failed"
 
 
+class OcrStatus(StrEnum):
+    """Per Sprint 1 §2 / T-4.3.1 — page-level OCR review status.
+
+    State machine:
+        ausstehend → in_review → go | go_with_warning | no_go
+    Re-entry into in_review is permitted from any non-terminal state. The
+    `no_go → go` transition is **not automatic** — it requires an explicit
+    user-resolution Decision Event with `scope_type=page`.
+    """
+
+    AUSSTEHEND = "ausstehend"
+    IN_REVIEW = "in_review"
+    GO = "go"
+    GO_WITH_WARNING = "go_with_warning"
+    NO_GO = "no_go"
+
+
+class OcrErrorState(StrEnum):
+    """Per T-4.3.1 — `ocr_error_instance` lifecycle.
+
+    `aufgeloest` is the canonical-ASCII transliteration of "aufgelöst" used as
+    the wire/DB value. Display-side German renders the umlaut.
+    """
+
+    OFFEN = "offen"
+    AUFGELOEST = "aufgeloest"
+
+
+class OcrSeverity(StrEnum):
+    """Per Sprint 1 §2 — severity classes used by status aggregation.
+
+    The mapping from F-XX → severity is **configurable**, never hard-coded
+    (R-S1-04). See `waraq.ocr.review.SeverityWeights`.
+    """
+
+    KRITISCH = "kritisch"
+    HOCH = "hoch"
+    MITTEL = "mittel"
+
+
 class ScopeType(StrEnum):
     """Per CAB §B.1 + Dokument 2 §3.2 Eintrag 2D extension.
 

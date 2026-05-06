@@ -7,14 +7,16 @@ Create Date: 2026-05-03
 CAB §5.2 / DBB Abkürzung 3 — three identity types in three separate tables.
 Also lands the deferred FK from 0001: segments.current_rev_uuid → revisions.rev_uuid.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
+from alembic import op
 
 revision: str = "0002"
 down_revision: str | None = "0001"
@@ -60,7 +62,9 @@ def upgrade() -> None:
         sa.Column(
             "change_source",
             sa.String(length=32),
-            sa.CheckConstraint(_check("change_source", _CHANGE_SOURCE), name="ck_change_source_values"),
+            sa.CheckConstraint(
+                _check("change_source", _CHANGE_SOURCE), name="ck_change_source_values"
+            ),
             nullable=False,
         ),
         sa.Column("author_uuid", PG_UUID(as_uuid=True), nullable=True),
@@ -102,9 +106,7 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
     )
-    op.create_index(
-        "ix_decision_events_scope", "decision_events", ["scope_type", "scope_uuid"]
-    )
+    op.create_index("ix_decision_events_scope", "decision_events", ["scope_type", "scope_uuid"])
 
     # --- log_entries ---------------------------------------------------------
     op.create_table(
