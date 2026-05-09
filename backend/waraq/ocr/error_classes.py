@@ -25,6 +25,12 @@ class OcrErrorClass(StrEnum):
 
     Values are the wire/DB form ("F-01" .. "F-09"). See module docstring for
     the canon-pending caveat on per-code descriptions.
+
+    `F_06_QR` is a Qurʾān-recognition class read by the T-6.1.1 release
+    gate (Sprint 2 §2). It is distinct from `F_06` (empty_extraction) — the
+    `-QR` suffix marks it as a §4.15 Qurʾān-Stage-3 detection class. The
+    detection writer for F-06-QR ships in M5 alongside Qurʾān-recognition;
+    the gate that reads for unresolved F-06-QR rows ships in Sprint 2.
     """
 
     F_01 = "F-01"
@@ -36,6 +42,7 @@ class OcrErrorClass(StrEnum):
     F_07 = "F-07"
     F_08 = "F-08"
     F_09 = "F-09"
+    F_06_QR = "F-06-QR"
 
 
 # Canonical descriptions for each F-XX code (decision 2026-05-04).
@@ -49,4 +56,5 @@ F_DESCRIPTIONS: dict[OcrErrorClass, str] = {
     OcrErrorClass.F_07: "content_filtered",  # safety / recitation / blocked-content
     OcrErrorClass.F_08: "token_limit",  # context/token limit exceeded
     OcrErrorClass.F_09: "unknown",  # unclassified — investigate
+    OcrErrorClass.F_06_QR: "qurʾan_recognition",  # §4.15 Qurʾān-Stage-3 detection class
 }

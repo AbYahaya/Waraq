@@ -89,6 +89,14 @@ class DecisionEvent(Base):
         ForeignKey("accounts.account_uuid", ondelete="RESTRICT"),
         nullable=True,
     )
+    # Per OCR Endfassung v1.3 CR-1.6: binds `export_confirmation`-source
+    # Decision Events to a concrete export attempt. NULL for non-export
+    # decisions. The OCR-Export-Job (Sprint-OCR T-OCR-EX-1) sets this on
+    # Pflichtfragen-Bestätigung; the OCR_EXPORT_EVENT positive-set rule
+    # uses it to filter old confirmations out of `active_decision_event_uuids[]`.
+    related_export_attempt_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

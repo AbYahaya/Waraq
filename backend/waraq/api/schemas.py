@@ -108,6 +108,323 @@ class OcrRunResponse(BaseModel):
     rev_uuid: _uuid.UUID | None
 
 
+# --- Pages / Blocks / Segments (M4 surface) -----------------------------
+
+
+class PageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    page_uuid: _uuid.UUID
+    project_uuid: _uuid.UUID
+    page_index: int
+    ocr_status: str
+    active: bool
+
+
+class BlockResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    block_uuid: _uuid.UUID
+    page_uuid: _uuid.UUID
+    block_type: str
+    block_index: int
+    active: bool
+
+
+class SegmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    satz_uuid: _uuid.UUID
+    block_uuid: _uuid.UUID
+    satz_index: int
+    lock_flag: str
+    current_rev_uuid: _uuid.UUID | None
+    text_content: str | None
+    active: bool
+
+
+class SegmentEditRequest(BaseModel):
+    """Manual edit of segment text. Writes a Revision via the canonical
+    revision service (change_source='manual'). Refused on locked segments
+    by the INVARIANT-Guard."""
+
+    after_text: str = Field(min_length=0, max_length=8192)
+
+
+# --- Lock ---------------------------------------------------------------
+
+
+class LockSetRequest(BaseModel):
+    level: str = Field(pattern="^(manual_local|manual_editorial)$")
+    note: str | None = Field(default=None, max_length=1024)
+
+
+class LockReleaseRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=1024)
+
+
+class LockResponse(BaseModel):
+    satz_uuid: _uuid.UUID
+    lock_flag: str
+    decision_event_uuid: _uuid.UUID
+
+
+# --- Glossary -----------------------------------------------------------
+
+
+class GlossaryLookupRequest(BaseModel):
+    surface_form: str = Field(min_length=1, max_length=255)
+    project_uuid: _uuid.UUID | None = None
+    account_uuid: _uuid.UUID | None = None
+
+
+class GlossaryLookupResponse(BaseModel):
+    found: bool
+    concept_id: _uuid.UUID | None = None
+
+
+class GlossaryEntryCreateRequest(BaseModel):
+    canonical_label: str = Field(min_length=1, max_length=255)
+    language: str = Field(min_length=2, max_length=8)
+    binding_level: str = Field(pattern="^(project|account)$")
+    project_uuid: _uuid.UUID | None = None
+    account_uuid: _uuid.UUID | None = None
+    gloss: str | None = Field(default=None, max_length=4096)
+
+
+class GlossaryEntryUpdateRequest(BaseModel):
+    canonical_label: str | None = Field(default=None, min_length=1, max_length=255)
+    gloss: str | None = Field(default=None, max_length=4096)
+
+
+class GlossaryEntryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    concept_id: _uuid.UUID
+    canonical_label: str
+    language: str
+    gloss: str | None
+    binding_level: str
+    project_uuid: _uuid.UUID | None
+    account_uuid: _uuid.UUID | None
+    active: bool
+
+
+# --- Entities -----------------------------------------------------------
+
+
+class EntityCreateRequest(BaseModel):
+    category: str = Field(
+        pattern="^(scholar_or_person|historical_place|unit_of_measurement|"
+        "arabic_book|dynasty_or_epoch)$"
+    )
+    canonical_label: str = Field(min_length=1, max_length=255)
+    language: str = Field(min_length=2, max_length=8)
+    binding_level: str = Field(pattern="^(project|account)$")
+    project_uuid: _uuid.UUID | None = None
+    account_uuid: _uuid.UUID | None = None
+    short_bio: str | None = Field(default=None, max_length=4096)
+
+
+class EntityUpdateRequest(BaseModel):
+    canonical_label: str | None = Field(default=None, min_length=1, max_length=255)
+    short_bio: str | None = Field(default=None, max_length=4096)
+
+
+class EntityResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    entity_id: _uuid.UUID
+    category: str
+    canonical_label: str
+    language: str
+    short_bio: str | None
+    binding_level: str
+    project_uuid: _uuid.UUID | None
+    account_uuid: _uuid.UUID | None
+    active: bool
+
+
+# --- Conflicts ----------------------------------------------------------
+
+
+class ConflictResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    conflict_uuid: _uuid.UUID
+    satz_uuid: _uuid.UUID
+    rule_source: str
+    conflict_type: str
+    state: str
+    resolution_type: str | None
+    decision_event_uuid: _uuid.UUID | None
+    context: dict[str, Any]
+
+
+class ConflictResolveRequest(BaseModel):
+    """Body for any of the three resolve_with_* paths.
+
+    `note` lands in the Decision-Event content. `confirmation_note` is only
+    consumed by the lock_release path.
+    """
+
+    note: str | None = Field(default=None, max_length=1024)
+    confirmation_note: str | None = Field(default=None, max_length=1024)
+
+
+# --- OCR Review ---------------------------------------------------------
+
+
+class OcrFindingApply(BaseModel):
+    error_code: str = Field(pattern="^F-(0[1-9]|06-QR)$")
+    block_uuid: _uuid.UUID | None = None
+    details: dict[str, Any] | None = None
+
+
+class OcrApplyFindingsRequest(BaseModel):
+    findings: list[OcrFindingApply]
+
+
+class OcrPageStatusResponse(BaseModel):
+    page_uuid: _uuid.UUID
+    ocr_status: str
+    error_codes_open: list[str]
+
+
+class OcrResolveNoGoRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2048)
+
+
+# --- Release Gate -------------------------------------------------------
+
+
+class ReleaseGateResponse(BaseModel):
+    state: str
+    blocking_reasons: list[str]
+    warnings: list[str]
+    requires_confirmation: bool
+
+
+class ReleaseGateConfirmRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2048)
+
+
+class TranslationStartRequest(BaseModel):
+    segment_uuids: list[_uuid.UUID] = Field(min_length=1)
+
+
+class JobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    job_uuid: _uuid.UUID
+    job_type: str
+    state: str
+    project_uuid: _uuid.UUID | None
+    payload: dict[str, Any] | None
+    result: dict[str, Any] | None
+    error: dict[str, Any] | None
+
+
+# --- Rule binding -------------------------------------------------------
+
+
+class RuleBindingApplyRequest(BaseModel):
+    """Caller supplies the surface forms to look up. The service resolves
+    each via glossary.lookup, then writes a RULE_BINDING-PO or detects a
+    conflict if the segment is locked."""
+
+    candidate_surface_forms: list[str] = Field(min_length=1)
+    application_context: dict[str, Any] | None = None
+
+
+class RuleBindingResponse(BaseModel):
+    outcome: str  # "applied" | "conflict_detected"
+    matched_concept_ids: list[_uuid.UUID]
+    conflict_uuid: _uuid.UUID | None = None
+    rule_binding_po_uuid: _uuid.UUID | None = None
+
+
+# --- Promotion (Stufen 1-2) --------------------------------------------
+
+
+class PromotionObservationCreateRequest(BaseModel):
+    revision_uuid: _uuid.UUID
+    prior_translation: str = Field(max_length=8192)
+    user_correction: str = Field(max_length=8192)
+    source_text: str | None = Field(default=None, max_length=8192)
+    source_class: str = Field(
+        pattern="^(bestaetigte_referenzsaetze|manuelle_nutzerregeln|"
+        "akzeptierte_ki_vorschlaege|korrigierte_ki_vorschlaege|"
+        "ignorierte_ki_vorschlaege)$"
+    )
+    terminology_bindings: dict[str, str] | None = None
+
+
+class PromotionAggregateRequest(BaseModel):
+    threshold: int = Field(default=3, ge=1, le=1000)
+
+
+class MusterkandidatResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    musterkandidat_uuid: _uuid.UUID
+    project_uuid: _uuid.UUID
+    pattern_key: str
+    observation_count: int
+    sample_corrections: list[str]
+    state: str
+
+
+# --- OCR Export ---------------------------------------------------------
+
+
+class OcrExportPflichtfragenInput(BaseModel):
+    page_range: list[int] = Field(min_length=1)
+    block_types_enabled: list[str] = Field(min_length=1)
+    markings_enabled: bool
+    mode: str = Field(pattern="^(arbeitsstand|endgueltig)$")
+
+
+class OcrExportGateResponse(BaseModel):
+    state: str
+    blocking_reasons: list[str]
+    warnings: list[str]
+
+
+class OcrExportConfirmRequest(BaseModel):
+    pflichtfragen: OcrExportPflichtfragenInput
+    export_attempt_id: str = Field(min_length=1, max_length=64)
+
+
+class OcrExportRunResponse(BaseModel):
+    job_uuid: _uuid.UUID
+    job_state: str
+    artefact_uuid: _uuid.UUID
+    sha256: str
+    size_bytes: int
+    ocr_export_event_po_uuid: _uuid.UUID
+    n_segments_exported: int
+    n_pages_exported: int
+
+
+# --- History ------------------------------------------------------------
+
+
+class HistoryResponse(BaseModel):
+    """Full history payload — service returns dataclasses with several
+    list[ORM] fields. We re-serialize via model_dump on the dict-of-lists
+    the service provides; clients should not depend on shape stability of
+    the embedded ORM rows beyond their PK + a few columns."""
+
+    revisions: list[dict[str, Any]]
+    decision_events: list[dict[str, Any]]
+    log_entries: list[dict[str, Any]]
+    provenance_objects: list[dict[str, Any]]
+    conflict_instances: list[dict[str, Any]] = []
+    ocr_error_instances: list[dict[str, Any]] = []
+    konsistenz_befunde: list[dict[str, Any]] = []
+
+
 # --- Errors -------------------------------------------------------------
 
 

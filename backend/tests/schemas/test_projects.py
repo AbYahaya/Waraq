@@ -183,7 +183,14 @@ class TestT_1_3_1_SatzUuidOnlyOnAllowlistedTables:
     'every event row carries satz_uuid' anti-pattern; legitimate domain-
     specific segment-scoped event tables remain canonically permitted."""
 
-    ALLOWED_TABLES: ClassVar[set[str]] = {"segments", "revisions", "conflict_instances"}
+    ALLOWED_TABLES: ClassVar[set[str]] = {
+        "segments",
+        "revisions",
+        "conflict_instances",
+        "translation_observations",
+        "audit_befunde",
+        "hadith_passage_status",
+    }
 
     def test_satz_uuid_only_on_allowlisted_tables(self) -> None:
         offenders = [

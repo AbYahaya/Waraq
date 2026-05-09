@@ -19,6 +19,8 @@ dependencies = [
     "python-multipart>=0.0.17",
     "pypdf>=5.1",
     "google-genai>=1.0",
+    "python-docx>=1.1",
+    "openai>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +34,10 @@ dev = [
     "mypy>=1.13",
     "types-python-jose>=3.3",
     "pre-commit>=4.0",
+    # E2E fixture generation only — Arabic-shaped PDF rendering.
+    "Pillow>=11.0",
+    "arabic-reshaper>=3.0",
+    "python-bidi>=0.6",
 ]
 
 [build-system]
@@ -62,7 +68,10 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
-ignore = ["E501", "N818"]  # N818: GuardViolation matches canonical "Guard-Verletzung"
+# E501: long lines tolerated. N818: GuardViolation matches canonical "Guard-Verletzung".
+# RUF001/002/003: ʾ (Arabic-transliteration hamza) is canonical in the user's
+# domain (classical Arabic / Islamic-text translation); not ambiguous here.
+ignore = ["E501", "N818", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["N801"]  # test class names trace canonical T-* IDs from DBB
@@ -74,3 +83,10 @@ strict = true
 warn_unused_ignores = true
 warn_return_any = true
 disallow_untyped_defs = true
+
+# camel-tools is an optional install (M4 morphology popover). We import
+# it lazily inside try/except and surface a typed error when absent;
+# mypy shouldn't fail when the package isn't on disk.
+[[tool.mypy.overrides]]
+module = ["camel_tools.*"]
+ignore_missing_imports = true

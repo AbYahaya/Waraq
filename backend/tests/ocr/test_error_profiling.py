@@ -36,9 +36,12 @@ from waraq.schemas.enums import JobState
 
 
 class TestT_4_1_3_EnumShape:
-    def test_all_nine_codes_present(self) -> None:
+    def test_all_canonical_codes_present(self) -> None:
         codes = {e.value for e in OcrErrorClass}
-        assert codes == {f"F-0{i}" for i in range(1, 10)}
+        # F-01..F-09 from CAB §B canon adoption (2026-05-04). F-06-QR added
+        # in Sprint 2 / T-6.1.1 release-gate work — Qurʾān-recognition class
+        # per §4.15 Stage-3 (detection writer ships in M5).
+        assert codes == {f"F-0{i}" for i in range(1, 10)} | {"F-06-QR"}
 
     def test_each_code_has_a_shell_description(self) -> None:
         for cls in OcrErrorClass:

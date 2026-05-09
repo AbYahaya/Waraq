@@ -61,7 +61,7 @@ async def extract_text(image_bytes: bytes, mime_type: str = "image/png") -> str:
         try:
             response = client.models.generate_content(
                 model=settings.gemini_ocr_model,
-                contents=[
+                contents=[  # type: ignore[arg-type]
                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
                     _OCR_PROMPT,
                 ],

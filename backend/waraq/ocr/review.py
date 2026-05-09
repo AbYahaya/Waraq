@@ -106,6 +106,11 @@ def make_default_severity_weights() -> SeverityWeights:
             OcrErrorClass.F_07: OcrSeverity.KRITISCH,  # content_filtered
             OcrErrorClass.F_08: OcrSeverity.KRITISCH,  # token_limit
             OcrErrorClass.F_09: OcrSeverity.MITTEL,  # unknown
+            # Qurʾān-recognition errors are operationally critical: the
+            # release gate condition #2 blocks export on any unresolved
+            # F-06-QR. Default severity matches the gate's hard-block
+            # treatment.
+            OcrErrorClass.F_06_QR: OcrSeverity.KRITISCH,
         }
     )
 

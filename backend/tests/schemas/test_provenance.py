@@ -208,7 +208,16 @@ class TestT_1_3_3_SatzUuidAllowlistStillHolds:
     decision_events, log_entries — none may carry satz_uuid. Sprint 1
     extends the allowlist by `conflict_instances` (T-5.1.2)."""
 
-    ALLOWLIST = frozenset({"segments", "revisions", "conflict_instances"})
+    ALLOWLIST = frozenset(
+        {
+            "segments",
+            "revisions",
+            "conflict_instances",
+            "translation_observations",
+            "audit_befunde",
+            "hadith_passage_status",
+        }
+    )
 
     def test_no_new_table_introduced_satz_uuid(self) -> None:
         offenders = [

@@ -40,24 +40,34 @@ class DecisionSource(StrEnum):
 
 
 class POType(StrEnum):
-    """Per CAB §5.3 / CLAUDE.md §5.3 — the seven canonical Provenance Object types.
+    """Per CAB §5.3 / OCR Endfassung v1.3 §1.4 / CLAUDE.md §5.3.
 
-    `MANUAL_` preserves the canonical trailing underscore from §2.4 (`MANUAL_-PO`);
-    do not silently drop it.
+    Eight canonical PO types after Sprint-OCR adds OCR_EXPORT_EVENT
+    (CR-1.1).
 
-    Scope per type (informational; enforced by the service layer, not the schema):
-    - SCAN          — page-scoped
-    - OCR           — segment-scoped
-    - MANUAL_       — segment-scoped
-    - RULE_BINDING  — segment-scoped
-    - TRANSLATION   — segment-scoped
-    - LINEAGE_EVENT — segment-scoped (system-authored)
-    - EXPORT_EVENT  — artefact-scoped, work-wide. Canonically addressed via
-                      `scope_type='project'` + `scope_uuid=project_uuid`, with
-                      the artefact's identity (filename, format, sha256) carried
-                      in `payload`. The ScopeType enum is canonically fixed at
-                      five values (§5.8); extending it to add `artefact` would
-                      be silent canon amendment.
+    `MANUAL_` preserves the canonical trailing underscore from §2.4
+    (`MANUAL_-PO`); do not silently drop it.
+
+    Scope per type (informational; enforced by the service layer, not
+    the schema):
+    - SCAN              — page-scoped
+    - OCR               — segment-scoped
+    - MANUAL_           — segment-scoped
+    - RULE_BINDING      — segment-scoped
+    - TRANSLATION       — segment-scoped
+    - LINEAGE_EVENT     — segment-scoped (system-authored)
+    - EXPORT_EVENT      — artefact-scoped, work-wide. Canonically addressed
+                          via `scope_type='project'` + `scope_uuid=project_uuid`,
+                          with artefact identity (filename, format, sha256)
+                          in `payload`. ScopeType is canonically fixed at five
+                          values (§5.8); extending to add `artefact` would
+                          be silent canon amendment.
+    - OCR_EXPORT_EVENT  — analogue of EXPORT_EVENT for the OCR-source-text
+                          export (Sprint-OCR §1.4). Must NEVER be silently
+                          mixed or merged with EXPORT_EVENT — different
+                          semantics. Also addressed via `scope_type='project'`
+                          + project_uuid + payload (same convention as
+                          EXPORT_EVENT for the v1.0 ScopeType taxonomy).
     """
 
     SCAN = "scan"
@@ -67,6 +77,7 @@ class POType(StrEnum):
     TRANSLATION = "translation"
     LINEAGE_EVENT = "lineage_event"
     EXPORT_EVENT = "export_event"
+    OCR_EXPORT_EVENT = "ocr_export_event"
 
 
 class JobState(StrEnum):

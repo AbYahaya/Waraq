@@ -20,8 +20,11 @@ from __future__ import annotations
 import uuid as _uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from waraq.api._ownership import owned_page_or_404, owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.api.schemas import OcrRunResponse, OcrStartResponse
 from waraq.invariant.exceptions import H1H2Violation
@@ -32,7 +35,9 @@ from waraq.ocr import (
     run_ocr_job,
     start_ocr_job,
 )
+from waraq.ocr.page_runner import PageOcrError, run_ocr_for_page
 from waraq.schemas import Job, Page, Project, Segment
+from waraq.schemas.enums import OcrStatus
 
 router = APIRouter(prefix="/ocr", tags=["ocr"])
 
@@ -148,4 +153,131 @@ async def run(
         text_chars=job.result["text_chars"],
         text_changed=job.result["text_changed"],
         rev_uuid=_uuid.UUID(rev_uuid_str) if rev_uuid_str else None,
+    )
+
+
+# --- Auto-run helpers (UI-facing) ----------------------------------------
+#
+# `start` + `run` above expect the caller to already have a Segment and to
+# provide PNG bytes. The endpoints below let a UI button drive the full
+# rasterize + segment-provision + extract sequence in one call.
+
+
+class PageOcrAutoResponse(BaseModel):
+    page_uuid: _uuid.UUID
+    text: str
+    text_chars: int
+    text_changed: bool
+    segment_uuid: _uuid.UUID
+    rev_uuid: _uuid.UUID | None
+
+
+class ProjectOcrAutoResponse(BaseModel):
+    project_uuid: _uuid.UUID
+    pages_processed: int
+    pages_skipped: int
+    skipped_page_uuids: list[_uuid.UUID]
+
+
+@router.post(
+    "/pages/{page_uuid}/auto-run",
+    response_model=PageOcrAutoResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def auto_run_page(
+    page_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> PageOcrAutoResponse:
+    """Render the page from the stored source PDF, provision a default
+    main_text Block + Segment if absent, then run Gemini OCR. Page
+    `ocr_status` is left untouched — the review state machine is driven
+    separately via `/pages/{u}/ocr-review/...`.
+    """
+    page = await owned_page_or_404(session, page_uuid, current.account_uuid)
+    try:
+        result = await run_ocr_for_page(session=session, page=page)
+    except PageOcrError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except H1H2Violation as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=f"Segment is locked ({exc!s})"
+        ) from exc
+    except MissingGeminiApiKey as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OCR provider not configured (missing API key)",
+        ) from exc
+    except (GeminiApiError, OcrError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OCR error: {exc!s}"
+        ) from exc
+    return PageOcrAutoResponse(
+        page_uuid=result.page_uuid,
+        text=result.text,
+        text_chars=result.text_chars,
+        text_changed=result.text_changed,
+        segment_uuid=result.segment_uuid,
+        rev_uuid=result.rev_uuid,
+    )
+
+
+@router.post(
+    "/projects/{project_uuid}/auto-run",
+    response_model=ProjectOcrAutoResponse,
+)
+async def auto_run_project(
+    project_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> ProjectOcrAutoResponse:
+    """Run OCR sequentially on every `ausstehend` page of the project.
+
+    Synchronous in HTTP scope — the request is open for the duration of
+    every page's Gemini call, so this is intended for small projects in
+    a dev workflow. For larger jobs, drive the per-page endpoint from
+    the client to keep individual requests short.
+
+    Pages already past `ausstehend` are skipped (their UUIDs are
+    returned for transparency). Any per-page failure aborts the loop;
+    successfully-OCR'd pages are persisted because each page's writes
+    are flushed in turn.
+    """
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
+    result = await session.execute(
+        select(Page)
+        .where(Page.project_uuid == project.project_uuid)
+        .where(Page.active.is_(True))
+        .order_by(Page.page_index.asc())
+    )
+    pages: list[Page] = list(result.scalars())
+    processed: int = 0
+    skipped: list[_uuid.UUID] = []
+    for page in pages:
+        if page.ocr_status != OcrStatus.AUSSTEHEND:
+            skipped.append(page.page_uuid)
+            continue
+        try:
+            await run_ocr_for_page(session=session, page=page)
+        except PageOcrError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"page {page.page_index}: {exc}",
+            ) from exc
+        except MissingGeminiApiKey as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OCR provider not configured (missing API key)",
+            ) from exc
+        except (GeminiApiError, OcrError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"page {page.page_index}: {exc!s}",
+            ) from exc
+        processed += 1
+    return ProjectOcrAutoResponse(
+        project_uuid=project_uuid,
+        pages_processed=processed,
+        pages_skipped=len(skipped),
+        skipped_page_uuids=skipped,
     )

@@ -80,6 +80,7 @@ class TestT_4_3_1_DerivedStatus:
                 OcrErrorClass.F_07: OcrSeverity.MITTEL,
                 OcrErrorClass.F_08: OcrSeverity.MITTEL,
                 OcrErrorClass.F_09: OcrSeverity.MITTEL,
+                OcrErrorClass.F_06_QR: OcrSeverity.MITTEL,
             }
         )
         # F-01 (kritisch) wins even with mittel companions.

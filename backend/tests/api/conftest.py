@@ -27,14 +27,21 @@ from waraq.schemas import (
     Account,
     Block,
     Checkpoint,
+    Concept,
+    ConflictInstance,
     DecisionEvent,
+    Entity,
     Job,
+    KonsistenzBefund,
     LogEntry,
+    Musterkandidat,
+    OcrErrorInstance,
     Page,
     Project,
     ProvenanceObject,
     Revision,
     Segment,
+    TranslationObservation,
 )
 
 
@@ -127,7 +134,34 @@ async def _cleanup_account(account_uuid: Any) -> None:
                     .where(Segment.satz_uuid.in_(segment_uuids))
                     .values(current_rev_uuid=None)
                 )
+                # Child tables that FK to revisions/segments must die first.
+                await session.execute(
+                    delete(TranslationObservation).where(
+                        TranslationObservation.satz_uuid.in_(segment_uuids)
+                    )
+                )
+                await session.execute(
+                    delete(ConflictInstance).where(ConflictInstance.satz_uuid.in_(segment_uuids))
+                )
                 await session.execute(delete(Revision).where(Revision.satz_uuid.in_(segment_uuids)))
+            if page_uuids:
+                await session.execute(
+                    delete(OcrErrorInstance).where(OcrErrorInstance.page_uuid.in_(page_uuids))
+                )
+            if project_uuids:
+                await session.execute(
+                    delete(KonsistenzBefund).where(KonsistenzBefund.project_uuid.in_(project_uuids))
+                )
+                await session.execute(
+                    delete(Musterkandidat).where(Musterkandidat.project_uuid.in_(project_uuids))
+                )
+                await session.execute(
+                    delete(Concept).where(Concept.project_uuid.in_(project_uuids))
+                )
+                await session.execute(delete(Entity).where(Entity.project_uuid.in_(project_uuids)))
+            # Account-bound concepts/entities must also be deleted before the account.
+            await session.execute(delete(Concept).where(Concept.account_uuid == account_uuid))
+            await session.execute(delete(Entity).where(Entity.account_uuid == account_uuid))
             if scope_uuids:
                 await session.execute(
                     delete(DecisionEvent).where(DecisionEvent.scope_uuid.in_(scope_uuids))

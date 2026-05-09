@@ -89,3 +89,25 @@ async def get_current_account(
 
 
 CurrentAccount = Annotated[Account, Depends(get_current_account)]
+
+
+async def require_admin(current: CurrentAccount) -> Account:
+    """Admin gate — enforces an env-config email allowlist.
+
+    Per the M4 admin scope decision: admin is a deployment concern
+    (no `is_admin` column, no schema migration). The allowlist lives
+    in `Settings.admin_emails` (comma-separated). Any authenticated
+    account whose email is in the list is considered an admin.
+
+    Returns the same Account on success; raises 403 on failure.
+    """
+    from waraq.db.session import get_settings
+
+    raw = (get_settings().admin_emails or "").strip()
+    allowlist = {e.strip().casefold() for e in raw.split(",") if e.strip()}
+    if not allowlist or current.email.casefold() not in allowlist:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+    return current
+
+
+CurrentAdmin = Annotated[Account, Depends(require_admin)]

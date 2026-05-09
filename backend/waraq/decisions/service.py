@@ -47,6 +47,7 @@ async def create_decision_event(
     decision_source: DecisionSource,
     content: dict[str, Any] | None = None,
     actor_uuid: _uuid.UUID | None = None,
+    related_export_attempt_id: str | None = None,
 ) -> DecisionEvent:
     """Stage a Decision Event row.
 
@@ -80,6 +81,7 @@ async def create_decision_event(
         decision_source=decision_source,
         content=content if content is not None else {},
         actor_uuid=actor_uuid,
+        related_export_attempt_id=related_export_attempt_id,
     )
     session.add(decision_event)
     await session.flush()

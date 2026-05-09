@@ -1,0 +1,79 @@
+"""Segment endpoints — list segments of a page, fetch one, manual edit.
+
+Manual edit writes a Revision via the canonical `create_revision` service
+(`change_source=manual`, `operation_mode=manual_with_confirmation`). The
+INVARIANT-Guard refuses automatic writes to locked segments — manual edits
+with confirmation context bypass that guard, which is the canonical H-1/H-2
+behaviour.
+"""
+
+from __future__ import annotations
+
+import uuid as _uuid
+
+from fastapi import APIRouter, HTTPException, status
+from sqlalchemy import select
+
+from waraq.api._ownership import owned_page_or_404, owned_segment_or_404
+from waraq.api.dependencies import CurrentAccount, DbSession
+from waraq.api.schemas import SegmentEditRequest, SegmentResponse
+from waraq.invariant.enums import OperationMode
+from waraq.invariant.exceptions import H1H2Violation
+from waraq.revision.service import create_revision
+from waraq.schemas import Block, Segment
+from waraq.schemas.enums import ChangeSource
+
+router = APIRouter(tags=["segments"])
+
+
+@router.get("/pages/{page_uuid}/segments", response_model=list[SegmentResponse])
+async def list_segments_in_page(
+    page_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> list[SegmentResponse]:
+    await owned_page_or_404(session, page_uuid, current.account_uuid)
+    result = await session.execute(
+        select(Segment)
+        .join(Block, Block.block_uuid == Segment.block_uuid)
+        .where(Block.page_uuid == page_uuid, Segment.active.is_(True))
+        .order_by(Block.block_index.asc(), Segment.satz_index.asc())
+    )
+    return [SegmentResponse.model_validate(s) for s in result.scalars()]
+
+
+@router.get("/segments/{satz_uuid}", response_model=SegmentResponse)
+async def get_segment(
+    satz_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> SegmentResponse:
+    segment = await owned_segment_or_404(session, satz_uuid, current.account_uuid)
+    return SegmentResponse.model_validate(segment)
+
+
+@router.put("/segments/{satz_uuid}/text", response_model=SegmentResponse)
+async def edit_segment_text(
+    satz_uuid: _uuid.UUID,
+    req: SegmentEditRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> SegmentResponse:
+    """Manually edit a segment's text. Writes a Revision with
+    `change_source=manual`. Authorized for owners of the project."""
+    segment = await owned_segment_or_404(session, satz_uuid, current.account_uuid)
+    try:
+        await create_revision(
+            session=session,
+            segment=segment,
+            after_text=req.after_text,
+            change_source=ChangeSource.MANUAL,
+            operation_mode=OperationMode.MANUAL_WITH_CONFIRMATION,
+            author_uuid=current.account_uuid,
+        )
+    except H1H2Violation as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Segment is locked ({exc!s})",
+        ) from exc
+    return SegmentResponse.model_validate(segment)

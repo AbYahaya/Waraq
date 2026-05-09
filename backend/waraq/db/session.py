@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -11,6 +12,24 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://waraq:waraq@localhost:5432/waraq"
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def _normalize_db_url(cls, v: str) -> str:
+        """Normalize the SQLAlchemy URL scheme to `postgresql+asyncpg://`.
+
+        Managed Postgres providers (Fly Postgres, Supabase, Neon) expose
+        `DATABASE_URL` with a `postgres://` or `postgresql://` scheme.
+        SQLAlchemy + asyncpg need the explicit `postgresql+asyncpg://`
+        driver suffix; rewriting here keeps the runtime + alembic env in
+        sync without per-deploy URL massaging.
+        """
+        if v.startswith("postgres://"):
+            return "postgresql+asyncpg://" + v[len("postgres://") :]
+        if v.startswith("postgresql://") and "+asyncpg" not in v.split("://", 1)[0]:
+            return "postgresql+asyncpg://" + v[len("postgresql://") :]
+        return v
+
     redis_url: str = "redis://localhost:6379/0"
     # Local persistent path for uploaded source files. Per-upload layout:
     # {uploads_dir}/{project_uuid}/{job_uuid}/source<ext>. Gitignored.
@@ -26,6 +45,10 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-only-jwt-secret-replace-at-deploy"
     jwt_algorithm: str = "HS256"
     jwt_expiry_minutes: int = 60 * 24  # 24h
+    # Comma-separated email allowlist for admin-only HTTP endpoints. The
+    # admin scope in M4 is just the accounts/projects panel (`is_admin`
+    # is not a persisted column — admin is a deployment concern).
+    admin_emails: str = ""
 
 
 @lru_cache(maxsize=1)
