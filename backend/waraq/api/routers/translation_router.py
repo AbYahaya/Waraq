@@ -24,6 +24,11 @@ from waraq.translation import (
     run_translation_job,
     start_translation_job,
 )
+from waraq.translation.cross_check import make_cross_checked_translator
+from waraq.translation.gemini_translator import (
+    GeminiTranslatorUnconfigured,
+    make_gemini_translator,
+)
 from waraq.translation.openai_translator import (
     OpenAITranslatorUnconfigured,
     make_openai_translator,
@@ -114,13 +119,37 @@ async def run_a_translation_job(
             detail=f"Translation job is in state {job.state!r}; only PENDING jobs can be run.",
         )
     try:
-        translator = make_openai_translator()
+        primary = make_openai_translator()
     except OpenAITranslatorUnconfigured as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
-    hook = make_translation_persistence_hook(engine_identifier="openai/gpt-4o-mini")
+    # §3.6 — attempt to build the Gemini Check translator. If the key
+    # isn't configured we fall back to Primary-only (TRANSLATION-PO
+    # records absence of cross-check via cross_check=None). The canon's
+    # "no silent role swap" rule is honored: Primary stays Primary; we
+    # don't substitute Check FOR Primary on absence — we just skip
+    # cross-checking.
+    engine_label_primary = "openai/gpt-4o"
+    try:
+        check = make_gemini_translator()
+        translator = make_cross_checked_translator(
+            primary=primary,
+            check=check,
+            primary_engine_label=engine_label_primary,
+            check_engine_label="google/gemini-2.5-pro",
+        )
+        engine_label = f"{engine_label_primary}+google/gemini-2.5-pro"
+    except GeminiTranslatorUnconfigured:
+        # Primary-only — every TRANSLATION-PO will record absence of
+        # cross-check via cross_check=None (the persistence hook simply
+        # omits the cross_check block). No silent role swap; Primary
+        # never becomes Check.
+        translator = primary
+        engine_label = engine_label_primary
+
+    hook = make_translation_persistence_hook(engine_identifier=engine_label)
     await run_translation_job(
         session=session,
         job=job,

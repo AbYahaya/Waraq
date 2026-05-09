@@ -34,6 +34,15 @@ class TestTranslationRun:
         from waraq.api.routers import translation_router as router_mod
 
         monkeypatch.setattr(router_mod, "make_openai_translator", lambda: _stub_translator)
+        # Force Primary-only path: pretend Gemini key isn't set so the
+        # router's `except GeminiTranslatorUnconfigured` branch is taken.
+        # This avoids real Gemini calls during HTTP-route smoke tests.
+        from waraq.translation.gemini_translator import GeminiTranslatorUnconfigured
+
+        def _no_gemini() -> object:
+            raise GeminiTranslatorUnconfigured("test: Gemini stubbed off")
+
+        monkeypatch.setattr(router_mod, "make_gemini_translator", _no_gemini)
 
         r = await auth_client.post("/projects", json={"name": "p"})
         project_uuid = r.json()["project_uuid"]
@@ -149,6 +158,15 @@ class TestExportTriggerRoute:
         from waraq.api.routers import translation_router as router_mod
 
         monkeypatch.setattr(router_mod, "make_openai_translator", lambda: _stub_translator)
+        # Force Primary-only path: pretend Gemini key isn't set so the
+        # router's `except GeminiTranslatorUnconfigured` branch is taken.
+        # This avoids real Gemini calls during HTTP-route smoke tests.
+        from waraq.translation.gemini_translator import GeminiTranslatorUnconfigured
+
+        def _no_gemini() -> object:
+            raise GeminiTranslatorUnconfigured("test: Gemini stubbed off")
+
+        monkeypatch.setattr(router_mod, "make_gemini_translator", _no_gemini)
 
         r = await auth_client.post("/projects", json={"name": "p"})
         project_uuid = r.json()["project_uuid"]

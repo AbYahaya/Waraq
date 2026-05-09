@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     google_ai_api_key: str = ""
     # Canonical Gemini model for the OCR main reading line per Dokument 1 §3.3.
     gemini_ocr_model: str = "gemini-2.5-pro"
+    # Canonical Gemini model for the §3.6 translation Check role.
+    gemini_translation_model: str = "gemini-2.5-pro"
     # JWT signing. Generate via `openssl rand -hex 32` for prod; the dev
     # default is a placeholder that is replaced at deploy time.
     jwt_secret: str = "dev-only-jwt-secret-replace-at-deploy"
@@ -49,6 +51,19 @@ class Settings(BaseSettings):
     # admin scope in M4 is just the accounts/projects panel (`is_admin`
     # is not a persisted column — admin is a deployment concern).
     admin_emails: str = ""
+    # sunnah.com Hadith API key per §4.16.1 P-1. Free non-commercial
+    # registration at sunnah.com/developers; sent as `X-API-Key` header.
+    # Empty default so unit tests + sync runs without a key fail with a
+    # clear `SunnahApiKeyMissing` rather than a 401 from the upstream.
+    sunnah_com_api_key: str = ""
+    # dorar.net Hadith endpoint per §4.16.1 P-3. dorar.net's public path
+    # is keyless; the env slot is for future authenticated rollout +
+    # local-test override.
+    dorar_net_api_key: str = ""
+    # dorar.net base URL — kept configurable since §3.5 declares
+    # endpoints "fully unspecified – active work front". Default
+    # placeholder; real endpoint per deployment.
+    dorar_net_base_url: str = "https://dorar.net/dorar_api.json"
 
 
 @lru_cache(maxsize=1)

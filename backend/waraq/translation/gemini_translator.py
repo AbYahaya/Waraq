@@ -1,37 +1,38 @@
-"""OpenAI-backed Translator factory for HTTP-scope translation runs.
+"""Gemini-backed Translator factory for the §3.6 Check role.
 
-The canonical translation service (`waraq.translation.service`) is
-engine-agnostic — it accepts any `Translator` callable. This module
-provides the concrete OpenAI binding the M5 HTTP path needs so the UI
-can drive translation end-to-end without spinning a worker.
+Per Dokument 1 §3.6 the canonical Check model is Gemini 2.5 Pro,
+parallel to the OpenAI Primary (GPT-4o). The Check pass produces a
+counter-translation that the cross-check orchestrator compares to the
+Primary; the Check is *not* a fallback.
 
-Read-only with respect to project state — it just calls the OpenAI
-chat-completions API and returns the translated string. Provenance
-writing is the orchestrator's job.
+Mirrors `openai_translator.py` deliberately — same `Translator`
+signature, same chunk-brief injection from §3.6 chunk rules, same
+post-translation canon-rule pass per §2.2. The only difference is the
+backend SDK (google-genai instead of openai).
+
+Async via `asyncio.to_thread` so the event loop stays free during the
+Gemini call.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Awaitable, Callable
 
 from waraq.canon_rules import apply_all as apply_canon_rules
+from waraq.db.session import get_settings
 from waraq.translation.service import TranslationContext
 
 Translator = Callable[[str, TranslationContext], Awaitable[str]]
 
 
-class OpenAITranslatorUnconfigured(RuntimeError):
-    """`OPENAI_API_KEY` not present in the environment when a translator
-    was requested. Surfaces as a 503 from the run endpoint so the UI can
-    flag it cleanly."""
+class GeminiTranslatorUnconfigured(RuntimeError):
+    """`GOOGLE_AI_API_KEY` not present when a translator was requested.
+    Surfaces as 503 from the cross-check translator if Check is
+    requested but unavailable."""
 
 
-# Per Dokument 1 §2.2 the model output must follow several mandatory
-# product-logic rules. We instruct the LLM to avoid violations up-front
-# (defense-in-depth) and post-process every response through
-# `waraq.canon_rules.apply_all` (deterministic system mechanism, the
-# canonical guarantor).
 _DEFAULT_SYSTEM_PROMPT = (
     "You translate classical Arabic Islamic texts into German. "
     "Mandatory output rules:\n"
@@ -44,45 +45,38 @@ _DEFAULT_SYSTEM_PROMPT = (
 )
 
 
-def make_openai_translator(
+def make_gemini_translator(
     *,
     model: str | None = None,
     system_prompt: str | None = None,
 ) -> Translator:
-    """Build an OpenAI-backed translator.
+    """Build a Gemini-backed translator.
 
-    Reads `OPENAI_API_KEY` from the environment at call time (not at
-    module import) so test harnesses can populate it lazily. Raises
-    `OpenAITranslatorUnconfigured` if the key is missing.
+    Reads `GOOGLE_AI_API_KEY` from settings at call time. Raises
+    `GeminiTranslatorUnconfigured` if missing.
     """
-    api_key = os.environ.get("OPENAI_API_KEY")
+    settings = get_settings()
+    api_key = settings.google_ai_api_key or os.environ.get("GOOGLE_AI_API_KEY", "")
     if not api_key:
-        raise OpenAITranslatorUnconfigured(
-            "OPENAI_API_KEY not set; cannot build translator. Set the "
-            "environment variable (or backend/.env) and restart the "
+        raise GeminiTranslatorUnconfigured(
+            "GOOGLE_AI_API_KEY not set; cannot build Gemini translator. Set "
+            "the environment variable (or backend/.env) and restart the "
             "backend process."
         )
-    # Per Dokument 1 §3.6 the canonical Primary is `gpt-4o`. The env
-    # override exists for cost-sensitive test runs only.
-    chosen_model = model or os.environ.get("OPENAI_TRANSLATION_MODEL", "gpt-4o")
+    chosen_model = model or settings.gemini_translation_model
     chosen_system = system_prompt or _DEFAULT_SYSTEM_PROMPT
 
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(api_key=api_key)
-
     async def _translate(source_text: str, context: TranslationContext) -> str:
-        # Build the system prompt with the §3.6 chunk brief (glossary +
-        # entity hits relevant to this chunk) and the §3.6 upstream
-        # window (semantic summary).
+        # Build the system prompt with the §3.6 chunk brief and upstream
+        # window, identical structure to the OpenAI translator so both
+        # engines see the same instructions and context.
         prompt_blocks: list[str] = [chosen_system]
 
         brief = context.chunk_brief
         if brief is not None and not brief.is_empty:
             if brief.glossary_hits:
-                # §4.17 — annotate first-vs-subsequent so the model
-                # formats first-occurrence terms with the parenthetical
-                # Arabic and a brief footnote.
+                # §4.17 first-occurrence formatting — same structure as the
+                # OpenAI translator so both engines emit comparable output.
                 lines = []
                 for h in brief.glossary_hits:
                     if h.is_first_occurrence:
@@ -121,23 +115,31 @@ def make_openai_translator(
 
         full_system_prompt = "\n\n".join(prompt_blocks)
 
-        resp = await client.chat.completions.create(
-            model=chosen_model,
-            messages=[
-                {"role": "system", "content": full_system_prompt},
-                {"role": "user", "content": source_text},
-            ],
-            temperature=0,
-        )
-        raw_output = (resp.choices[0].message.content or "").strip()
-        # Deterministic post-translation canonization per Dokument 1 §2.2.
+        # Gemini's Generate Content API takes a single combined input;
+        # we prepend the system instructions to the user text. Lazy
+        # import so the SDK isn't loaded by tests that monkeypatch.
+        from google import genai
+
+        client = genai.Client(api_key=api_key)
+        combined = f"{full_system_prompt}\n\n---\n\nSOURCE:\n{source_text}"
+
+        def _call_sync() -> str:
+            response = client.models.generate_content(
+                model=chosen_model,
+                contents=combined,
+            )
+            return (response.text or "").strip()
+
+        raw_output = await asyncio.to_thread(_call_sync)
+        # Same deterministic post-translation canonization as the OpenAI
+        # path — both engines converge on canonical output.
         return apply_canon_rules(raw_output)
 
     return _translate
 
 
 __all__ = [
-    "OpenAITranslatorUnconfigured",
+    "GeminiTranslatorUnconfigured",
     "Translator",
-    "make_openai_translator",
+    "make_gemini_translator",
 ]

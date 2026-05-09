@@ -94,6 +94,41 @@ def make_translation_persistence_hook(
             "terminology_bindings": dict(context.terminology_bindings),
             "style_anchors": list(context.style_anchors),
         }
+
+        # §4.17 first-occurrence tracking: every concept_id matched in
+        # this chunk is recorded so a future translation run can seed
+        # `previously_used` correctly. Independent of whether the
+        # individual hit was first-occurrence on this run.
+        brief = context.chunk_brief
+        if brief is not None and brief.glossary_hits:
+            po_payload["concept_ids_used"] = [str(h.concept_id) for h in brief.glossary_hits]
+
+        # §3.6 cross-check outcome — recorded on the TRANSLATION-PO
+        # when the cross-check orchestrator was used. The cross-check
+        # translator attaches a `CrossCheckOutcome` to context.cross_check
+        # before this hook runs.
+        outcome = context.cross_check
+        if outcome is not None:
+            po_payload["cross_check"] = {
+                "situation": outcome.situation.value,
+                "primary_engine": outcome.primary_engine,
+                "check_engine": outcome.check_engine,
+                "primary_output": outcome.primary_output,
+                "check_output": outcome.check_output,
+                "check_error": outcome.check_error,
+            }
+
+        # §2.2 / §4.12.1 — Tier 1 glossary precedence verification. For
+        # every glossary hit in the chunk_brief, check that the canonical
+        # `gloss` actually appears in the LLM output. Violations are
+        # recorded but do not trigger automatic text rewrite (H-1/H-2 +
+        # §2.2 "no single-instance override").
+        from waraq.translation.glossary_check import verify_glossary_precedence
+
+        violations = verify_glossary_precedence(brief=context.chunk_brief, output_text=output_text)
+        if violations:
+            po_payload["glossary_precedence_violations"] = [v.to_payload() for v in violations]
+
         await create_po(
             session=session,
             po_type=POType.TRANSLATION,

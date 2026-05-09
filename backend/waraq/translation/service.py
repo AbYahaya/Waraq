@@ -60,6 +60,7 @@ from waraq.jobs import (
 )
 from waraq.schemas import DecisionEvent, Job, Segment
 from waraq.schemas.enums import JobState, ScopeType
+from waraq.translation.chunk_context import ChunkContextResolver
 from waraq.translation.exceptions import (
     TranslationJobNotPending,
     TranslationJobUebersetzungsstartMissing,
@@ -73,8 +74,8 @@ class TranslationContext:
     """Upstream context buffer carried across chunks (and through resumption).
 
     Per Sprint 2 §2: serialization is deterministic and round-trips through
-    deserialization without information loss. The fields are all JSON-
-    serializable primitives.
+    deserialization without information loss. The persisted fields are all
+    JSON-serializable primitives.
 
     Attributes:
         upstream_window: Rolling list of recently translated Segment outputs
@@ -85,14 +86,31 @@ class TranslationContext:
             as translations resolve glossary entries (T-7.2.1 wires this).
         style_anchors: free list of style-anchor strings accumulated from
             confirmed user edits (placeholder for T-7.3.x style integration).
+        chunk_brief: §3.6 per-chunk glossary + entity hits. Recomputed
+            before each translator call from the project's glossary +
+            entity tables; **transient** — excluded from
+            `to_dict`/`from_dict` so checkpoints stay small and the brief
+            re-resolves on resume against current registry state.
     """
 
     upstream_window: list[str] = field(default_factory=list)
     terminology_bindings: dict[str, str] = field(default_factory=dict)
     style_anchors: list[str] = field(default_factory=list)
+    # Transient — see docstring. Default-None type-hinted as Any to avoid
+    # a forward import cycle (chunk_context imports translation schemas).
+    chunk_brief: Any = None
+    # Transient §3.6 cross-check outcome. Set by the cross-check
+    # orchestrator before the persistence hook reads it; never
+    # checkpointed. The cross-check translator uses
+    # `object.__setattr__` to write it on the same context object the
+    # `_execute` loop holds (frozen-dataclass-bypass — deliberate, since
+    # the alternative refactor would change the public Translator
+    # signature).
+    cross_check: Any = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Deterministic JSON-serializable representation."""
+        """Deterministic JSON-serializable representation. Excludes
+        transient fields (chunk_brief)."""
         return {
             "upstream_window": list(self.upstream_window),
             "terminology_bindings": dict(self.terminology_bindings),
@@ -122,6 +140,19 @@ class TranslationContext:
             upstream_window=new_window,
             terminology_bindings=dict(self.terminology_bindings),
             style_anchors=list(self.style_anchors),
+            # Don't carry chunk_brief forward — it's per-chunk.
+        )
+
+    def with_chunk_brief(self, brief: Any) -> TranslationContext:
+        """Return a new context with the given per-chunk brief attached.
+        Used by `_execute` before each translator call. The brief is
+        transient (not checkpointed)."""
+        return TranslationContext(
+            upstream_window=list(self.upstream_window),
+            terminology_bindings=dict(self.terminology_bindings),
+            style_anchors=list(self.style_anchors),
+            chunk_brief=brief,
+            cross_check=self.cross_check,
         )
 
 
@@ -341,6 +372,23 @@ async def _execute(
     else:
         context = TranslationContext.from_dict(payload.get("initial_context", {}))
 
+    # §3.6 chunk-context resolver — pre-load the project's + account's
+    # glossary + entities once per job, then resolve per-chunk briefs.
+    # Skipped when the job has no project_uuid (defensive — shouldn't
+    # happen for translation jobs, but the pattern keeps tests with
+    # bare-bones job rows working).
+    chunk_resolver: ChunkContextResolver | None = None
+    if job.project_uuid is not None:
+        from waraq.schemas import Project
+
+        project: Project | None = await session.get(Project, job.project_uuid)
+        if project is not None:
+            chunk_resolver = await ChunkContextResolver.for_project(
+                session,
+                project_uuid=project.project_uuid,
+                account_uuid=project.account_uuid,
+            )
+
     chunks: list[TranslatedChunk] = []
     skipped: list[SkippedSegment] = []
 
@@ -403,13 +451,24 @@ async def _execute(
                 continue
 
             input_text = segment.text_content or ""
-            output_text = await translator(input_text, context)
+            # §3.6 — attach per-chunk glossary + entity brief before
+            # calling the translator. Transient on context (not
+            # checkpointed); resolved freshly each chunk.
+            chunk_context = (
+                context.with_chunk_brief(chunk_resolver.resolve(input_text))
+                if chunk_resolver is not None
+                else context
+            )
+            output_text = await translator(input_text, chunk_context)
 
             # T-7.1.2 / T-7.2.1 plug their writers in here. The hook runs
             # in the same transaction as the checkpoint; partial-failure
             # safety is the transaction's job (caller commits per chunk).
+            # Pass `chunk_context` (not `context`) so the hook sees both
+            # the chunk_brief (§3.6) and any cross_check outcome
+            # attached by the cross-check orchestrator.
             if on_segment_translated is not None:
-                await on_segment_translated(session, segment, output_text, context)
+                await on_segment_translated(session, segment, output_text, chunk_context)
 
             chunks.append(
                 TranslatedChunk(
