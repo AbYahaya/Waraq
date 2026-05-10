@@ -190,6 +190,15 @@ class TestT_1_3_1_SatzUuidOnlyOnAllowlistedTables:
         "translation_observations",
         "audit_befunde",
         "hadith_passage_status",
+        # Phase 2A — §4.16.6 Hadith verification result rows are
+        # canonically segment-scoped (Level 1 anchor = (block, segment,
+        # ocr_rev) per §4.16.6). Same domain-event-table pattern as
+        # hadith_passage_status above.
+        "hadith_single_source_results",
+        "hadith_aggregate_results",
+        # Phase 2F-A — §4.15.3 project Quranic passage snapshot is
+        # segment-anchored (one row per recognized passage per segment).
+        "project_quran_passages",
     }
 
     def test_satz_uuid_only_on_allowlisted_tables(self) -> None:

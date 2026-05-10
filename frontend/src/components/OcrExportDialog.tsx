@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, apiPath } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 import { cn } from "@/lib/utils";
 
@@ -125,7 +125,8 @@ export function OcrExportDialog({
     setError(null);
   };
 
-  const downloadHref = (poUuid: string): string => `/ocr-export/artefacts/${poUuid}`;
+  const downloadHref = (poUuid: string): string =>
+    apiPath(`/ocr-export/artefacts/${poUuid}`);
 
   const onDownload = async (poUuid: string): Promise<void> => {
     // The download endpoint requires a bearer token, so we fetch with
@@ -160,134 +161,136 @@ export function OcrExportDialog({
         onOpenChange(o);
       }}
     >
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Export OCR text (DOCX)</DialogTitle>
-          <DialogDescription>
-            Pflichtfragen require active answers per export. Saved
-            profiles never replace this dialog (Sprint-OCR §B).
-          </DialogDescription>
-        </DialogHeader>
+      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+        <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+          <DialogHeader>
+            <DialogTitle>Export OCR text (DOCX)</DialogTitle>
+            <DialogDescription>
+              Pflichtfragen require active answers per export. Saved
+              profiles never replace this dialog (Sprint-OCR §B).
+            </DialogDescription>
+          </DialogHeader>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1 col-span-2">
-            <Label htmlFor="page-range">Page range (e.g. 1,2,5-7)</Label>
-            <Input
-              id="page-range"
-              value={pageRangeText}
-              onChange={(e) => setPageRangeText(e.target.value)}
-              placeholder="1-3"
-            />
-          </div>
-          <div className="space-y-1 col-span-2">
-            <Label>Block types enabled</Label>
-            <div className="flex flex-wrap gap-2">
-              {ALL_BLOCK_TYPES.map((bt) => (
-                <button
-                  key={bt}
-                  type="button"
-                  onClick={() =>
-                    setBlockTypes((cur) =>
-                      cur.includes(bt) ? cur.filter((c) => c !== bt) : [...cur, bt],
-                    )
-                  }
-                  className={cn(
-                    "rounded border px-2 py-1 text-xs",
-                    blockTypes.includes(bt)
-                      ? "bg-accent border-foreground/40"
-                      : "hover:bg-accent/50",
-                  )}
-                >
-                  {bt}
-                </button>
-              ))}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1 col-span-2">
+              <Label htmlFor="page-range">Page range (e.g. 1,2,5-7)</Label>
+              <Input
+                id="page-range"
+                value={pageRangeText}
+                onChange={(e) => setPageRangeText(e.target.value)}
+                placeholder="1-3"
+              />
+            </div>
+            <div className="space-y-1 col-span-2">
+              <Label>Block types enabled</Label>
+              <div className="flex flex-wrap gap-2">
+                {ALL_BLOCK_TYPES.map((bt) => (
+                  <button
+                    key={bt}
+                    type="button"
+                    onClick={() =>
+                      setBlockTypes((cur) =>
+                        cur.includes(bt) ? cur.filter((c) => c !== bt) : [...cur, bt],
+                      )
+                    }
+                    className={cn(
+                      "rounded border px-2 py-1 text-xs",
+                      blockTypes.includes(bt)
+                        ? "bg-accent border-foreground/40"
+                        : "hover:bg-accent/50",
+                    )}
+                  >
+                    {bt}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                id="markings"
+                type="checkbox"
+                checked={markingsEnabled}
+                onChange={(e) => setMarkingsEnabled(e.target.checked)}
+              />
+              <Label htmlFor="markings">Markings enabled</Label>
+            </div>
+            <div className="space-y-1">
+              <Label>Mode</Label>
+              <div className="flex gap-2">
+                {(["arbeitsstand", "endgueltig"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMode(m)}
+                    className={cn(
+                      "rounded border px-2 py-1 text-xs",
+                      mode === m
+                        ? "bg-accent border-foreground/40"
+                        : "hover:bg-accent/50",
+                    )}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <input
-              id="markings"
-              type="checkbox"
-              checked={markingsEnabled}
-              onChange={(e) => setMarkingsEnabled(e.target.checked)}
-            />
-            <Label htmlFor="markings">Markings enabled</Label>
-          </div>
-          <div className="space-y-1">
-            <Label>Mode</Label>
-            <div className="flex gap-2">
-              {(["arbeitsstand", "endgueltig"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setMode(m)}
+
+          {gate && (
+            <div className="rounded border p-3 text-sm space-y-1">
+              <p>
+                <span className="text-muted-foreground">Gate:</span>{" "}
+                <span
                   className={cn(
-                    "rounded border px-2 py-1 text-xs",
-                    mode === m
-                      ? "bg-accent border-foreground/40"
-                      : "hover:bg-accent/50",
+                    "font-medium",
+                    gate.state === "blockiert" && "text-destructive",
+                    gate.state === "exportierbar_mit_warnungen" && "text-amber-700",
+                    gate.state === "exportierbar" && "text-emerald-700",
                   )}
                 >
-                  {m}
-                </button>
-              ))}
+                  {gate.state}
+                </span>
+              </p>
+              {gate.blocking_reasons.length > 0 && (
+                <ul className="text-xs text-destructive list-disc pl-4">
+                  {gate.blocking_reasons.map((r) => (
+                    <li key={r}>{r}</li>
+                  ))}
+                </ul>
+              )}
+              {gate.warnings.length > 0 && (
+                <ul className="text-xs text-amber-700 list-disc pl-4">
+                  {gate.warnings.slice(0, 5).map((w) => (
+                    <li key={w}>{w}</li>
+                  ))}
+                </ul>
+              )}
             </div>
-          </div>
+          )}
+
+          {runResult && (
+            <div className="rounded border border-emerald-200 bg-emerald-50 p-3 text-sm space-y-1">
+              <p className="font-medium text-emerald-800">
+                Export complete — {runResult.n_pages_exported} pages,{" "}
+                {runResult.n_segments_exported} segments.
+              </p>
+              <p className="text-xs text-emerald-700 truncate">
+                sha256: {runResult.sha256.slice(0, 16)}… ·{" "}
+                {(runResult.size_bytes / 1024).toFixed(1)} KB
+              </p>
+              <Button
+                size="sm"
+                onClick={() => onDownload(runResult.ocr_export_event_po_uuid)}
+              >
+                Download DOCX
+              </Button>
+            </div>
+          )}
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
 
-        {gate && (
-          <div className="rounded border p-3 text-sm space-y-1">
-            <p>
-              <span className="text-muted-foreground">Gate:</span>{" "}
-              <span
-                className={cn(
-                  "font-medium",
-                  gate.state === "blockiert" && "text-destructive",
-                  gate.state === "exportierbar_mit_warnungen" && "text-amber-700",
-                  gate.state === "exportierbar" && "text-emerald-700",
-                )}
-              >
-                {gate.state}
-              </span>
-            </p>
-            {gate.blocking_reasons.length > 0 && (
-              <ul className="text-xs text-destructive list-disc pl-4">
-                {gate.blocking_reasons.map((r) => (
-                  <li key={r}>{r}</li>
-                ))}
-              </ul>
-            )}
-            {gate.warnings.length > 0 && (
-              <ul className="text-xs text-amber-700 list-disc pl-4">
-                {gate.warnings.slice(0, 5).map((w) => (
-                  <li key={w}>{w}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-
-        {runResult && (
-          <div className="rounded border border-emerald-200 bg-emerald-50 p-3 text-sm space-y-1">
-            <p className="font-medium text-emerald-800">
-              Export complete — {runResult.n_pages_exported} pages,{" "}
-              {runResult.n_segments_exported} segments.
-            </p>
-            <p className="text-xs text-emerald-700 truncate">
-              sha256: {runResult.sha256.slice(0, 16)}… ·{" "}
-              {(runResult.size_bytes / 1024).toFixed(1)} KB
-            </p>
-            <Button
-              size="sm"
-              onClick={() => onDownload(runResult.ocr_export_event_po_uuid)}
-            >
-              Download DOCX
-            </Button>
-          </div>
-        )}
-
-        {error && <p className="text-sm text-destructive">{error}</p>}
-
-        <DialogFooter>
+        <DialogFooter className="pt-3">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Close
           </Button>

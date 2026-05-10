@@ -140,6 +140,55 @@ class TestAutoRunPage:
         r = await auth_client.post(f"/ocr/pages/{other_page}/auto-run")
         assert r.status_code == 404
 
+    async def test_refuses_when_page_already_ocrd(
+        self,
+        auth_client: httpx.AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Per the OCR duplicate-Block fix (migration 0023): the
+        per-page auto-run endpoint refuses 409 when the page is past
+        the `ausstehend` state. Re-running OCR on an already-OCR'd
+        page must go through an explicit reset path, not silently
+        produce a duplicate Block."""
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from tests.conftest import _test_database_url
+        from waraq.api.routers import ocr_router as router_mod
+        from waraq.identity import new_uuid
+        from waraq.schemas import Page
+        from waraq.schemas.enums import OcrStatus
+
+        monkeypatch.setattr(router_mod, "run_ocr_for_page", _stub_result_factory("x"))
+
+        r = await auth_client.post("/projects", json={"name": "p"})
+        project_uuid = r.json()["project_uuid"]
+
+        engine = create_async_engine(_test_database_url(), future=True)
+        sm = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        page_uuid = new_uuid()
+        try:
+            async with sm() as session, session.begin():
+                session.add(
+                    Page(
+                        page_uuid=page_uuid,
+                        project_uuid=_uuid.UUID(project_uuid),
+                        page_index=1,
+                        ocr_status=OcrStatus.IN_REVIEW,
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+        r = await auth_client.post(f"/ocr/pages/{page_uuid}/auto-run")
+        assert r.status_code == 409, r.text
+        body = r.json()
+        assert body["detail"]["reason"] == "page_already_ocrd"
+        assert body["detail"]["ocr_status"] == "in_review"
+
     async def test_page_ocr_error_maps_to_409(
         self,
         auth_client: httpx.AsyncClient,
@@ -229,6 +278,129 @@ class TestAutoRunProject:
         body = r.json()
         assert body["pages_processed"] == 0
         assert body["pages_skipped"] == 0
+
+
+@pytest.mark.asyncio
+class TestUniqueActiveIndexes:
+    """Migration 0023 — `(page_uuid, block_index)` and `(block_uuid,
+    satz_index)` are UNIQUE per-active-row. Defence-in-depth so a
+    regressed application path can't silently duplicate either row."""
+
+    async def test_duplicate_active_block_is_blocked_at_db_level(
+        self,
+        auth_client: httpx.AsyncClient,
+    ) -> None:
+        from sqlalchemy.exc import IntegrityError
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from tests.conftest import _test_database_url
+        from waraq.identity import new_uuid
+        from waraq.schemas import Block, Page
+
+        r = await auth_client.post("/projects", json={"name": "p"})
+        project_uuid = r.json()["project_uuid"]
+
+        engine = create_async_engine(_test_database_url(), future=True)
+        sm = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        page_uuid = new_uuid()
+        try:
+            # Seed Page + first Block. SQLAlchemy's UoW orders inserts
+            # by relationship, not by raw FK column — flush Page first
+            # so the Block insert sees a row to FK to.
+            async with sm() as session:
+                session.add(
+                    Page(
+                        page_uuid=page_uuid,
+                        project_uuid=_uuid.UUID(project_uuid),
+                        page_index=1,
+                    )
+                )
+                await session.flush()
+                session.add(
+                    Block(
+                        block_uuid=new_uuid(),
+                        page_uuid=page_uuid,
+                        block_type="main_text",
+                        block_index=0,
+                    )
+                )
+                await session.commit()
+            # Second active Block at the same (page_uuid, block_index)
+            # — the partial unique index must reject this insert.
+            with pytest.raises(IntegrityError):
+                async with sm() as session:
+                    session.add(
+                        Block(
+                            block_uuid=new_uuid(),
+                            page_uuid=page_uuid,
+                            block_type="main_text",
+                            block_index=0,
+                        )
+                    )
+                    await session.commit()
+        finally:
+            await engine.dispose()
+
+    async def test_inactive_duplicate_block_is_allowed(
+        self,
+        auth_client: httpx.AsyncClient,
+    ) -> None:
+        """An inactivated row must NOT collide with a new active one —
+        the WHERE active=true predicate on the index is essential to
+        the inactivate-then-recreate recovery path."""
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from tests.conftest import _test_database_url
+        from waraq.identity import new_uuid
+        from waraq.schemas import Block, Page
+
+        r = await auth_client.post("/projects", json={"name": "p"})
+        project_uuid = r.json()["project_uuid"]
+
+        engine = create_async_engine(_test_database_url(), future=True)
+        sm = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        page_uuid = new_uuid()
+        try:
+            async with sm() as session:
+                session.add(
+                    Page(
+                        page_uuid=page_uuid,
+                        project_uuid=_uuid.UUID(project_uuid),
+                        page_index=1,
+                    )
+                )
+                await session.flush()
+                session.add(
+                    Block(
+                        block_uuid=new_uuid(),
+                        page_uuid=page_uuid,
+                        block_type="main_text",
+                        block_index=0,
+                        active=False,
+                    )
+                )
+                await session.commit()
+            async with sm() as session:
+                session.add(
+                    Block(
+                        block_uuid=new_uuid(),
+                        page_uuid=page_uuid,
+                        block_type="main_text",
+                        block_index=0,
+                        active=True,
+                    )
+                )
+                await session.commit()
+        finally:
+            await engine.dispose()
 
 
 @pytest.mark.asyncio

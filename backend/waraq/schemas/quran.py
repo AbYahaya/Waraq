@@ -32,8 +32,9 @@ insertion uses (sura, aya) direct lookup.
 from __future__ import annotations
 
 import uuid as _uuid
+from datetime import datetime
 
-from sqlalchemy import Index, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -136,4 +137,87 @@ class QuranTranslationVerse(Base, TimestampMixin):
             "sura_index",
             "aya_index",
         ),
+    )
+
+
+class ProjectQuranPassage(Base, TimestampMixin):
+    """§4.15.3 — frozen snapshot of a recognized Qurʾān passage in a project.
+
+    Per Dokument 1 §4.15.3:
+      "Qurʾān passages already stored in projects remain unchanged on
+      changes to the Arabic Qurʾān reference collection or to the
+      local fallback copy of the translation. No automatic re-fetch,
+      no silent overwriting of existing project passages."
+
+    The protection mechanism is the snapshot: at recognition time we
+    freeze the Arabic vocalized text + the chosen translation text +
+    the `(source_name, source_version)` of both, plus the
+    `(translation_key, source_version)` of the translation copy. Later
+    changes to AR-Referenzbestand or quranenc.com fallback do NOT
+    auto-update this row; updates require an express user action
+    (§4.15.5 row 4 → `decision_source = translation_pipeline`).
+
+    Multi-āya passages: `aya_index_start <= aya_index_end`. For a
+    single-āya passage both equal the same number.
+
+    Lifecycle states (`state`):
+      - `recognized`         — system recognized + auto-accepted
+                                (confidence ≥ threshold), no DE.
+      - `manually_confirmed` — user confirmed under threshold
+                                (§4.15.5 row 1 → translation_pipeline).
+      - `corrected`          — user corrected sura/aya
+                                (§4.15.5 row 2 → conflict_resolution).
+      - `rejected`           — user said "do not treat as Qurʾān"
+                                (§4.15.5 row 3 → conflict_resolution).
+      - `refreshed`          — user expressly updated from a fresher
+                                AR/translation collection version
+                                (§4.15.5 row 4 → translation_pipeline).
+    """
+
+    __tablename__ = "project_quran_passages"
+
+    passage_uuid: Mapped[_uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    project_uuid: Mapped[_uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("projects.project_uuid", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    satz_uuid: Mapped[_uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("segments.satz_uuid", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    sura_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    aya_index_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    aya_index_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Frozen snapshot fields — independent of upstream collection updates.
+    snapshot_text_vocalized: Mapped[str] = mapped_column(String, nullable=False)
+    snapshot_translation_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Provenance: which (AR | translation) collection version was active
+    # when this snapshot was taken. The `(source_name, source_version)`
+    # pair lets a future express-update action recognize what changed.
+    ar_source_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    ar_source_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    translation_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    translation_source_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # §4.15.2 confidence — 0.0..1.0; threshold canonically deferred.
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    # Lifecycle per §4.15.5 — CHECK in migration.
+    state: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="recognized", index=True
+    )
+    # Decision Event reference for state changes that produced one
+    # (manually_confirmed / corrected / rejected / refreshed).
+    last_decision_event_uuid: Mapped[_uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("decision_events.decision_event_uuid", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_state_change_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )

@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from waraq.decisions import create_decision_event
 from waraq.identity.service import new_uuid
 from waraq.preflight.exceptions import PreflightError
+from waraq.preflight.pflichtfragen import validate_pflichtfrage_answer
 from waraq.schemas import DecisionEvent, PflichtfrageProfil
 from waraq.schemas.enums import DecisionSource, ScopeType
 
@@ -63,6 +64,13 @@ async def save_export_profile_prefill(
     if not (1 <= frage_index <= PFLICHTFRAGE_COUNT):
         raise PreflightError(f"frage_index must be in [1, {PFLICHTFRAGE_COUNT}]; got {frage_index}")
 
+    # §4.7.2 — pre-fills must satisfy the canonical answer schema; a
+    # malformed pre-fill should fail loudly here, not silently produce
+    # a confirmation later that the evaluator counts.
+    validated_prefill = validate_pflichtfrage_answer(
+        frage_index=frage_index, frage_key=frage_key, answer=prefilled_answer
+    )
+
     # Upsert by (project_uuid, frage_index) — the table has UNIQUE on that pair.
     from sqlalchemy import select
 
@@ -74,7 +82,7 @@ async def save_export_profile_prefill(
     existing = existing_q.scalar_one_or_none()
     if existing is not None:
         existing.frage_key = frage_key
-        existing.prefilled_answer = prefilled_answer
+        existing.prefilled_answer = validated_prefill
         await session.flush()
         return existing
 
@@ -83,7 +91,7 @@ async def save_export_profile_prefill(
         project_uuid=project_uuid,
         frage_index=frage_index,
         frage_key=frage_key,
-        prefilled_answer=prefilled_answer,
+        prefilled_answer=validated_prefill,
     )
     session.add(row)
     await session.flush()
@@ -115,10 +123,15 @@ async def confirm_pflichtfrage(
     if not (1 <= frage_index <= PFLICHTFRAGE_COUNT):
         raise PreflightError(f"frage_index must be in [1, {PFLICHTFRAGE_COUNT}]; got {frage_index}")
 
+    # §4.7.2 — only canonical-shape answers may become active confirmations.
+    validated_answer = validate_pflichtfrage_answer(
+        frage_index=frage_index, frage_key=frage_key, answer=answer
+    )
+
     de_content: dict[str, Any] = {
         "frage_index": frage_index,
         "frage_key": frage_key,
-        "answer": answer,
+        "answer": validated_answer,
         "preflight_run_uuid": str(preflight_run_uuid),
     }
 

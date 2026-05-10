@@ -20,3 +20,11 @@ class TranslationJobUebersetzungsstartMissing(TranslationJobError):
     job creation reads for it and refuses if it's missing. This decouples
     "gate ready" from "translation actually requested" and makes
     auto-trigger-on-go structurally impossible."""
+
+
+class TranslationJobCancelled(TranslationJobError):
+    """Cooperative cancellation: the user (or an admin path) flipped
+    `payload.cancel_requested = true`; the `_execute` loop noticed
+    between chunks and aborted. The Job is left in `failed` state with
+    `error.phase = "user_cancelled"` so the §3.6 30-min watcher does NOT
+    fire (the user knows about this failure)."""

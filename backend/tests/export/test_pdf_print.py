@@ -74,15 +74,18 @@ async def _seed_export_for_account(db_session, account_uuid):
     await seed_segment_with_revision(
         db_session, project=project, text="إن الحمد لله\n---\nLob sei Gott"
     )
+    from tests.preflight._helpers import canonical_pflichtfrage_payload
+
     run = await start_preflight_run(session=db_session, project_uuid=project.project_uuid)
     for i in range(1, PFLICHTFRAGE_COUNT + 1):
+        key, ans = canonical_pflichtfrage_payload(i)
         await confirm_pflichtfrage(
             session=db_session,
             project_uuid=project.project_uuid,
             preflight_run_uuid=run.job_uuid,
             frage_index=i,
-            frage_key=f"frage_{i}",
-            answer={"value": "yes"},
+            frage_key=key,
+            answer=ans,
         )
     await evaluate_preflight(
         session=db_session, project_uuid=project.project_uuid, preflight_run=run

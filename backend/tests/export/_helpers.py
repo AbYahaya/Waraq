@@ -97,14 +97,17 @@ async def confirm_all_pflichtfragen(
     project_uuid: _uuid.UUID,
     preflight_run: Job,
 ) -> None:
+    from tests.preflight._helpers import canonical_pflichtfrage_payload
+
     for i in range(1, PFLICHTFRAGE_COUNT + 1):
+        key, ans = canonical_pflichtfrage_payload(i)
         await confirm_pflichtfrage(
             session=session,
             project_uuid=project_uuid,
             preflight_run_uuid=preflight_run.job_uuid,
             frage_index=i,
-            frage_key=f"frage_{i}",
-            answer={"value": "yes"},
+            frage_key=key,
+            answer=ans,
         )
 
 

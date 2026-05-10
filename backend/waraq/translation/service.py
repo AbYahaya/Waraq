@@ -62,6 +62,7 @@ from waraq.schemas import DecisionEvent, Job, Segment
 from waraq.schemas.enums import JobState, ScopeType
 from waraq.translation.chunk_context import ChunkContextResolver
 from waraq.translation.exceptions import (
+    TranslationJobCancelled,
     TranslationJobNotPending,
     TranslationJobUebersetzungsstartMissing,
 )
@@ -283,8 +284,15 @@ async def run_translation_job(
     translator: Translator,
     on_segment_translated: SegmentTranslatedHook | None = None,
     on_locked_segment_skip: LockedSegmentSkipHook | None = None,
+    commit_per_chunk: bool = False,
 ) -> TranslationJobResult:
     """Execute a fresh translation Job from chunk_index 0.
+
+    `commit_per_chunk=True` makes the loop commit after every iteration
+    so progress is visible to other DB sessions in real time (the
+    BackgroundTasks `/run` path uses this so the GET endpoint can poll
+    `chunks_translated`). The default of False preserves the original
+    "caller owns the transaction" contract for tests and resume paths.
 
     Job must be PENDING (`TranslationJobNotPending` otherwise — use
     `resume_translation_job` for paused/interrupted jobs)."""
@@ -301,6 +309,7 @@ async def run_translation_job(
         on_locked_segment_skip=on_locked_segment_skip,
         resume_from_index=0,
         starting_context=None,
+        commit_per_chunk=commit_per_chunk,
     )
 
 
@@ -311,6 +320,7 @@ async def resume_translation_job(
     translator: Translator,
     on_segment_translated: SegmentTranslatedHook | None = None,
     on_locked_segment_skip: LockedSegmentSkipHook | None = None,
+    commit_per_chunk: bool = False,
 ) -> TranslationJobResult:
     """Continue a translation Job from its latest checkpoint.
 
@@ -331,6 +341,7 @@ async def resume_translation_job(
             on_locked_segment_skip=on_locked_segment_skip,
             resume_from_index=0,
             starting_context=None,
+            commit_per_chunk=commit_per_chunk,
         )
     state = latest.payload
     chunk_index = int(state["chunk_index"])
@@ -343,6 +354,7 @@ async def resume_translation_job(
         on_locked_segment_skip=on_locked_segment_skip,
         resume_from_index=chunk_index,
         starting_context=context,
+        commit_per_chunk=commit_per_chunk,
     )
 
 
@@ -358,6 +370,7 @@ async def _execute(
     on_locked_segment_skip: LockedSegmentSkipHook | None = None,
     resume_from_index: int,
     starting_context: TranslationContext | None,
+    commit_per_chunk: bool = False,
 ) -> TranslationJobResult:
     # Transition PENDING → RUNNING (idempotent through resume path; if
     # already RUNNING, no-op).
@@ -366,6 +379,12 @@ async def _execute(
 
     payload = job.payload
     segment_uuids = [_uuid.UUID(s) for s in payload["segment_uuids"]]
+    # Stamp the total up-front so the GET endpoint can render a
+    # meaningful progress bar before the first chunk lands.
+    _write_progress(job, total=len(segment_uuids), translated=0, processed=resume_from_index)
+    await session.flush()
+    if commit_per_chunk:
+        await session.commit()
 
     if starting_context is not None:
         context = starting_context
@@ -397,6 +416,16 @@ async def _execute(
             if idx < resume_from_index:
                 continue
 
+            # Cooperative cancel check. Re-read the latest committed
+            # `payload.cancel_requested` between chunks so a cancel
+            # written from the HTTP layer (separate session, separate
+            # transaction) is seen here. Coarse-grained: at most one
+            # in-flight chunk's worth of latency before we abort.
+            if commit_per_chunk:
+                await session.refresh(job, ["payload"])
+            if job.payload.get("cancel_requested"):
+                raise TranslationJobCancelled(f"Job {job.job_uuid} cancelled at chunk {idx}")
+
             # LIVE-READ — R-S2-04 protection. Each iteration re-fetches
             # the Segment from the DB so a lock applied mid-job is seen.
             segment = await _live_get_segment(session, satz_uuid=satz_uuid)
@@ -421,6 +450,15 @@ async def _execute(
                     context=context,
                     skipped_so_far=skipped,
                 )
+                _write_progress(
+                    job,
+                    total=len(segment_uuids),
+                    translated=sum(1 for c in chunks if not c.skipped),
+                    processed=idx + 1,
+                )
+                await session.flush()
+                if commit_per_chunk:
+                    await session.commit()
                 continue
 
             if segment.lock_flag != LockFlag.NONE:
@@ -448,6 +486,15 @@ async def _execute(
                     context=context,
                     skipped_so_far=skipped,
                 )
+                _write_progress(
+                    job,
+                    total=len(segment_uuids),
+                    translated=sum(1 for c in chunks if not c.skipped),
+                    processed=idx + 1,
+                )
+                await session.flush()
+                if commit_per_chunk:
+                    await session.commit()
                 continue
 
             input_text = segment.text_content or ""
@@ -488,6 +535,28 @@ async def _execute(
                 context=context,
                 skipped_so_far=skipped,
             )
+            _write_progress(
+                job,
+                total=len(segment_uuids),
+                translated=sum(1 for c in chunks if not c.skipped),
+                processed=idx + 1,
+            )
+            await session.flush()
+            if commit_per_chunk:
+                await session.commit()
+    except TranslationJobCancelled as exc:
+        await fail_job(
+            session=session,
+            job=job,
+            error={
+                "error_class": type(exc).__name__,
+                "repr": repr(exc),
+                "phase": "user_cancelled",
+            },
+        )
+        if commit_per_chunk:
+            await session.commit()
+        raise
     except Exception as exc:
         await fail_job(
             session=session,
@@ -498,6 +567,8 @@ async def _execute(
                 "phase": "translation_chunk_iteration",
             },
         )
+        if commit_per_chunk:
+            await session.commit()
         raise
 
     await complete_job(
@@ -514,6 +585,20 @@ async def _execute(
         },
     )
     return TranslationJobResult(job=job, chunks=chunks, skipped=skipped, final_context=context)
+
+
+def _write_progress(job: Job, *, total: int, translated: int, processed: int) -> None:
+    """Reassign `Job.payload` with progress counters merged in.
+
+    JSONB columns don't track in-place dict mutation, so we always
+    reassign the whole dict (preserving existing keys like
+    `segment_uuids` and `cancel_requested`).
+    """
+    current = dict(job.payload or {})
+    current["chunks_total"] = total
+    current["chunks_translated"] = translated
+    current["chunks_processed"] = processed
+    job.payload = current
 
 
 async def _persist_chunk_checkpoint(

@@ -17,15 +17,18 @@ from waraq.schemas.identity_types import (
     TransliterationsMusterEintrag,
 )
 from waraq.schemas.jobs import Checkpoint, Job
+from waraq.schemas.notifications import AccountPreferences, Notification
 from waraq.schemas.ocr_errors import OcrErrorInstance
 from waraq.schemas.preflight import PflichtfrageProfil
 from waraq.schemas.projects import Block, Page, Project, Segment
 from waraq.schemas.promotion import BestaetigteStilregel, Musterkandidat, TranslationObservation
 from waraq.schemas.provenance import ProvenanceObject
-from waraq.schemas.quran import ArReferenzVerse, QuranTranslationVerse
+from waraq.schemas.quran import ArReferenzVerse, ProjectQuranPassage, QuranTranslationVerse
+from waraq.schemas.shamela import ShamelaRegistry, ShamelaSection
 
 __all__ = [
     "Account",
+    "AccountPreferences",
     "ArReferenzVerse",
     "Befund",
     "BestaetigteStilregel",
@@ -43,15 +46,19 @@ __all__ = [
     "KonsistenzBefund",
     "LogEntry",
     "Musterkandidat",
+    "Notification",
     "OcrErrorInstance",
     "Page",
     "PflichtfrageProfil",
     "Project",
+    "ProjectQuranPassage",
     "ProvenanceObject",
     "QuellenIdentitaet",
     "QuranTranslationVerse",
     "Revision",
     "Segment",
+    "ShamelaRegistry",
+    "ShamelaSection",
     "StrukturellerSchluessel",
     "TranslationObservation",
     "TransliterationsMusterEintrag",

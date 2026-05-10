@@ -111,14 +111,17 @@ async def seed_segment_export(
     """Run a real `run_export_job` — used to verify the read layer
     against the actual EXPORT_EVENT shape produced in Sprint 5."""
     run = await start_preflight_run(session=session, project_uuid=project.project_uuid)
+    from tests.preflight._helpers import canonical_pflichtfrage_payload
+
     for i in range(1, PFLICHTFRAGE_COUNT + 1):
+        key, ans = canonical_pflichtfrage_payload(i)
         await confirm_pflichtfrage(
             session=session,
             project_uuid=project.project_uuid,
             preflight_run_uuid=run.job_uuid,
             frage_index=i,
-            frage_key=f"frage_{i}",
-            answer={"value": "yes"},
+            frage_key=key,
+            answer=ans,
         )
     ev = await evaluate_preflight(
         session=session, project_uuid=project.project_uuid, preflight_run=run

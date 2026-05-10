@@ -121,11 +121,32 @@ def _render_page_png(source_pdf: Path, page_index: int, out_dir: Path, dpi: int 
 
 async def _ensure_block_and_segment(*, session: AsyncSession, page: Page) -> tuple[Block, Segment]:
     """If the page has no Block/Segment yet, create a default
-    `main_text` block + one empty Segment. Idempotent."""
+    `main_text` block + one empty Segment. Idempotent under serialized
+    calls AND concurrent calls in separate transactions.
+
+    Concurrency contract: takes a row-level lock on the Page row via
+    `SELECT ... FOR UPDATE`. Two concurrent OCR runs on the same page
+    serialize through the lock — the first to acquire it wins the
+    creation race; the second blocks, then sees the committed row
+    when it acquires the lock and reuses it. The DB-level UNIQUE
+    partial indexes on `(page_uuid, block_index) WHERE active` and
+    `(block_uuid, satz_index) WHERE active` are the second line of
+    defense (migration 0023).
+
+    The `.active.is_(True)` filters scope the idempotency to live
+    rows: an inactivated duplicate from before migration 0023 must
+    not match here.
+    """
+    # Row-lock the Page row so concurrent OCR runs serialize.
+    await session.execute(select(Page).where(Page.page_uuid == page.page_uuid).with_for_update())
+
     block_q = await session.execute(
-        select(Block).where(Block.page_uuid == page.page_uuid).order_by(Block.block_index.asc())
+        select(Block)
+        .where(Block.page_uuid == page.page_uuid)
+        .where(Block.active.is_(True))
+        .order_by(Block.block_index.asc())
     )
-    block: Block | None = block_q.scalar_one_or_none()
+    block: Block | None = block_q.scalars().first()
     if block is None:
         block = Block(
             block_uuid=new_uuid(),
@@ -139,9 +160,10 @@ async def _ensure_block_and_segment(*, session: AsyncSession, page: Page) -> tup
     seg_q = await session.execute(
         select(Segment)
         .where(Segment.block_uuid == block.block_uuid)
+        .where(Segment.active.is_(True))
         .order_by(Segment.satz_index.asc())
     )
-    segment: Segment | None = seg_q.scalar_one_or_none()
+    segment: Segment | None = seg_q.scalars().first()
     if segment is None:
         segment = Segment(
             satz_uuid=new_uuid(),

@@ -82,14 +82,17 @@ async def _seed_project_for_account(
 
 async def _run_export(db_session: AsyncSession, project, account_uuid) -> object:
     run = await start_preflight_run(session=db_session, project_uuid=project.project_uuid)
+    from tests.preflight._helpers import canonical_pflichtfrage_payload
+
     for i in range(1, PFLICHTFRAGE_COUNT + 1):
+        key, ans = canonical_pflichtfrage_payload(i)
         await confirm_pflichtfrage(
             session=db_session,
             project_uuid=project.project_uuid,
             preflight_run_uuid=run.job_uuid,
             frage_index=i,
-            frage_key=f"frage_{i}",
-            answer={"value": "yes"},
+            frage_key=key,
+            answer=ans,
         )
     await evaluate_preflight(
         session=db_session, project_uuid=project.project_uuid, preflight_run=run

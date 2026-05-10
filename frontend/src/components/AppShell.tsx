@@ -1,5 +1,9 @@
+import { useCallback } from "react";
 import { Link, Outlet, useNavigate } from "react-router-dom";
+
+import { NotificationPanel } from "@/components/NotificationPanel";
 import { Button } from "@/components/ui/button";
+import { useIdleTimeout } from "@/lib/use-idle-timeout";
 import { useAuthStore } from "@/store/auth";
 
 export function AppShell(): JSX.Element {
@@ -7,10 +11,17 @@ export function AppShell(): JSX.Element {
   const account = useAuthStore((s) => s.account);
   const logout = useAuthStore((s) => s.logout);
 
-  const onLogout = (): void => {
+  const onLogout = useCallback((): void => {
     logout();
     navigate("/login", { replace: true });
-  };
+  }, [logout, navigate]);
+
+  // §2.2 / §7.4 — 2-hour idle timeout, suspended while a background
+  // job (translation / OCR) is running for this account.
+  useIdleTimeout({
+    enabled: account !== null,
+    onIdleTimeout: onLogout,
+  });
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -26,6 +37,7 @@ export function AppShell(): JSX.Element {
             >
               Admin
             </Link>
+            {account && <NotificationPanel />}
             {account && (
               <span className="text-muted-foreground">
                 {account.display_name ?? account.email}

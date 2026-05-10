@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from waraq.preflight.guard_near import GuardNearResult
+
 
 class PreflightError(Exception):
     """Base class for preflight errors."""
@@ -24,3 +29,23 @@ class PflichthinweisCannotBeWarning(PreflightError):
     "Pflichthinweis-Klasse (P-04) als W-Warnung behandelt — blockiert
     Export nicht mehr, wenn nötig" must be structurally impossible.
     """
+
+
+class GuardNearBlocked(PreflightError):
+    """Raised when one or more §4.7.3 guard-near checks block opening
+    the preflight dialog.
+
+    Per Dokument 1 §4.7.3: "guard-near; blocking; check before
+    preflight dialog. ... if a violation exists, the preflight dialog
+    is not opened. Resolution requires technical [restoration of the
+    font / removal of the violation]". This exception type signals
+    that opening a preflight run was refused for guard-near reasons —
+    distinct from any in-dialog Pflichtfrage / gate state.
+
+    The `result` attribute carries the full `GuardNearResult` so
+    callers (HTTP layer, UI) can surface the specific blockers.
+    """
+
+    def __init__(self, message: str, *, result: GuardNearResult) -> None:
+        super().__init__(message)
+        self.result = result

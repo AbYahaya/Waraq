@@ -17,6 +17,21 @@ def fresh_segment_id():
     return new_uuid()
 
 
+@pytest.fixture(autouse=True)
+def _bypass_guard_near_font_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Auto-bypass the §4.7.3 critical-font availability check by default.
+
+    The default font resolver queries the host's fontconfig — which can
+    return false-positives on dev/CI hosts that don't ship the four
+    canonical fonts. Tests that exercise the font path explicitly pass
+    `font_resolver=...`; this fixture only swaps the default for tests
+    that don't care.
+    """
+    from waraq.preflight import guard_near
+
+    monkeypatch.setattr(guard_near, "_default_font_resolver", lambda _names: [])
+
+
 # Placeholder bcrypt-format hash (60 chars) used by `seed_account_uuid` for
 # FK-only test fixtures. Tests that need real authentication call
 # register_account through the auth service instead.

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.audit._helpers import seed_project, seed_segment
 from tests.preflight._helpers import (
+    canonical_pflichtfrage_payload,
     seed_audit_job,
     seed_befund,
     seed_hadith,
@@ -67,13 +68,14 @@ async def _confirm_all_four(
     preflight_run,
 ):
     for i in range(1, 5):
+        key, ans = canonical_pflichtfrage_payload(i)
         await confirm_pflichtfrage(
             session=session,
             project_uuid=project_uuid,
             preflight_run_uuid=preflight_run.job_uuid,
             frage_index=i,
-            frage_key=f"frage_{i}",
-            answer={"value": "yes"},
+            frage_key=key,
+            answer=ans,
         )
 
 

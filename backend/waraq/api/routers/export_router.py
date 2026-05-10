@@ -36,11 +36,13 @@ from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.export import ExportConfig, run_export_job
 from waraq.export.docx_builder import build_translation_docx_from_snapshot
 from waraq.export.exceptions import (
+    CanonRuleViolationsDetected,
     ExportNotInExportableState,
     PreflightStateChanged,
 )
 from waraq.export.pdf_print import PdfPrintError, docx_to_pdf_print
 from waraq.identity import new_uuid
+from waraq.preflight import PdfFormatChoice
 from waraq.preflight.service import JOB_TYPE as PREFLIGHT_JOB_TYPE
 from waraq.schemas import Job, ProvenanceObject
 from waraq.schemas.enums import POType, ScopeType
@@ -148,6 +150,17 @@ async def run_translation_export(
         result = await run_export_job(session=session, config=cfg)
     except (ExportNotInExportableState, PreflightStateChanged) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except CanonRuleViolationsDetected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "canon_rule_violations",
+                "message": str(exc),
+                "violations": [
+                    {"satz_uuid": str(v.satz_uuid), "kind": v.kind.value} for v in exc.violations
+                ],
+            },
+        ) from exc
 
     return ExportRunResponse(
         job_uuid=result.job.job_uuid,
@@ -183,32 +196,45 @@ async def download_translation_artefact_pdf(
     po_uuid: _uuid.UUID,
     session: DbSession,
     current: CurrentAccount,
+    format: PdfFormatChoice = PdfFormatChoice.PRINT_PDF_X_1A,
 ) -> StreamingResponse:
-    """Stream a PDF print-grade artefact for the EXPORT_EVENT-PO.
+    """Stream a PDF artefact for the EXPORT_EVENT-PO.
 
-    Pipeline: DOCX (rebuilt from snapshot) → LibreOffice headless →
-    Ghostscript PDF/X-1a (best-effort) → veraPDF validation
-    (best-effort, informational only).
+    Per §4.7.2 there are two canonical PDF format choices:
+
+      - `print_pdf_x_1a` (default): DOCX → LibreOffice → Ghostscript
+        PDF/X-1a (CMYK, prepress, best-effort) → veraPDF validate.
+      - `digital_rgb`:              DOCX → LibreOffice. RGB output,
+        no Ghostscript pass, no veraPDF (digital distribution path).
 
     Returns 503 if LibreOffice is not installed on the host.
 
     The X-Waraq headers expose pipeline-stage outcomes:
+    - `X-Waraq-PDF-Format: digital_rgb|print_pdf_x_1a` — chosen format.
     - `X-Waraq-PDF-X-1a: true|false` — whether the Ghostscript pass succeeded.
+      Always `false` for `digital_rgb`.
     - `X-Waraq-veraPDF-Valid: true|false|skipped` — veraPDF result.
+      `skipped` for `digital_rgb`.
     """
     po = await _resolve_export_event_po(session, po_uuid, current.account_uuid)
     docx_bytes, stem = await _rebuild_docx_for_po(session=session, po=po)
 
+    is_digital = format == PdfFormatChoice.DIGITAL_RGB
     try:
-        result = await docx_to_pdf_print(docx_bytes=docx_bytes)
+        result = await docx_to_pdf_print(
+            docx_bytes=docx_bytes,
+            enable_pdf_x_1a=not is_digital,
+            enable_verapdf=not is_digital,
+        )
     except PdfPrintError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"PDF print pipeline unavailable: {exc}",
+            detail=f"PDF pipeline unavailable: {exc}",
         ) from exc
 
     headers = {
         "Content-Disposition": f'attachment; filename="{stem}.pdf"',
+        "X-Waraq-PDF-Format": format.value,
         "X-Waraq-PDF-X-1a": "true" if result.is_pdf_x_1a else "false",
         "X-Waraq-veraPDF-Valid": (
             ("true" if result.verapdf_validation["valid"] else "false")

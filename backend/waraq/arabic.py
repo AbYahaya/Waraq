@@ -65,18 +65,44 @@ def strip_arabic_diacritics(text: str) -> str:
 
 
 def to_skeleton(text: str) -> str:
-    """NFC-normalize, strip Tatweel, strip all diacritics, normalize
-    Alif variants — yields the skeletal-letter form used as the lookup
-    key for AR-Referenzbestand matching (§4.15.2 OCR-stage local
-    matching). Whitespace runs collapsed to single spaces.
+    """NFC + Tatweel + diacritic-strip + Alif-variant + long-ā-collapse
+    yielding the skeletal-letter lookup key for AR-Referenzbestand
+    matching (§4.15.2 OCR-stage local matching). Whitespace collapsed.
 
-    Alif normalization is deliberately scoped to this function only —
+    Hafs Uthmani / modern bare-letter alignment: Hafs uses a dagger
+    alef (U+0670) where modern text uses an explicit alif (U+0627),
+    AND inconsistently between the two: `ذلك` is defective in both,
+    while `الكتاب` is plene in modern bare but defective (dagger-
+    alef) in Hafs (`ٱلْكِتَٰبُ`). To align both consistently we:
+
+      1. Strip the dagger alef (along with all other diacritics).
+      2. Strip every non-word-initial U+0627 (explicit alif).
+
+    This drops the long-ā marker uniformly. Both `ذلك` (modern) and
+    `ذَٰلِكَ` (Hafs) collapse to `ذلك`; both `الكتاب` (modern) and
+    `ٱلْكِتَٰبُ` (Hafs) collapse to `الكتب`. The leading "ال" definite
+    article preserves its initial alif because step 2 keeps word-
+    initial alifs.
+
+    Trade-off: this collapses some distinct words to the same
+    skeleton (e.g., `كاتب` "writer" and `كتب` "he wrote"). For v1.0
+    Qurʾān recognition that's acceptable — `find_by_skeleton` returns
+    a list, the consensus engine handles disambiguation, and the
+    morphology-aware refinement is Phase 4 (CAMeL Tools).
+
+    Alif/long-ā collapse is deliberately scoped to this function —
     `normalize_for_compare` (V-0 detector) does NOT apply it, so the
     Hadith §4.16.7 V-0/V-1 boundary stays canon-faithful."""
     nfc = unicodedata.normalize("NFC", text)
     stripped = strip_arabic_diacritics(nfc)
     normalized = stripped.translate(_OCR_LETTER_NORMALIZATION)
-    return " ".join(normalized.split())
+    out_words: list[str] = []
+    for word in normalized.split():
+        if not word:
+            continue
+        # Keep the first character; strip any U+0627 elsewhere.
+        out_words.append(word[0] + word[1:].replace("ا", ""))
+    return " ".join(out_words)
 
 
 def normalize_for_compare(text: str) -> str:

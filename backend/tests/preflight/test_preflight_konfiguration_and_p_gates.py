@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.audit._helpers import seed_project, seed_segment
 from tests.preflight._helpers import (
+    canonical_pflichtfrage_payload,
     seed_audit_job,
     seed_befund,
     seed_hadith,
@@ -50,13 +51,14 @@ async def _confirm_all_four(
     preflight_run,
 ):
     for i in range(1, PFLICHTFRAGE_COUNT + 1):
+        key, ans = canonical_pflichtfrage_payload(i)
         await confirm_pflichtfrage(
             session=session,
             project_uuid=project_uuid,
             preflight_run_uuid=preflight_run.job_uuid,
             frage_index=i,
-            frage_key=f"frage_{i}",
-            answer={"value": "yes"},
+            frage_key=key,
+            answer=ans,
         )
 
 
@@ -83,13 +85,14 @@ class TestPflichtfrageActiveConfirmationRequired:
         run = await start_preflight_run(session=db_session, project_uuid=project.project_uuid)
         # Only confirm 2 out of 4.
         for i in (1, 2):
+            key, ans = canonical_pflichtfrage_payload(i)
             await confirm_pflichtfrage(
                 session=db_session,
                 project_uuid=project.project_uuid,
                 preflight_run_uuid=run.job_uuid,
                 frage_index=i,
-                frage_key=f"frage_{i}",
-                answer={},
+                frage_key=key,
+                answer=ans,
             )
         ev = await evaluate_preflight(
             session=db_session, project_uuid=project.project_uuid, preflight_run=run
@@ -151,12 +154,13 @@ class TestProfilePrefillsButNotReplaces:
         project = await seed_project(db_session)
         # Save a full set of profile pre-fills.
         for i in range(1, PFLICHTFRAGE_COUNT + 1):
+            key, ans = canonical_pflichtfrage_payload(i)
             await save_export_profile_prefill(
                 session=db_session,
                 project_uuid=project.project_uuid,
                 frage_index=i,
-                frage_key=f"frage_{i}",
-                prefilled_answer={"value": "saved"},
+                frage_key=key,
+                prefilled_answer=ans,
             )
         run = await start_preflight_run(session=db_session, project_uuid=project.project_uuid)
         ev = await evaluate_preflight(
@@ -172,12 +176,13 @@ class TestProfilePrefillsButNotReplaces:
     ) -> None:
         project = await seed_project(db_session)
         for i in range(1, PFLICHTFRAGE_COUNT + 1):
+            key, ans = canonical_pflichtfrage_payload(i)
             await save_export_profile_prefill(
                 session=db_session,
                 project_uuid=project.project_uuid,
                 frage_index=i,
-                frage_key=f"frage_{i}",
-                prefilled_answer={"value": "saved"},
+                frage_key=key,
+                prefilled_answer=ans,
             )
         run = await start_preflight_run(session=db_session, project_uuid=project.project_uuid)
         await _confirm_all_four(db_session, project_uuid=project.project_uuid, preflight_run=run)
@@ -350,25 +355,27 @@ class TestExportlaufEreignisAlways:
         await evaluate_preflight(
             session=db_session, project_uuid=project.project_uuid, preflight_run=run
         )
+        key1, ans1 = canonical_pflichtfrage_payload(1)
         await confirm_pflichtfrage(
             session=db_session,
             project_uuid=project.project_uuid,
             preflight_run_uuid=run.job_uuid,
             frage_index=1,
-            frage_key="f1",
-            answer={},
+            frage_key=key1,
+            answer=ans1,
         )
         await evaluate_preflight(
             session=db_session, project_uuid=project.project_uuid, preflight_run=run
         )
         for i in (2, 3, 4):
+            key, ans = canonical_pflichtfrage_payload(i)
             await confirm_pflichtfrage(
                 session=db_session,
                 project_uuid=project.project_uuid,
                 preflight_run_uuid=run.job_uuid,
                 frage_index=i,
-                frage_key=f"f{i}",
-                answer={},
+                frage_key=key,
+                answer=ans,
             )
         await evaluate_preflight(
             session=db_session, project_uuid=project.project_uuid, preflight_run=run

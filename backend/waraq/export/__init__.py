@@ -30,6 +30,7 @@ from waraq.export.artefact_storage import (
 )
 from waraq.export.enums import ExportGateMode
 from waraq.export.exceptions import (
+    CanonRuleViolationsDetected,
     ExportError,
     ExportNotInExportableState,
     PreflightStateChanged,
@@ -50,6 +51,7 @@ __all__ = [
     "ALLOWLISTED_DECISION_SOURCES",
     "ArtefactStore",
     "ArtefactStoreCommitFailed",
+    "CanonRuleViolationsDetected",
     "ExportConfig",
     "ExportError",
     "ExportGateMode",

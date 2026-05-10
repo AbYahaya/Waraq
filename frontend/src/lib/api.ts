@@ -13,6 +13,11 @@
 
 import { useAuthStore } from "@/store/auth";
 
+const API_PREFIX = "/api";
+
+export const apiPath = (path: string): string =>
+  path.startsWith("http") ? path : `${API_PREFIX}${path}`;
+
 export class ApiError extends Error {
   status: number;
   detail: string;
@@ -52,7 +57,7 @@ async function request<T>(path: string, init: ApiInit = {}): Promise<T> {
     if (token) finalHeaders["Authorization"] = `Bearer ${token}`;
   }
 
-  const resp = await fetch(path, { ...rest, body: payload, headers: finalHeaders });
+  const resp = await fetch(apiPath(path), { ...rest, body: payload, headers: finalHeaders });
 
   if (resp.status === 401 && auth) {
     // Server told us the token is gone or expired — drop it and let the

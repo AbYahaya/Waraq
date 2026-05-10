@@ -41,6 +41,7 @@ from waraq.api.routers import (
     history_router,
     lock_router,
     morphology_router,
+    notifications_router,
     ocr_export_router,
     ocr_review_router,
     ocr_router,
@@ -50,8 +51,10 @@ from waraq.api.routers import (
     promotion_router,
     readout_router,
     release_gate_router,
+    review_router,
     rule_binding_router,
     segments_router,
+    toc_router,
     translation_router,
     uploads_router,
 )
@@ -92,6 +95,12 @@ def create_app() -> FastAPI:
     app.include_router(ocr_export_router.router)
     app.include_router(morphology_router.router)
     app.include_router(admin_router.router)
+    # Phase 3 sub-batch D — difficulty + guided review.
+    app.include_router(review_router.router)
+    # Phase 3 sub-batch E — TOC handling.
+    app.include_router(toc_router.router)
+    # Phase 3 sub-batch F — notifications + idle-timeout support.
+    app.include_router(notifications_router.router)
     return app
 
 

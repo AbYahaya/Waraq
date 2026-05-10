@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid as _uuid
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,24 @@ from waraq.preflight.enums import HadithStellenTyp
 from waraq.preflight.hadith import record_hadith_status
 from waraq.schemas import Job, KonsistenzBefund, OcrErrorInstance, Project, Segment
 from waraq.schemas.enums import JobState
+
+
+def canonical_pflichtfrage_payload(frage_index: int) -> tuple[str, dict[str, Any]]:
+    """Return (frage_key, valid_answer) for the canonical §4.7.2 Pflichtfrage
+    at `frage_index` ∈ {1,2,3,4}.
+
+    Used by tests that need to confirm Pflichtfragen end-to-end with
+    payloads that satisfy the §4.7.2 answer-schema validation.
+    """
+    if frage_index == 1:
+        return "header_heading_level", {"heading_level": 1}
+    if frage_index == 2:
+        return "chapter_break_heading_level", {"heading_level": 2}
+    if frage_index == 3:
+        return "toc_position", {"position": "front"}
+    if frage_index == 4:
+        return "display_arabic_chapter_headings", {"display": True}
+    raise AssertionError(f"frage_index {frage_index!r} out of canonical 1..4 range")
 
 
 async def seed_audit_job(session: AsyncSession, *, project: Project) -> Job:

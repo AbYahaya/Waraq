@@ -170,27 +170,43 @@ class TestPflichtfragenFromDecisionEvents:
         """Saved profile pre-fills with 'PROFILE' answers; active
         confirmations record 'ACTIVE'. The export_config payload MUST
         contain the ACTIVE answers — never the profile answers."""
+        from tests.preflight._helpers import canonical_pflichtfrage_payload
+
         project, account_uuid = await seed_project_with_account(db_session)
         await seed_segment_with_revision(db_session, project=project, text="x\n---\ny")
-        # Save profile pre-fills with stale answers.
+
+        # Helper: the PROFILE pre-fill carries a deliberately *different*
+        # but still canonical-shape answer than the ACTIVE confirmation,
+        # so the test can verify the export reads the ACTIVE one.
+        def _profile_payload(idx: int) -> tuple[str, dict[str, object]]:
+            key, _ = canonical_pflichtfrage_payload(idx)
+            if idx in (1, 2):
+                return key, {"heading_level": 6}
+            if idx == 3:
+                return key, {"position": "back"}
+            return key, {"display": False}
+
+        # Save profile pre-fills with the "stale" canonical-shape answers.
         for i in range(1, 5):
+            key, ans = _profile_payload(i)
             await save_export_profile_prefill(
                 session=db_session,
                 project_uuid=project.project_uuid,
                 frage_index=i,
-                frage_key=f"frage_{i}",
-                prefilled_answer={"value": "PROFILE"},
+                frage_key=key,
+                prefilled_answer=ans,
             )
         run = await start_preflight_run(session=db_session, project_uuid=project.project_uuid)
-        # Active confirmations with different answers.
+        # Active confirmations with the canonical default (different from profile).
         for i in range(1, 5):
+            key, ans = canonical_pflichtfrage_payload(i)
             await confirm_pflichtfrage(
                 session=db_session,
                 project_uuid=project.project_uuid,
                 preflight_run_uuid=run.job_uuid,
                 frage_index=i,
-                frage_key=f"frage_{i}",
-                answer={"value": "ACTIVE"},
+                frage_key=key,
+                answer=ans,
             )
 
         # The Sprint-4 evaluator counts confirmations against the
@@ -201,21 +217,21 @@ class TestPflichtfragenFromDecisionEvents:
         # exercises (export-side query).
         export_attempt_id = str(new_uuid())
         for i in range(1, 5):
+            key, ans = canonical_pflichtfrage_payload(i)
             await confirm_pflichtfrage(
                 session=db_session,
                 project_uuid=project.project_uuid,
                 preflight_run_uuid=run.job_uuid,
                 frage_index=i,
-                frage_key=f"frage_{i}",
-                answer={"value": "ACTIVE"},
+                frage_key=key,
+                answer=ans,
             )
-            # Bind one of the confirmation DEs to the export attempt.
-            # The export reads DEs filtered by related_export_attempt_id.
 
         # Re-write a confirmation tagged with the EXPORT attempt id.
         from waraq.decisions import create_decision_event
 
         for i in range(1, 5):
+            key, ans = canonical_pflichtfrage_payload(i)
             await create_decision_event(
                 session=db_session,
                 scope_type=ScopeType.PROJECT,
@@ -224,8 +240,8 @@ class TestPflichtfragenFromDecisionEvents:
                 decision_source=DecisionSource.PREFLIGHT_CONFIRMATION,
                 content={
                     "frage_index": i,
-                    "frage_key": f"frage_{i}",
-                    "answer": {"value": "ACTIVE"},
+                    "frage_key": key,
+                    "answer": ans,
                 },
                 related_export_attempt_id=export_attempt_id,
             )
@@ -248,9 +264,12 @@ class TestPflichtfragenFromDecisionEvents:
         pf_list = export_config["pflichtfragen"]
         assert len(pf_list) == 4
         for entry in pf_list:
-            assert entry["answer"] == {"value": "ACTIVE"}
-            # Critically — never PROFILE.
-            assert entry["answer"] != {"value": "PROFILE"}
+            idx = entry["frage_index"]
+            _, expected_active = canonical_pflichtfrage_payload(idx)
+            _, profile = _profile_payload(idx)
+            assert entry["answer"] == expected_active
+            # Critically — never the profile-pre-fill answer.
+            assert entry["answer"] != profile
 
 
 # --- Preflight-Recheck-At-Job-Start-Test ------------------------------

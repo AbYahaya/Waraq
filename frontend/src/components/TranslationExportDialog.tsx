@@ -16,7 +16,7 @@
  * current state.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,13 @@ import { queries } from "@/lib/queries";
 import type { Job, Page, Segment } from "@/lib/types";
 import { useAuthStore } from "@/store/auth";
 import { cn } from "@/lib/utils";
+
+interface TranslationJobPayload {
+  chunks_total?: number;
+  chunks_translated?: number;
+  chunks_processed?: number;
+  cancel_requested?: boolean;
+}
 
 interface PreflightRunResponse {
   run_uuid: string;
@@ -61,12 +68,57 @@ interface ExportRunResponse {
   n_segments_exported: number;
 }
 
-const PFLICHTFRAGEN: ReadonlyArray<{ index: number; key: string; label: string }> = [
-  { index: 1, key: "frage_1", label: "Page break level (Kapitelumbruch-Ebene) confirmed?" },
-  { index: 2, key: "frage_2", label: "Footnote restart strategy confirmed?" },
-  { index: 3, key: "frage_3", label: "Heading style mapping confirmed?" },
-  { index: 4, key: "frage_4", label: "TOC inclusion confirmed?" },
+// Canonical 4 Pflichtfragen per §4.7.2 — keys + answer shapes are
+// validated server-side via per-question Pydantic schemas. The shape
+// of `answer` differs per question; sending the wrong key or shape
+// gives a 400.
+type PflichtfrageAnswer =
+  | { heading_level: number }
+  | { position: "front" | "back" }
+  | { display: boolean };
+
+interface PflichtfrageDef {
+  index: 1 | 2 | 3 | 4;
+  key:
+    | "header_heading_level"
+    | "chapter_break_heading_level"
+    | "toc_position"
+    | "display_arabic_chapter_headings";
+  label: string;
+}
+
+const PFLICHTFRAGEN: ReadonlyArray<PflichtfrageDef> = [
+  {
+    index: 1,
+    key: "header_heading_level",
+    label: "Which heading level should be displayed in the header?",
+  },
+  {
+    index: 2,
+    key: "chapter_break_heading_level",
+    label: "Which heading level marks chapter breaks?",
+  },
+  { index: 3, key: "toc_position", label: "Position of the TOC (front / back)?" },
+  {
+    index: 4,
+    key: "display_arabic_chapter_headings",
+    label: "Display Arabic chapter headings in the body text?",
+  },
 ];
+
+interface PflichtfragenState {
+  header_heading_level: number;
+  chapter_break_heading_level: number;
+  toc_position: "front" | "back";
+  display_arabic_chapter_headings: boolean;
+}
+
+const DEFAULT_PFLICHTFRAGEN_STATE: PflichtfragenState = {
+  header_heading_level: 1,
+  chapter_break_heading_level: 1,
+  toc_position: "front",
+  display_arabic_chapter_headings: true,
+};
 
 export interface TranslationExportDialogProps {
   open: boolean;
@@ -85,11 +137,27 @@ export function TranslationExportDialog({
   const [translationJob, setTranslationJob] = useState<Job | null>(null);
   const [preflightRunUuid, setPreflightRunUuid] = useState<string | null>(null);
   const [confirmedFragen, setConfirmedFragen] = useState<Set<number>>(new Set());
+  const [pflichtfragenAnswers, setPflichtfragenAnswers] = useState<PflichtfragenState>(
+    DEFAULT_PFLICHTFRAGEN_STATE,
+  );
   const [preflightState, setPreflightState] = useState<PreflightEvaluateResponse | null>(
     null,
   );
   const [exportResult, setExportResult] = useState<ExportRunResponse | null>(null);
   const [projectTitle, setProjectTitle] = useState(projectName);
+
+  const buildAnswer = (key: PflichtfrageDef["key"]): PflichtfrageAnswer => {
+    switch (key) {
+      case "header_heading_level":
+        return { heading_level: pflichtfragenAnswers.header_heading_level };
+      case "chapter_break_heading_level":
+        return { heading_level: pflichtfragenAnswers.chapter_break_heading_level };
+      case "toc_position":
+        return { position: pflichtfragenAnswers.toc_position };
+      case "display_arabic_chapter_headings":
+        return { display: pflichtfragenAnswers.display_arabic_chapter_headings };
+    }
+  };
 
   const pagesQ = useQuery({
     ...queries.projectPages(projectUuid),
@@ -121,12 +189,48 @@ export function TranslationExportDialog({
         `/projects/${projectUuid}/translation-jobs`,
         { segment_uuids: segmentUuids },
       );
+      // /run is now async — returns 202 immediately with state=pending.
+      // The poll query below picks up the running state + progress.
       return api.post<Job>(`/translation-jobs/${job.job_uuid}/run`);
     },
     onSuccess: (j) => setTranslationJob(j),
     onError: (err) =>
       setError(err instanceof ApiError ? err.detail : "Translation failed"),
   });
+
+  // Poll the job while it's still active so we can show a progress bar
+  // + react to completion. Stop polling on terminal states.
+  const isJobActive =
+    translationJob !== null &&
+    (translationJob.state === "pending" || translationJob.state === "running");
+  const jobPollQuery = useQuery<Job>({
+    queryKey: ["translation-job", translationJob?.job_uuid],
+    enabled: isJobActive,
+    refetchInterval: isJobActive ? 1500 : false,
+    queryFn: () => api.get<Job>(`/translation-jobs/${translationJob!.job_uuid}`),
+  });
+
+  useEffect(() => {
+    if (jobPollQuery.data) setTranslationJob(jobPollQuery.data);
+  }, [jobPollQuery.data]);
+
+  const cancelMutation = useMutation({
+    mutationFn: () => {
+      if (!translationJob) throw new Error("no job to cancel");
+      return api.post<Job>(`/translation-jobs/${translationJob.job_uuid}/cancel`);
+    },
+    onSuccess: (j) => setTranslationJob(j),
+    onError: (err) =>
+      setError(err instanceof ApiError ? err.detail : "Cancel failed"),
+  });
+
+  const jobPayload = (translationJob?.payload ?? {}) as TranslationJobPayload;
+  const chunksTotal = jobPayload.chunks_total ?? segmentUuids.length;
+  const chunksTranslated = jobPayload.chunks_translated ?? 0;
+  const chunksProcessed = jobPayload.chunks_processed ?? 0;
+  const progressPct = chunksTotal > 0 ? Math.min(100, (chunksProcessed / chunksTotal) * 100) : 0;
+  const cancelRequested = jobPayload.cancel_requested === true;
+  const jobError = translationJob?.error as { phase?: string; repr?: string } | null | undefined;
 
   const openPreflightMutation = useMutation({
     mutationFn: () =>
@@ -146,7 +250,7 @@ export function TranslationExportDialog({
       if (!f || !preflightRunUuid) throw new Error("inconsistent state");
       await api.post(
         `/projects/${projectUuid}/preflight/runs/${preflightRunUuid}/pflichtfragen`,
-        { frage_index: f.index, frage_key: f.key, answer: { value: "yes" } },
+        { frage_index: f.index, frage_key: f.key, answer: buildAnswer(f.key) },
       );
       return f.index;
     },
@@ -191,6 +295,7 @@ export function TranslationExportDialog({
     setTranslationJob(null);
     setPreflightRunUuid(null);
     setConfirmedFragen(new Set());
+    setPflichtfragenAnswers(DEFAULT_PFLICHTFRAGEN_STATE);
     setPreflightState(null);
     setExportResult(null);
   };
@@ -234,36 +339,25 @@ export function TranslationExportDialog({
         onOpenChange(o);
       }}
     >
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Export translation</DialogTitle>
-          <DialogDescription>
-            Translates every segment, runs preflight (4 Pflichtfragen +
-            audit/consistency gates), then writes the EXPORT_EVENT and
-            offers DOCX + PDF download.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4">
+      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+        <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+          <DialogHeader>
+            <DialogTitle>Export translation</DialogTitle>
+            <DialogDescription>
+              Translates every segment, runs preflight (4 Pflichtfragen +
+              audit/consistency gates), then writes the EXPORT_EVENT and
+              offers DOCX + PDF download.
+            </DialogDescription>
+          </DialogHeader>
           {/* --- Stage 1: translation -------------------------------- */}
           <section className="rounded border p-3 space-y-2">
             <header className="text-sm font-medium">1. Translate</header>
             <p className="text-xs text-muted-foreground">
               {segmentUuids.length} segment(s) under this project. Runs
-              synchronously against OpenAI; allow ~1 second per segment.
+              segment-by-segment with §3.6 cross-check; you can cancel
+              while in progress.
             </p>
-            {translationJob ? (
-              <p
-                className={cn(
-                  "text-xs font-medium",
-                  translationJob.state === "completed"
-                    ? "text-emerald-700"
-                    : "text-amber-700",
-                )}
-              >
-                Translation job: {translationJob.state}
-              </p>
-            ) : (
+            {!translationJob && (
               <Button
                 size="sm"
                 disabled={
@@ -274,10 +368,85 @@ export function TranslationExportDialog({
                   translateMutation.mutate();
                 }}
               >
-                {translateMutation.isPending
-                  ? "Translating…"
-                  : "Run translation"}
+                {translateMutation.isPending ? "Starting…" : "Run translation"}
               </Button>
+            )}
+            {translationJob && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span
+                    className={cn(
+                      "font-medium",
+                      translationJob.state === "completed" && "text-emerald-700",
+                      translationJob.state === "failed" && "text-destructive",
+                      (translationJob.state === "running" ||
+                        translationJob.state === "pending") &&
+                        "text-amber-700",
+                    )}
+                  >
+                    {translationJob.state}
+                    {cancelRequested &&
+                      translationJob.state === "running" &&
+                      " (cancelling…)"}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {chunksProcessed}/{chunksTotal} segment(s)
+                    {chunksProcessed !== chunksTranslated &&
+                      ` — ${chunksTranslated} translated, ${chunksProcessed - chunksTranslated} skipped`}
+                  </span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded bg-muted">
+                  <div
+                    className={cn(
+                      "h-full transition-[width] duration-300 ease-out",
+                      translationJob.state === "completed"
+                        ? "bg-emerald-600"
+                        : translationJob.state === "failed"
+                          ? "bg-destructive"
+                          : "bg-amber-500",
+                    )}
+                    style={{ width: `${progressPct}%` }}
+                  />
+                </div>
+                {(translationJob.state === "running" ||
+                  translationJob.state === "pending") && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={cancelMutation.isPending || cancelRequested}
+                    onClick={() => {
+                      setError(null);
+                      cancelMutation.mutate();
+                    }}
+                  >
+                    {cancelRequested ? "Cancelling…" : "Cancel translation"}
+                  </Button>
+                )}
+                {translationJob.state === "failed" && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-destructive">
+                      {jobError?.phase === "user_cancelled"
+                        ? "Cancelled."
+                        : `Failed (${jobError?.phase ?? "unknown phase"}).`}
+                      {jobError?.repr && jobError.phase !== "user_cancelled" && (
+                        <span className="block opacity-70 font-mono break-all">
+                          {jobError.repr}
+                        </span>
+                      )}
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setError(null);
+                        setTranslationJob(null);
+                      }}
+                    >
+                      Try again
+                    </Button>
+                  </div>
+                )}
+              </div>
             )}
           </section>
 
@@ -310,28 +479,87 @@ export function TranslationExportDialog({
                   Confirm each Pflichtfrage (Sprint 4 §A — active
                   confirmation per export run).
                 </p>
-                <ul className="space-y-1">
-                  {PFLICHTFRAGEN.map((f) => (
-                    <li
-                      key={f.key}
-                      className="flex items-center gap-2 text-sm"
-                    >
-                      <Button
-                        size="sm"
-                        variant={
-                          confirmedFragen.has(f.index) ? "default" : "outline"
-                        }
-                        disabled={confirmedFragen.has(f.index) || confirmFrageMutation.isPending}
-                        onClick={() => {
-                          setError(null);
-                          confirmFrageMutation.mutate(f.index);
-                        }}
+                <ul className="space-y-2">
+                  {PFLICHTFRAGEN.map((f) => {
+                    const done = confirmedFragen.has(f.index);
+                    return (
+                      <li
+                        key={f.key}
+                        className="flex flex-col gap-1 rounded border p-2"
                       >
-                        {confirmedFragen.has(f.index) ? "✓" : `Confirm ${f.index}`}
-                      </Button>
-                      <span className="text-xs">{f.label}</span>
-                    </li>
-                  ))}
+                        <span className="text-xs font-medium">
+                          {f.index}. {f.label}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {(f.key === "header_heading_level" ||
+                            f.key === "chapter_break_heading_level") && (
+                            <select
+                              className="h-8 rounded border bg-background px-2 text-sm"
+                              disabled={done}
+                              value={pflichtfragenAnswers[f.key]}
+                              onChange={(e) =>
+                                setPflichtfragenAnswers((prev) => ({
+                                  ...prev,
+                                  [f.key]: Number(e.target.value),
+                                }))
+                              }
+                            >
+                              {[1, 2, 3, 4, 5, 6].map((n) => (
+                                <option key={n} value={n}>
+                                  Heading {n}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          {f.key === "toc_position" && (
+                            <select
+                              className="h-8 rounded border bg-background px-2 text-sm"
+                              disabled={done}
+                              value={pflichtfragenAnswers.toc_position}
+                              onChange={(e) =>
+                                setPflichtfragenAnswers((prev) => ({
+                                  ...prev,
+                                  toc_position: e.target.value as "front" | "back",
+                                }))
+                              }
+                            >
+                              <option value="front">Front</option>
+                              <option value="back">Back</option>
+                            </select>
+                          )}
+                          {f.key === "display_arabic_chapter_headings" && (
+                            <label className="flex items-center gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                disabled={done}
+                                checked={
+                                  pflichtfragenAnswers.display_arabic_chapter_headings
+                                }
+                                onChange={(e) =>
+                                  setPflichtfragenAnswers((prev) => ({
+                                    ...prev,
+                                    display_arabic_chapter_headings: e.target.checked,
+                                  }))
+                                }
+                              />
+                              <span>Display Arabic headings</span>
+                            </label>
+                          )}
+                          <Button
+                            size="sm"
+                            variant={done ? "default" : "outline"}
+                            disabled={done || confirmFrageMutation.isPending}
+                            onClick={() => {
+                              setError(null);
+                              confirmFrageMutation.mutate(f.index);
+                            }}
+                          >
+                            {done ? "✓ Confirmed" : "Confirm"}
+                          </Button>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
                 <Button
                   size="sm"
@@ -444,7 +672,7 @@ export function TranslationExportDialog({
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="pt-3">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Close
           </Button>

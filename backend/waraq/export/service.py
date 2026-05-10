@@ -34,6 +34,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from waraq.canon_rules import verify_canon_rules_for_export
 from waraq.decisions import create_decision_event
 from waraq.eventing import log_event
 from waraq.export.artefact_storage import (
@@ -44,6 +45,7 @@ from waraq.export.artefact_storage import (
 from waraq.export.docx_builder import build_translation_docx
 from waraq.export.enums import ExportGateMode
 from waraq.export.exceptions import (
+    CanonRuleViolationsDetected,
     ExportNotInExportableState,
     PreflightStateChanged,
 )
@@ -246,6 +248,48 @@ async def run_export_job(
         raise PreflightStateChanged(
             f"preflight state at job start is {preflight_now.state.value!r}; "
             "must be `exportierbar` or `exportierbar_mit_warnungen`."
+        )
+
+    # --- Step 2b: §2.2 canon-rule pre-export verifier (Phase 3 sub-batch B) ---
+    # Defense-in-depth: when any write path bypassed `apply_all` the
+    # auto-normalize, residual digit / EI2 violations are caught here.
+    # Same shape as the PreflightStateChanged path above — fail Job,
+    # write Log-Eintrag, raise; no artefact, no EXPORT_EVENT.
+    canon_violations = await verify_canon_rules_for_export(
+        session=session,
+        project_uuid=config.project_uuid,
+    )
+    if canon_violations:
+        await fail_job(
+            session=session,
+            job=job,
+            error={
+                "error_class": "CanonRuleViolationsDetected",
+                "phase": "canon_rule_recheck",
+                "reason": "canon_rule_violations",
+                "violations": [
+                    {"satz_uuid": str(v.satz_uuid), "kind": v.kind.value} for v in canon_violations
+                ],
+            },
+        )
+        await log_event(
+            session=session,
+            operation_type="export_failed",
+            scope_type=ScopeType.PROJECT,
+            scope_uuid=config.project_uuid,
+            result={
+                "job_uuid": str(job.job_uuid),
+                "export_attempt_id": config.current_export_attempt_id,
+                "phase": "canon_rule_recheck",
+                "reason": "canon_rule_violations",
+                "violation_count": len(canon_violations),
+            },
+        )
+        raise CanonRuleViolationsDetected(
+            f"§2.2 canon-rule violations detected on {len(canon_violations)} segment "
+            f"row(s) at export-job start; re-translate or manually fix the affected "
+            "segments before retrying export.",
+            violations=canon_violations,
         )
 
     gate_mode = (

@@ -47,7 +47,14 @@ from waraq.preflight.enums import (
     PreflightState,
     WarningSlot,
 )
-from waraq.preflight.exceptions import PflichthinweisCannotBeWarning
+from waraq.preflight.exceptions import GuardNearBlocked, PflichthinweisCannotBeWarning
+from waraq.preflight.guard_near import (
+    FontResolver,
+    GuardNearResult,
+    RtlDetector,
+    StyleTemplateDetector,
+    run_guard_near_checks,
+)
 from waraq.preflight.hadith import derive_hadith_klasse
 from waraq.preflight.konfiguration import PFLICHTFRAGE_COUNT
 from waraq.schemas import (
@@ -103,14 +110,38 @@ async def start_preflight_run(
     *,
     session: AsyncSession,
     project_uuid: _uuid.UUID,
+    rtl_detector: RtlDetector | None = None,
+    style_template_detector: StyleTemplateDetector | None = None,
+    font_resolver: FontResolver | None = None,
 ) -> Job:
     """Open a fresh preflight run as a Job (state=PENDING → RUNNING).
 
-    Returns the Job. Its UUID is the `preflight_run_uuid` /
-    `related_export_attempt_id` callers pass to
+    Per §4.7.3, runs the guard-near pre-checks BEFORE creating the
+    Job. If any of the four canonical guard-near rules (digit /
+    RTL / style template / font) fires, raises `GuardNearBlocked` —
+    the preflight dialog is not opened, no Job row created.
+
+    Returns the Job on success. Its UUID is the
+    `preflight_run_uuid` / `related_export_attempt_id` callers pass to
     `confirm_pflichtfrage` and `accept_warning_gate` for the rest of
-    the run.
+    the run. The detector parameters mirror those on
+    `run_guard_near_checks`.
     """
+    guard_result = await run_guard_near_checks(
+        session=session,
+        project_uuid=project_uuid,
+        rtl_detector=rtl_detector,
+        style_template_detector=style_template_detector,
+        font_resolver=font_resolver,
+    )
+    if not guard_result.passes:
+        blockers = ", ".join(b.value for b in guard_result.blockers)
+        raise GuardNearBlocked(
+            f"Preflight dialog refused to open per §4.7.3 — guard-near "
+            f"violations present: {blockers}",
+            result=guard_result,
+        )
+
     job = Job(
         job_uuid=new_uuid(),
         job_type=JOB_TYPE,
@@ -121,6 +152,29 @@ async def start_preflight_run(
     await session.flush()
     await start_job(session=session, job=job)
     return job
+
+
+async def evaluate_guard_near(
+    *,
+    session: AsyncSession,
+    project_uuid: _uuid.UUID,
+    rtl_detector: RtlDetector | None = None,
+    style_template_detector: StyleTemplateDetector | None = None,
+    font_resolver: FontResolver | None = None,
+) -> GuardNearResult:
+    """Run guard-near checks without attempting to open a run.
+
+    The UI uses this to surface blockers preemptively — show the
+    "preflight unavailable" panel and the resolution paths before
+    the user tries to open the dialog.
+    """
+    return await run_guard_near_checks(
+        session=session,
+        project_uuid=project_uuid,
+        rtl_detector=rtl_detector,
+        style_template_detector=style_template_detector,
+        font_resolver=font_resolver,
+    )
 
 
 async def evaluate_preflight(
@@ -535,6 +589,7 @@ __all__ = [
     "accept_warning_gate",
     "assert_pflichthinweis_not_routed_as_warning",
     "complete_preflight_run",
+    "evaluate_guard_near",
     "evaluate_preflight",
     "fail_preflight_run",
     "start_preflight_run",

@@ -208,6 +208,12 @@ class TestT_1_3_2_SatzUuidStillScoped:
             "translation_observations",
             "audit_befunde",
             "hadith_passage_status",
+            # Phase 2A — §4.16.6 Hadith result tables (Level 2 + Level 3)
+            # anchor results to Segment by canonical design.
+            "hadith_single_source_results",
+            "hadith_aggregate_results",
+            # Phase 2F-A — §4.15.3 project Quranic passage snapshot.
+            "project_quran_passages",
         }
     )
 

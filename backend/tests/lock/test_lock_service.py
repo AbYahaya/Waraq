@@ -328,6 +328,13 @@ class TestT_5_1_1_AtomicityOnFailure:
         before_po = (
             await db_session.execute(select(func.count()).select_from(ProvenanceObject))
         ).scalar_one()
+        before_po_manual = (
+            await db_session.execute(
+                select(func.count())
+                .select_from(ProvenanceObject)
+                .where(ProvenanceObject.po_type == POType.MANUAL_.value)
+            )
+        ).scalar_one()
 
         await set_lock(session=db_session, segment=segment, level=LockFlag.MANUAL_LOCAL)
         await release_lock(session=db_session, segment=segment)
@@ -348,7 +355,7 @@ class TestT_5_1_1_AtomicityOnFailure:
 
         # 2 lock changes → exactly 2 DEs and 2 MANUAL_-POs.
         assert after_de == before_de + 2
-        assert after_po_manual == 2
+        assert after_po_manual == before_po_manual + 2
         assert after_po_total == before_po + 2
 
 

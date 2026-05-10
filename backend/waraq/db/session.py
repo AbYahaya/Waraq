@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     # endpoints "fully unspecified – active work front". Default
     # placeholder; real endpoint per deployment.
     dorar_net_base_url: str = "https://dorar.net/dorar_api.json"
+    # Resend (Phase 3 sub-batch F email-notifications channel per §2.1
+    # / §3.6). Empty default disables the email-channel cleanly: the
+    # notification service still writes the in-app row but skips the
+    # email send and leaves `email_sent_at` NULL on the row.
+    resend_api_key: str = ""
+    # Sender address surfaced to recipients on email notifications.
+    # When unset OR the API key is unset, email send is disabled.
+    resend_from_email: str = "Waraq <noreply@waraq.local>"
 
 
 @lru_cache(maxsize=1)

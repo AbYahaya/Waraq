@@ -47,3 +47,26 @@ def enforce_ei2_transliteration(text: str) -> str:
     # general "dj" replacement.
     out = out.replace("DJ", "J").replace("Dj", "J").replace("dj", "j")
     return out
+
+
+def has_ei2_violations(text: str) -> bool:
+    """True if `text` contains any glyph the EI2-with-Q-and-J rule rewrites.
+
+    Predicate counterpart to `enforce_ei2_transliteration`. Used by the
+    Phase 3 sub-batch B pre-export verifier as defense-in-depth: when
+    auto-normalize at translation output and on the manual-edit save
+    path runs as expected, this returns False everywhere — but if any
+    write path bypasses normalization (e.g., a raw DB insert from a
+    future tool), the verifier catches the leftover violation before
+    export ships.
+
+    The substring checks for `Dj`/`dj`/`DJ` are CASE-SENSITIVE on
+    purpose: `enforce_ei2_transliteration` only rewrites those three
+    forms (it does NOT touch `dJ` or other mixed-case oddities — those
+    are out of scope for EI2). The detector mirrors the rewriter exactly.
+    """
+    if not text:
+        return False
+    if _K_DOT_BELOW_CAP in text or _K_DOT_BELOW_LO in text:
+        return True
+    return "DJ" in text or "Dj" in text or "dj" in text

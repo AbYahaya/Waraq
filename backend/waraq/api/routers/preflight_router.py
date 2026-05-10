@@ -1,13 +1,16 @@
-"""M5 closeout — Preflight HTTP endpoints.
+"""M5 closeout + Phase 3 sub-batch A — Preflight HTTP endpoints.
 
 Wraps `waraq.preflight` so the M4 UI can drive the four canonical
 Pflichtfragen + final evaluation entirely through HTTP.
 
 Flow expected by the UI:
-1. POST /projects/{uuid}/preflight/runs                        — open run
-2. POST /projects/{uuid}/preflight/runs/{run_uuid}/pflichtfragen
+0. GET  /preflight/pflichtfragen/definitions                   — canonical 4 questions
+1. GET  /projects/{uuid}/preflight/guard-near                  — §4.7.3 pre-checks
+2. POST /projects/{uuid}/preflight/runs                        — open run (refused on guard-near block)
+3. POST /projects/{uuid}/preflight/runs/{run_uuid}/pflichtfragen
    (×4, one per frage_index 1..4)
-3. POST /projects/{uuid}/preflight/runs/{run_uuid}/evaluate    — final state
+4. POST /projects/{uuid}/preflight/runs/{run_uuid}/pdf-format  — §4.7.2 Digital | Print
+5. POST /projects/{uuid}/preflight/runs/{run_uuid}/evaluate    — final state
 
 The router is read-only with respect to project state; all writes
 happen through the service layer (Decision Events, Log-Einträge,
@@ -26,9 +29,15 @@ from waraq.api._ownership import owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.preflight import (
     PFLICHTFRAGE_COUNT,
+    PFLICHTFRAGEN,
+    GuardNearBlocked,
+    PdfFormatChoice,
     PreflightError,
+    confirm_pdf_format_choice,
     confirm_pflichtfrage,
+    evaluate_guard_near,
     evaluate_preflight,
+    read_pdf_format_choice,
     start_preflight_run,
 )
 from waraq.preflight.service import JOB_TYPE as PREFLIGHT_JOB_TYPE
@@ -78,6 +87,79 @@ async def _resolve_run_or_404(
     return job
 
 
+# --- §4.7.2 Pflichtfragen definitions endpoint -------------------------------
+
+
+class PflichtfrageDefinitionDto(BaseModel):
+    frage_index: int
+    frage_key: str
+    prompt_de: str
+    prompt_en: str
+    answer_schema: dict[str, Any]
+
+
+class PflichtfragenDefinitionsResponse(BaseModel):
+    pflichtfragen: list[PflichtfrageDefinitionDto]
+
+
+@router.get(
+    "/preflight/pflichtfragen/definitions",
+    response_model=PflichtfragenDefinitionsResponse,
+)
+async def list_pflichtfrage_definitions() -> PflichtfragenDefinitionsResponse:
+    """Return the canonical 4 §4.7.2 Pflichtfragen with JSON-schema answers.
+
+    UI clients consume this to render the dialog without hardcoding
+    keys / prompts. Public (no auth) — definitions are not project-scoped.
+    """
+    return PflichtfragenDefinitionsResponse(
+        pflichtfragen=[
+            PflichtfrageDefinitionDto(
+                frage_index=spec.frage_index,
+                frage_key=spec.frage_key,
+                prompt_de=spec.prompt_de,
+                prompt_en=spec.prompt_en,
+                answer_schema=spec.schema.model_json_schema(),
+            )
+            for spec in PFLICHTFRAGEN
+        ]
+    )
+
+
+# --- §4.7.3 Guard-near pre-check preview --------------------------------------
+
+
+class GuardNearResponse(BaseModel):
+    passes: bool
+    blockers: list[str]
+    evidence: dict[str, list[str]]
+
+
+@router.get(
+    "/projects/{project_uuid}/preflight/guard-near",
+    response_model=GuardNearResponse,
+)
+async def get_guard_near_state(
+    project_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> GuardNearResponse:
+    """Run the §4.7.3 guard-near pre-checks without opening a run.
+
+    The UI uses this to show the "preflight unavailable" panel + the
+    canonical resolution paths before the user attempts to open the
+    preflight dialog. Same logic as the gate that runs inside
+    `start_preflight_run`.
+    """
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    result = await evaluate_guard_near(session=session, project_uuid=project_uuid)
+    return GuardNearResponse(
+        passes=result.passes,
+        blockers=[b.value for b in result.blockers],
+        evidence=result.evidence,
+    )
+
+
 @router.post(
     "/projects/{project_uuid}/preflight/runs",
     response_model=PreflightRunResponse,
@@ -89,7 +171,21 @@ async def open_preflight_run(
     current: CurrentAccount,
 ) -> PreflightRunResponse:
     await owned_project_or_404(session, project_uuid, current.account_uuid)
-    job = await start_preflight_run(session=session, project_uuid=project_uuid)
+    try:
+        job = await start_preflight_run(session=session, project_uuid=project_uuid)
+    except GuardNearBlocked as exc:
+        # Per §4.7.3 — preflight dialog refused; surface the blockers
+        # so the UI can render the resolution panel directly. 409 is
+        # the canonical "request can't proceed in current state" code.
+        guard_result = exc.result
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "guard_near_blocked",
+                "blockers": [b.value for b in guard_result.blockers],
+                "evidence": guard_result.evidence,
+            },
+        ) from exc
     return PreflightRunResponse(run_uuid=job.job_uuid, state=job.state)
 
 
@@ -122,6 +218,66 @@ async def confirm_one_pflichtfrage(
     return PflichtfrageConfirmResponse(
         decision_event_uuid=de.decision_event_uuid, frage_index=req.frage_index
     )
+
+
+# --- §4.7.2 PDF format choice (Configuration Layer, separate from the 4 Pflichtfragen) ---
+
+
+class PdfFormatChoiceRequest(BaseModel):
+    choice: PdfFormatChoice
+
+
+class PdfFormatChoiceResponse(BaseModel):
+    decision_event_uuid: _uuid.UUID
+    choice: PdfFormatChoice
+
+
+class PdfFormatChoiceReadResponse(BaseModel):
+    choice: PdfFormatChoice | None
+
+
+@router.post(
+    "/projects/{project_uuid}/preflight/runs/{run_uuid}/pdf-format",
+    response_model=PdfFormatChoiceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def confirm_pdf_format(
+    project_uuid: _uuid.UUID,
+    run_uuid: _uuid.UUID,
+    req: PdfFormatChoiceRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> PdfFormatChoiceResponse:
+    """Active confirmation of the §4.7.2 PDF format choice for the run."""
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    await _resolve_run_or_404(session=session, project_uuid=project_uuid, run_uuid=run_uuid)
+    de = await confirm_pdf_format_choice(
+        session=session,
+        project_uuid=project_uuid,
+        preflight_run_uuid=run_uuid,
+        choice=req.choice,
+        actor_uuid=current.account_uuid,
+    )
+    return PdfFormatChoiceResponse(decision_event_uuid=de.decision_event_uuid, choice=req.choice)
+
+
+@router.get(
+    "/projects/{project_uuid}/preflight/runs/{run_uuid}/pdf-format",
+    response_model=PdfFormatChoiceReadResponse,
+)
+async def get_pdf_format(
+    project_uuid: _uuid.UUID,
+    run_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> PdfFormatChoiceReadResponse:
+    """Read the latest active PDF format choice for the run, or None."""
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    await _resolve_run_or_404(session=session, project_uuid=project_uuid, run_uuid=run_uuid)
+    choice = await read_pdf_format_choice(
+        session=session, project_uuid=project_uuid, preflight_run_uuid=run_uuid
+    )
+    return PdfFormatChoiceReadResponse(choice=choice)
 
 
 @router.post(

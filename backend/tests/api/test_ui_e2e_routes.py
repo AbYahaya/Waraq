@@ -57,15 +57,78 @@ class TestTranslationRun:
         job_uuid = r.json()["job_uuid"]
 
         r = await auth_client.post(f"/translation-jobs/{job_uuid}/run")
+        # /run is now async — returns 202 with state=pending; the
+        # background task drives the loop and is awaited by the ASGI
+        # transport before this call returns. A follow-up GET sees the
+        # final state.
+        assert r.status_code == 202, r.text
+        r = await auth_client.get(f"/translation-jobs/{job_uuid}")
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["state"] == "completed"
+        # Progress counters land in payload — UI uses these to render
+        # the progress bar.
+        assert body["payload"]["chunks_total"] == 1
+        assert body["payload"]["chunks_translated"] == 1
 
     async def test_run_unknown_job_returns_404(self, auth_client: httpx.AsyncClient) -> None:
         from uuid import uuid4
 
         r = await auth_client.post(f"/translation-jobs/{uuid4()}/run")
         assert r.status_code == 404
+
+    async def test_cancel_aborts_background_run(
+        self,
+        auth_client: httpx.AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cancel before /run starts the background task: the task sees
+        cancel_requested=true on its first iteration, fails with
+        phase=user_cancelled, and never calls the translator."""
+        from waraq.api.routers import translation_router as router_mod
+
+        translator_calls: list[str] = []
+
+        async def _track(text: str, ctx: object) -> str:
+            _ = ctx
+            translator_calls.append(text)
+            return f"DE::{text}"
+
+        monkeypatch.setattr(router_mod, "make_openai_translator", lambda: _track)
+        from waraq.translation.gemini_translator import GeminiTranslatorUnconfigured
+
+        def _no_gemini() -> object:
+            raise GeminiTranslatorUnconfigured("test: Gemini stubbed off")
+
+        monkeypatch.setattr(router_mod, "make_gemini_translator", _no_gemini)
+
+        r = await auth_client.post("/projects", json={"name": "p"})
+        project_uuid = r.json()["project_uuid"]
+        f = await make_page_block_segment(project_uuid, text="بسم الله")
+        await auth_client.post(f"/projects/{project_uuid}/release-gate/start-translation", json={})
+        r = await auth_client.post(
+            f"/projects/{project_uuid}/translation-jobs",
+            json={"segment_uuids": [str(f.satz_uuid)]},
+        )
+        job_uuid = r.json()["job_uuid"]
+
+        # Cancel BEFORE /run so the cancel flag is committed when the
+        # background task picks the job up. The first iteration sees
+        # the flag and aborts.
+        r = await auth_client.post(f"/translation-jobs/{job_uuid}/cancel")
+        assert r.status_code == 200
+        assert r.json()["payload"]["cancel_requested"] is True
+
+        r = await auth_client.post(f"/translation-jobs/{job_uuid}/run")
+        assert r.status_code == 202
+
+        r = await auth_client.get(f"/translation-jobs/{job_uuid}")
+        body = r.json()
+        assert body["state"] == "failed"
+        assert body["error"]["phase"] == "user_cancelled"
+        # The translator was never invoked — cancel was respected
+        # before the first chunk's LLM round-trip.
+        assert translator_calls == []
 
     async def test_run_without_openai_key_returns_503(
         self,
@@ -104,10 +167,13 @@ class TestPreflightRoutes:
         run_uuid = r.json()["run_uuid"]
 
         # Confirm all 4 Pflichtfragen.
+        from tests.preflight._helpers import canonical_pflichtfrage_payload
+
         for i in range(1, 5):
+            key, ans = canonical_pflichtfrage_payload(i)
             r = await auth_client.post(
                 f"/projects/{project_uuid}/preflight/runs/{run_uuid}/pflichtfragen",
-                json={"frage_index": i, "frage_key": f"frage_{i}", "answer": {"value": "yes"}},
+                json={"frage_index": i, "frage_key": key, "answer": ans},
             )
             assert r.status_code == 201, r.text
             assert r.json()["frage_index"] == i
@@ -180,15 +246,21 @@ class TestExportTriggerRoute:
         )
         job_uuid = r.json()["job_uuid"]
         r = await auth_client.post(f"/translation-jobs/{job_uuid}/run")
-        assert r.status_code == 200
+        # 202 + background task; verify completion via GET.
+        assert r.status_code == 202
+        r = await auth_client.get(f"/translation-jobs/{job_uuid}")
+        assert r.json()["state"] == "completed"
 
         # Run preflight.
+        from tests.preflight._helpers import canonical_pflichtfrage_payload
+
         r = await auth_client.post(f"/projects/{project_uuid}/preflight/runs")
         run_uuid = r.json()["run_uuid"]
         for i in range(1, 5):
+            key, ans = canonical_pflichtfrage_payload(i)
             await auth_client.post(
                 f"/projects/{project_uuid}/preflight/runs/{run_uuid}/pflichtfragen",
-                json={"frage_index": i, "frage_key": f"frage_{i}", "answer": {"value": "yes"}},
+                json={"frage_index": i, "frage_key": key, "answer": ans},
             )
         r = await auth_client.post(f"/projects/{project_uuid}/preflight/runs/{run_uuid}/evaluate")
         assert r.json()["state"] in ("exportierbar", "exportierbar_mit_warnungen")

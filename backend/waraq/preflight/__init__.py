@@ -22,9 +22,16 @@ from waraq.preflight.enums import (
     PreflightState,
 )
 from waraq.preflight.exceptions import (
+    GuardNearBlocked,
     PflichthinweisCannotBeWarning,
     PreflightError,
     SlotNotImplemented,
+)
+from waraq.preflight.guard_near import (
+    CRITICAL_FONTS,
+    GuardNearResult,
+    GuardNearViolation,
+    run_guard_near_checks,
 )
 from waraq.preflight.hadith import (
     HADITH_ACTION_TYPES,
@@ -38,31 +45,58 @@ from waraq.preflight.konfiguration import (
     confirm_pflichtfrage,
     save_export_profile_prefill,
 )
+from waraq.preflight.pdf_choice import (
+    PdfFormatChoice,
+    confirm_pdf_format_choice,
+    read_pdf_format_choice,
+)
+from waraq.preflight.pflichtfragen import (
+    PFLICHTFRAGEN,
+    PflichtfrageDefinition,
+    get_pflichtfrage_by_index,
+    get_pflichtfrage_by_key,
+    validate_pflichtfrage_answer,
+)
 from waraq.preflight.service import (
     PreflightEvaluation,
     accept_warning_gate,
+    evaluate_guard_near,
     evaluate_preflight,
     start_preflight_run,
 )
 
 __all__ = [
+    "CRITICAL_FONTS",
     "HADITH_ACTION_TYPES",
+    "PFLICHTFRAGEN",
     "PFLICHTFRAGE_COUNT",
     "BlockingReason",
+    "GuardNearBlocked",
+    "GuardNearResult",
+    "GuardNearViolation",
     "HadithKlasse",
     "HadithStellenTyp",
+    "PdfFormatChoice",
+    "PflichtfrageDefinition",
     "PflichthinweisCannotBeWarning",
     "PreflightError",
     "PreflightEvaluation",
     "PreflightState",
     "SlotNotImplemented",
     "accept_warning_gate",
+    "confirm_pdf_format_choice",
     "confirm_pflichtfrage",
     "derive_hadith_klasse",
+    "evaluate_guard_near",
     "evaluate_preflight",
+    "get_pflichtfrage_by_index",
+    "get_pflichtfrage_by_key",
     "go_with_warning_hadith",
+    "read_pdf_format_choice",
     "record_hadith_status",
     "resolve_hadith_h2",
+    "run_guard_near_checks",
     "save_export_profile_prefill",
     "start_preflight_run",
+    "validate_pflichtfrage_answer",
 ]

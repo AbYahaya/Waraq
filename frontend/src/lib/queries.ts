@@ -25,6 +25,10 @@ export const qk = {
   pageConflicts: (uuid: string) => ["pages", uuid, "conflicts"] as const,
   projectConflicts: (uuid: string) => ["projects", uuid, "conflicts"] as const,
   releaseGate: (uuid: string) => ["projects", uuid, "release-gate"] as const,
+  pageDifficulty: (uuid: string) => ["pages", uuid, "difficulty"] as const,
+  projectDifficulty: (uuid: string) => ["projects", uuid, "difficulty"] as const,
+  guidedReviewQueue: (uuid: string) => ["projects", uuid, "guided-review", "queue"] as const,
+  projectToc: (uuid: string) => ["projects", uuid, "toc"] as const,
 };
 
 export const queries = {
@@ -60,7 +64,79 @@ export const queries = {
     queryKey: qk.releaseGate(uuid),
     queryFn: () => api.get<ReleaseGate>(`/projects/${uuid}/release-gate`),
   }),
+  pageDifficulty: (uuid: string) => ({
+    queryKey: qk.pageDifficulty(uuid),
+    queryFn: () => api.get<DifficultyReportDto>(`/pages/${uuid}/difficulty`),
+  }),
+  projectDifficulty: (uuid: string) => ({
+    queryKey: qk.projectDifficulty(uuid),
+    queryFn: () => api.get<DifficultyReportDto>(`/projects/${uuid}/difficulty`),
+  }),
+  guidedReviewQueue: (uuid: string) => ({
+    queryKey: qk.guidedReviewQueue(uuid),
+    queryFn: () => api.get<GuidedReviewQueueDto>(`/projects/${uuid}/guided-review/queue`),
+  }),
+  projectToc: (uuid: string) => ({
+    queryKey: qk.projectToc(uuid),
+    queryFn: () => api.get<TocResponseDto>(`/projects/${uuid}/toc`),
+  }),
 };
+
+export interface DifficultyBreakdownDto {
+  audit_kritisch: number;
+  audit_hoch: number;
+  audit_mittel: number;
+  konsistenz_kritisch: number;
+  konsistenz_other: number;
+  hadith_h_2: number;
+  hadith_h_1: number;
+  ocr_error_kritisch: number;
+  ocr_error_hoch: number;
+  ocr_error_mittel: number;
+  locked_segment_manual_local: number;
+  locked_segment_manual_editorial: number;
+}
+
+export interface DifficultyReportDto {
+  scope: "page" | "project";
+  scope_uuid: string;
+  score: number;
+  segment_count: number;
+  breakdown: DifficultyBreakdownDto;
+}
+
+export interface GuidedReviewItemDto {
+  kind: "audit_befund" | "konsistenz_befund" | "ocr_error" | "hadith";
+  finding_uuid: string;
+  tier: "p_03_blocking" | "p_04_blocking" | "warning";
+  severity: string;
+  detected_at: string;
+  satz_uuid: string | null;
+  page_uuid: string | null;
+}
+
+export interface GuidedReviewQueueDto {
+  items: GuidedReviewItemDto[];
+  total: number;
+  by_tier: Record<string, number>;
+}
+
+export interface TocEntryDto {
+  page_index: number;
+  page_uuid: string;
+  level: number;
+  ar_text: string;
+  de_text: string;
+  satz_uuid: string | null;
+  block_uuid: string | null;
+}
+
+export interface TocResponseDto {
+  entries: TocEntryDto[];
+  fallback_kind: "none" | "page_by_page";
+  detected_heading_count: number;
+  page_count: number;
+}
 
 /**
  * Loose-typed segment history shape matching the backend's

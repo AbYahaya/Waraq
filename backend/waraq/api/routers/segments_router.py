@@ -5,6 +5,15 @@ Manual edit writes a Revision via the canonical `create_revision` service
 INVARIANT-Guard refuses automatic writes to locked segments — manual edits
 with confirmation context bypass that guard, which is the canonical H-1/H-2
 behaviour.
+
+§2.2 auto-normalize (Phase 3 sub-batch B): manual-edit `after_text` is
+passed through `apply_all` before the Revision is staged. This is the
+canonical "no user judgment — direct system mechanism" enforcement
+applied to the manual-edit write path so the segment text content can
+never come to rest with Arabic-Indic digits / Ḳ / ḳ / Dj / dj or
+multi-char religious-formula spellings. Idempotent — translation
+pipeline already normalizes upstream of `create_revision`, this just
+covers the manual-edit branch.
 """
 
 from __future__ import annotations
@@ -17,6 +26,7 @@ from sqlalchemy import select
 from waraq.api._ownership import owned_page_or_404, owned_segment_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.api.schemas import SegmentEditRequest, SegmentResponse
+from waraq.canon_rules import apply_all as apply_canon_rules
 from waraq.invariant.enums import OperationMode
 from waraq.invariant.exceptions import H1H2Violation
 from waraq.revision.service import create_revision
@@ -62,11 +72,13 @@ async def edit_segment_text(
     """Manually edit a segment's text. Writes a Revision with
     `change_source=manual`. Authorized for owners of the project."""
     segment = await owned_segment_or_404(session, satz_uuid, current.account_uuid)
+    # §2.2 — apply canon rules silently before the Revision is staged.
+    normalized = apply_canon_rules(req.after_text)
     try:
         await create_revision(
             session=session,
             segment=segment,
-            after_text=req.after_text,
+            after_text=normalized,
             change_source=ChangeSource.MANUAL,
             operation_mode=OperationMode.MANUAL_WITH_CONFIRMATION,
             author_uuid=current.account_uuid,

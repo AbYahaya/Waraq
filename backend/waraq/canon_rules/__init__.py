@@ -26,7 +26,15 @@ from waraq.canon_rules.digit_guard import (
     to_western_digits,
 )
 from waraq.canon_rules.religious_formulas import normalize_religious_formulas
-from waraq.canon_rules.transliteration import enforce_ei2_transliteration
+from waraq.canon_rules.transliteration import (
+    enforce_ei2_transliteration,
+    has_ei2_violations,
+)
+from waraq.canon_rules.verifier import (
+    CanonRuleViolation,
+    CanonRuleViolationKind,
+    verify_canon_rules_for_export,
+)
 
 
 def apply_all(text: str) -> str:
@@ -48,9 +56,13 @@ def apply_all(text: str) -> str:
 
 
 __all__ = [
+    "CanonRuleViolation",
+    "CanonRuleViolationKind",
     "apply_all",
     "enforce_ei2_transliteration",
     "has_arabic_indic_digits",
+    "has_ei2_violations",
     "normalize_religious_formulas",
     "to_western_digits",
+    "verify_canon_rules_for_export",
 ]

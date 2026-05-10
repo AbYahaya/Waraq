@@ -66,6 +66,11 @@ def make_gemini_translator(
     chosen_model = model or settings.gemini_translation_model
     chosen_system = system_prompt or _DEFAULT_SYSTEM_PROMPT
 
+    # Same fail-fast bounding as the OpenAI translator. Gemini's SDK
+    # doesn't expose a per-call timeout cleanly, so we wrap the sync
+    # call in `asyncio.wait_for` below.
+    timeout_s = float(os.environ.get("GEMINI_HTTP_TIMEOUT", "60"))
+
     async def _translate(source_text: str, context: TranslationContext) -> str:
         # Build the system prompt with the §3.6 chunk brief and upstream
         # window, identical structure to the OpenAI translator so both
@@ -130,7 +135,7 @@ def make_gemini_translator(
             )
             return (response.text or "").strip()
 
-        raw_output = await asyncio.to_thread(_call_sync)
+        raw_output = await asyncio.wait_for(asyncio.to_thread(_call_sync), timeout=timeout_s)
         # Same deterministic post-translation canonization as the OpenAI
         # path — both engines converge on canonical output.
         return apply_canon_rules(raw_output)

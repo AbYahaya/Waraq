@@ -69,7 +69,14 @@ def make_openai_translator(
 
     from openai import AsyncOpenAI
 
-    client = AsyncOpenAI(api_key=api_key)
+    # Bound the SDK so a misbehaving network surfaces fast instead of
+    # silently eating minutes per chunk on connect retries. The values
+    # are deliberately tight: 30s connect/read, single retry. Per-segment
+    # latency dominates the synchronous translation loop, so a stuck
+    # call here blocks every subsequent segment.
+    timeout_s = float(os.environ.get("OPENAI_HTTP_TIMEOUT", "30"))
+    max_retries = int(os.environ.get("OPENAI_MAX_RETRIES", "1"))
+    client = AsyncOpenAI(api_key=api_key, timeout=timeout_s, max_retries=max_retries)
 
     async def _translate(source_text: str, context: TranslationContext) -> str:
         # Build the system prompt with the §3.6 chunk brief (glossary +

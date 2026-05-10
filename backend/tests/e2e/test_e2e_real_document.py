@@ -196,15 +196,18 @@ async def test_e2e_real_document_full_pipeline(
         print(f"    segment {seg.satz_index}: {seg.text_content!r}")
 
     # --- Stage 6: preflight -----------------------------------------------
+    from tests.preflight._helpers import canonical_pflichtfrage_payload
+
     pf_run = await start_preflight_run(session=db_session, project_uuid=project.project_uuid)
     for i in range(1, PFLICHTFRAGE_COUNT + 1):
+        key, ans = canonical_pflichtfrage_payload(i)
         await confirm_pflichtfrage(
             session=db_session,
             project_uuid=project.project_uuid,
             preflight_run_uuid=pf_run.job_uuid,
             frage_index=i,
-            frage_key=f"frage_{i}",
-            answer={"value": "yes"},
+            frage_key=key,
+            answer=ans,
         )
     pf_eval = await evaluate_preflight(
         session=db_session, project_uuid=project.project_uuid, preflight_run=pf_run

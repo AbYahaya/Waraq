@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from waraq.canon_rules import CanonRuleViolation
+
 
 class ExportError(Exception):
     """Base class for export-pipeline errors."""
@@ -27,3 +32,25 @@ class PreflightStateChanged(ExportError):
     `preflight_state_changed`. NO artefact is produced, NO EXPORT_EVENT
     is written; the Log-Eintrag records the failure.
     """
+
+
+class CanonRuleViolationsDetected(ExportError):
+    """Raised inside `run_export_job` when the §2.2 pre-export verifier
+    finds residual canon-rule violations on active project segments.
+
+    Per Phase 3 sub-batch B / Dokument 1 §2.2: digit + EI2 normalization
+    is the canonical primary mechanism (auto-normalize on translation
+    output + manual-edit save). This exception is the defense-in-depth
+    twin: when any write path bypassed normalization, the verifier
+    catches the leftover violation at the export-job boundary, fails
+    the Job, and writes an `export_failed` Log-Eintrag — same shape as
+    `PreflightStateChanged`. NO artefact is produced, NO EXPORT_EVENT
+    is written.
+
+    The `violations` attribute carries the structured findings for the
+    UI's resolution panel (which segments / which rule-kind).
+    """
+
+    def __init__(self, message: str, *, violations: list[CanonRuleViolation]) -> None:
+        super().__init__(message)
+        self.violations = violations

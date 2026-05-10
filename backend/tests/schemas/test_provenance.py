@@ -216,6 +216,11 @@ class TestT_1_3_3_SatzUuidAllowlistStillHolds:
             "translation_observations",
             "audit_befunde",
             "hadith_passage_status",
+            # Phase 2A — §4.16.6 Hadith result tables.
+            "hadith_single_source_results",
+            "hadith_aggregate_results",
+            # Phase 2F-A — §4.15.3 project Quranic passage snapshot.
+            "project_quran_passages",
         }
     )
 
