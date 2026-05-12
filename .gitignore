@@ -60,3 +60,8 @@ Thumbs.db
 *.md
 !/README.md
 *.docx
+
+# GCP / cloud service-account JSON keys (Phase 4 sub-batch C)
+*service-account*.json
+gen-lang-client-*.json
+gcp-*.json

@@ -320,18 +320,29 @@ class TestPreflightRecheckAtJobStart:
             current_export_attempt_id=attempt_id,
             preflight_run=run,
         )
-        with pytest.raises(PreflightStateChanged):
-            await run_export_job(session=db_session, config=config)
-
-        # No EXPORT_EVENT row.
-        po_count = (
+        # Snapshot existing EXPORT_EVENT count — interactive dev sessions
+        # may leave POs around from real exports against the same DB.
+        # The recheck contract is "no NEW EXPORT_EVENT on state change",
+        # not "global table is empty".
+        po_count_before = (
             await db_session.execute(
                 select(func.count())
                 .select_from(ProvenanceObject)
                 .where(ProvenanceObject.po_type == POType.EXPORT_EVENT.value)
             )
         ).scalar_one()
-        assert po_count == 0
+        with pytest.raises(PreflightStateChanged):
+            await run_export_job(session=db_session, config=config)
+
+        # No NEW EXPORT_EVENT row.
+        po_count_after = (
+            await db_session.execute(
+                select(func.count())
+                .select_from(ProvenanceObject)
+                .where(ProvenanceObject.po_type == POType.EXPORT_EVENT.value)
+            )
+        ).scalar_one()
+        assert po_count_after == po_count_before
         # FAILED Log-Eintrag with reason `preflight_state_changed`.
         log_rows = (
             (

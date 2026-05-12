@@ -37,3 +37,29 @@ class AccountInactive(AuthError):
     def __init__(self, *, account_uuid: object) -> None:
         super().__init__(f"Account {account_uuid} is inactive")
         self.account_uuid = account_uuid
+
+
+class AccountPendingApproval(AuthError):
+    """Account exists and credentials match, but `approval_status =
+    pending`. Phase 5 sub-batch M admission gate. The user must wait
+    for an admin to approve the application before they can log in."""
+
+    def __init__(self, *, account_uuid: object) -> None:
+        super().__init__(
+            f"Account {account_uuid} is awaiting admin approval"
+        )
+        self.account_uuid = account_uuid
+
+
+class AccountRejected(AuthError):
+    """Account exists and credentials match, but `approval_status =
+    rejected`. Phase 5 sub-batch M admission gate. The admin denied
+    the application; further appeal is out-of-band."""
+
+    def __init__(self, *, account_uuid: object, reason: str | None) -> None:
+        super().__init__(
+            f"Account {account_uuid} was rejected"
+            + (f": {reason}" if reason else "")
+        )
+        self.account_uuid = account_uuid
+        self.reason = reason

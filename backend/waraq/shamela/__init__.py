@@ -25,6 +25,7 @@ from waraq.shamela.lookup import (
     find_by_skeleton,
     search_by_keyword,
 )
+from waraq.shamela.openiti_markdown import openiti_markdown_to_section_lines
 from waraq.shamela.registry import (
     OPENITI_TEXTS,
     OpenITITextSpec,
@@ -39,6 +40,7 @@ __all__ = [
     "find_by_skeleton",
     "get_text_spec",
     "ingest_text",
+    "openiti_markdown_to_section_lines",
     "parse_section_lines",
     "register_text",
     "search_by_keyword",

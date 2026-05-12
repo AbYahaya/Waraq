@@ -41,3 +41,19 @@ class UploadNotFound(UploadError):
     def __init__(self, *, job_uuid: object) -> None:
         super().__init__(f"No upload Job found for job_uuid={job_uuid}")
         self.job_uuid = job_uuid
+
+
+class UploadTooLarge(UploadError):
+    """Upload exceeds the canon §2.1 2 GB maximum. Raised at `start_upload`
+    when the declared total exceeds the limit, and defensively at
+    `append_chunk` if the cumulative bytes-on-disk exceed it (defends
+    against a client that lied about `total_size_bytes`). The upload
+    router surfaces as HTTP 413 Payload Too Large."""
+
+    def __init__(self, *, size_bytes: int, max_bytes: int) -> None:
+        super().__init__(
+            f"Upload size {size_bytes} bytes exceeds the {max_bytes}-byte "
+            "(canon §2.1 2 GB) maximum."
+        )
+        self.size_bytes = size_bytes
+        self.max_bytes = max_bytes

@@ -47,6 +47,10 @@ from waraq.hadith.extended_sources import (
     default_extended_fetchers,
     get_extended_source,
 )
+from waraq.hadith.full_verification import (
+    FullHadithVerificationOutcome,
+    run_full_hadith_verification,
+)
 from waraq.hadith.orchestrator import (
     TwoTierVerificationOutcome,
     run_two_tier_verification,
@@ -69,6 +73,7 @@ __all__ = [
     "DorarHadith",
     "ExtendedSourceSpec",
     "ExtendedSourceState",
+    "FullHadithVerificationOutcome",
     "HadithCandidateHit",
     "HitScore",
     "Quellenrolle",
@@ -85,6 +90,7 @@ __all__ = [
     "format_source_citation_de",
     "format_source_citation_en",
     "get_extended_source",
+    "run_full_hadith_verification",
     "run_two_tier_verification",
     "run_verification_round",
     "search_via_api",

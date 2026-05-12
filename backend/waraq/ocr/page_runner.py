@@ -7,15 +7,24 @@ Bridges three concerns the lower-level OCR service deliberately doesn't:
    poppler's `pdftoppm`) and supplies them.
 2. **Block + Segment provisioning** — `run_ocr_job` writes its Revision
    into a target Segment. After upload the project has Pages but no
-   Block / Segment rows yet; this helper creates a default `main_text`
-   block + one Segment if absent. Subsequent OCR runs reuse them so
-   re-runs don't duplicate identity rows.
+   Block / Segment rows yet; this helper creates one Block + Segment
+   per detected layout block and reuses them on subsequent OCR runs.
+   Sub-batch C extends sub-batch B's first-block-only wiring so each
+   `DetectedBlock` becomes its own `(Block, Segment)` row.
 3. **Source PDF lookup** — pulled from the page's SCAN-PO payload, the
    same path the in-browser viewer uses.
 
 Read-side discipline: never re-creates a Block/Segment when one is
 already present. Pure write of Revision + OCR-PO via the existing
 service path; no Decision Events, no LINEAGE_EVENT-POs.
+
+§3.4 Stage-2 routing
+--------------------
+Per detected block, `consensus.run_engines` is called with the engine
+set Stage-2 routes for the block's class (QURAN → Gemini-only;
+others → both engines parallel). The chosen primary text + per-engine
+breakdown + agreement label flow through `run_ocr_job` and land on
+each block's OCR-PO payload.
 """
 
 from __future__ import annotations
@@ -25,7 +34,9 @@ import shutil
 import subprocess
 import tempfile
 import uuid as _uuid
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -35,8 +46,82 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from waraq.identity import new_uuid
 from waraq.invariant.enums import LockFlag
 from waraq.ocr import run_ocr_job, start_ocr_job
+from waraq.ocr.cloud_vision import (
+    CloudVisionResult,
+)
+from waraq.ocr.cloud_vision import (
+    extract_with_confidence as cloud_vision_extract,
+)
+from waraq.ocr.consensus import ConsensusResult, run_engines
+from waraq.ocr.gemini import extract_text as gemini_extract
+from waraq.ocr.layout import BoundingBox, DetectedBlock, detect_blocks
+from waraq.ocr.layout_opencv import opencv_block_detector
+from waraq.ocr.preprocessing import preprocess_if_needed
+from waraq.ocr.preprocessing_opencv import opencv_preprocessor
+from waraq.ocr.stage3 import Stage3Result, aggregate_stage3
+from waraq.ocr.stage3_ai import AiValidator
+from waraq.ocr.stage3_ai_production import (
+    Stage3AiValidatorUnconfigured,
+    make_gemini_ocr_validator,
+    make_openai_ocr_validator,
+)
+from waraq.ocr.stage3_rules import DiacritizerFn, MorphologyAnalyzableFn
 from waraq.schemas import Block, Page, ProvenanceObject, Segment
-from waraq.schemas.enums import POType, ScopeType
+from waraq.schemas.enums import BlockClass, POType, ScopeType
+from waraq.upload.file_type import UploadFormat, is_direct_text_format, is_image_format
+
+# Per-page render DPI (matches the historical default in `_render_page_png`).
+# Treated as the *source DPI* for §3.3 preprocessing decisions until a real
+# DPI extraction from the source PDF lands (Phase 4 sub-batch B at the
+# earliest — needs LayoutParser-side image metadata).
+_RENDER_DPI: int = 200
+
+
+# Engine extractor type aliases. Production injects `gemini.extract_text`
+# and `cloud_vision.extract_with_confidence`; tests inject stubs.
+GeminiExtractorFn = Callable[[bytes, str], Awaitable[str]]
+CloudVisionExtractorFn = Callable[[bytes, str], Awaitable[CloudVisionResult]]
+
+
+# Lazily-built singleton AI validators for the Stage-3 production
+# wiring (sub-batch J). Each factory raises `Stage3AiValidatorUnconfigured`
+# when the corresponding API key isn't set; we cache the resolution
+# (validator OR `None`) so we don't re-attempt construction on every
+# page.
+_OPENAI_OCR_VALIDATOR_CACHE: AiValidator | None = None
+_OPENAI_OCR_VALIDATOR_RESOLVED: bool = False
+_GEMINI_OCR_VALIDATOR_CACHE: AiValidator | None = None
+_GEMINI_OCR_VALIDATOR_RESOLVED: bool = False
+
+
+def _resolve_openai_ocr_validator() -> AiValidator | None:
+    """Build the production GPT-4o OCR validator on first call; cache
+    the result. Returns None when `OPENAI_API_KEY` isn't set — the
+    Stage-3 AI track then degrades to the neutral 0.5 stub
+    (canon-honest no-signal)."""
+    global _OPENAI_OCR_VALIDATOR_CACHE, _OPENAI_OCR_VALIDATOR_RESOLVED
+    if _OPENAI_OCR_VALIDATOR_RESOLVED:
+        return _OPENAI_OCR_VALIDATOR_CACHE
+    try:
+        _OPENAI_OCR_VALIDATOR_CACHE = make_openai_ocr_validator()
+    except Stage3AiValidatorUnconfigured:
+        _OPENAI_OCR_VALIDATOR_CACHE = None
+    _OPENAI_OCR_VALIDATOR_RESOLVED = True
+    return _OPENAI_OCR_VALIDATOR_CACHE
+
+
+def _resolve_gemini_ocr_validator() -> AiValidator | None:
+    """Build the production Gemini 2.5 Pro OCR validator on first call;
+    cache the result."""
+    global _GEMINI_OCR_VALIDATOR_CACHE, _GEMINI_OCR_VALIDATOR_RESOLVED
+    if _GEMINI_OCR_VALIDATOR_RESOLVED:
+        return _GEMINI_OCR_VALIDATOR_CACHE
+    try:
+        _GEMINI_OCR_VALIDATOR_CACHE = make_gemini_ocr_validator()
+    except Stage3AiValidatorUnconfigured:
+        _GEMINI_OCR_VALIDATOR_CACHE = None
+    _GEMINI_OCR_VALIDATOR_RESOLVED = True
+    return _GEMINI_OCR_VALIDATOR_CACHE
 
 
 class PageOcrError(RuntimeError):
@@ -48,7 +133,33 @@ class PageOcrError(RuntimeError):
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class BlockOcrResult:
+    """Per-block result of a multi-block OCR pass. The §3.4 Stage-2
+    routing layer produces one of these per detected block on the page."""
+
+    block_uuid: _uuid.UUID
+    segment_uuid: _uuid.UUID
+    block_class: BlockClass
+    text: str
+    text_chars: int
+    text_changed: bool
+    rev_uuid: _uuid.UUID | None
+    engines_used: tuple[str, ...]
+    engine_agreement: str
+    stage3_confidence: float | None = None
+    stage3_divergence_penalty_applied: bool = False
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class PageOcrResult:
+    """Per-page OCR result. The pre-sub-batch-C surface (text /
+    text_chars / text_changed / segment_uuid / block_uuid / rev_uuid)
+    refers to the **primary block** — the first MAIN_TEXT block on the
+    page when one exists, else the first detected block in reading
+    order. `additional_blocks` carries the rest in detection order so
+    callers can opt in to multi-block awareness without breaking the
+    existing single-block contract."""
+
     page_uuid: _uuid.UUID
     text: str
     text_chars: int
@@ -56,11 +167,21 @@ class PageOcrResult:
     segment_uuid: _uuid.UUID
     block_uuid: _uuid.UUID
     rev_uuid: _uuid.UUID | None
+    additional_blocks: tuple[BlockOcrResult, ...] = field(default_factory=tuple)
 
 
-async def _resolve_source_pdf(*, session: AsyncSession, page: Page) -> Path:
-    """Find the SCAN-PO for this page and pull the source PDF path
-    out of its payload."""
+async def _resolve_source_file(
+    *, session: AsyncSession, page: Page
+) -> tuple[Path, UploadFormat]:
+    """Find the SCAN-PO for this page and pull `(source_file_path, format)`
+    out of its payload. The format determines how the page is
+    rasterized at OCR time (PDF → pdftoppm; image → direct read /
+    TIFF-frame extraction).
+
+    Defaults to `UploadFormat.PDF` when the format field is missing
+    (legacy SCAN-POs written before Phase 5 K-1). All v1.0 uploads
+    persist the format on finalize.
+    """
     result = await session.execute(
         select(ProvenanceObject)
         .where(ProvenanceObject.po_type == POType.SCAN.value)
@@ -79,7 +200,17 @@ async def _resolve_source_pdf(*, session: AsyncSession, page: Page) -> Path:
     path = Path(src)
     if not path.is_file():
         raise PageOcrError(f"Source file not found on disk: {path}")
-    return path
+
+    fmt_str = payload.get("format")
+    if isinstance(fmt_str, str):
+        try:
+            fmt = UploadFormat(fmt_str)
+        except ValueError:
+            # Unknown format string on legacy PO — fall through to PDF.
+            fmt = UploadFormat.PDF
+    else:
+        fmt = UploadFormat.PDF
+    return path, fmt
 
 
 def _render_page_png(source_pdf: Path, page_index: int, out_dir: Path, dpi: int = 200) -> Path:
@@ -119,110 +250,473 @@ def _render_page_png(source_pdf: Path, page_index: int, out_dir: Path, dpi: int 
     return candidates[0]
 
 
-async def _ensure_block_and_segment(*, session: AsyncSession, page: Page) -> tuple[Block, Segment]:
-    """If the page has no Block/Segment yet, create a default
-    `main_text` block + one empty Segment. Idempotent under serialized
-    calls AND concurrent calls in separate transactions.
+def _read_image_page_bytes(source: Path, fmt: UploadFormat, page_index: int) -> bytes:
+    """Return the bytes of one logical page from an image upload.
 
-    Concurrency contract: takes a row-level lock on the Page row via
-    `SELECT ... FOR UPDATE`. Two concurrent OCR runs on the same page
-    serialize through the lock — the first to acquire it wins the
-    creation race; the second blocks, then sees the committed row
-    when it acquires the lock and reuses it. The DB-level UNIQUE
-    partial indexes on `(page_uuid, block_index) WHERE active` and
-    `(block_uuid, satz_index) WHERE active` are the second line of
-    defense (migration 0023).
+    Non-TIFF images: `page_index` must be 1 (every other image format
+    is single-page in v1.0); the file is read and re-encoded to PNG
+    via PIL so downstream OCR sees a uniform PNG byte stream.
 
-    The `.active.is_(True)` filters scope the idempotency to live
-    rows: an inactivated duplicate from before migration 0023 must
-    not match here.
+    TIFF: seeks to frame `page_index - 1` (0-indexed) and re-encodes
+    that frame to PNG. Multi-page TIFFs (common in scanned books)
+    arrive as one Page row per frame at finalize time.
+
+    HEIC: relies on the `pillow_heif` opener registered by
+    `waraq.upload`. If the opener didn't register (package missing),
+    PIL raises `UnidentifiedImageError` — caller surfaces as
+    `PageOcrError`.
+
+    Re-encoding to PNG matches the existing pdftoppm output contract —
+    callers downstream (`preprocess_if_needed`, `consensus.run_engines`,
+    Cloud Vision, Gemini) all expect PNG bytes. This keeps the
+    multi-format path invisible to everything below the rasterizer.
     """
-    # Row-lock the Page row so concurrent OCR runs serialize.
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        img = Image.open(source)
+    except Exception as exc:
+        raise PageOcrError(f"Could not open image source {source}: {exc!r}") from exc
+
+    try:
+        if fmt == UploadFormat.TIFF:
+            n_frames = int(getattr(img, "n_frames", 1))
+            if page_index < 1 or page_index > n_frames:
+                raise PageOcrError(
+                    f"TIFF page_index {page_index} out of range (1..{n_frames})"
+                )
+            img.seek(page_index - 1)
+        else:
+            if page_index != 1:
+                raise PageOcrError(
+                    f"Single-image format {fmt.value} expected page_index=1, got {page_index}"
+                )
+
+        # Convert palette / mode-1 / RGBA to RGB so PNG encoding is
+        # uniform downstream. The OCR engines all accept 3-channel PNG.
+        frame: Image.Image = img.convert("RGB") if img.mode not in ("RGB", "L") else img
+        buf = BytesIO()
+        frame.save(buf, format="PNG")
+        return buf.getvalue()
+    finally:
+        img.close()
+
+
+def _render_djvu_page_png(source_djvu: Path, page_index: int, out_dir: Path, dpi: int) -> Path:
+    """Render the given page (1-indexed) of `source_djvu` to PNG via
+    `ddjvu`. Mirrors `_render_page_png` for PDFs. Requires the
+    `djvulibre-bin` package (`ddjvu` on PATH); raises `PageOcrError`
+    when missing or render fails."""
+    if shutil.which("ddjvu") is None:
+        raise PageOcrError(
+            "ddjvu not found on PATH; install `djvulibre-bin` "
+            "(apt) to enable DjVu OCR."
+        )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    png_path = out_dir / "page.png"
+    proc = subprocess.run(
+        [
+            "ddjvu",
+            "-format=ppm",
+            f"-page={page_index}",
+            f"-scale={dpi}",
+            str(source_djvu),
+            str(png_path),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise PageOcrError(
+            f"ddjvu failed (rc={proc.returncode}): "
+            f"{proc.stderr.decode('utf-8', errors='replace')[:300]}"
+        )
+    # ddjvu emits PPM by default. Convert via PIL to PNG so the OCR
+    # downstream sees a uniform byte stream (matches the pdftoppm path).
+    try:
+        from PIL import Image
+
+        with Image.open(png_path) as img:
+            buf = png_path.with_suffix(".real.png")
+            img.save(buf, format="PNG")
+            return buf
+    except Exception as exc:
+        raise PageOcrError(f"PIL could not re-encode ddjvu output: {exc!r}") from exc
+
+
+def _rasterize_page(source: Path, fmt: UploadFormat, page_index: int, dpi: int) -> bytes:
+    """Format-aware rasterizer. Returns PNG bytes for the given page.
+
+    PDF → pdftoppm at `dpi` (the historical OCR render path).
+    DjVu → ddjvu (K-3 "special path"; same shape as PDF — pageful raster).
+    Image → PIL re-encode (TIFF picks the right frame).
+    Direct-text formats (DOCX/ODT/TXT/XML/HTML/EPUB/MOBI/AZW/AZW3) →
+    refuse: their Segments were materialized at upload time and OCR
+    is meaningless here.
+
+    The return shape (PNG bytes) matches what pdftoppm produces, so
+    the pre-Phase-5 OCR pipeline below this point is unchanged.
+    """
+    if fmt == UploadFormat.PDF:
+        with tempfile.TemporaryDirectory(prefix="waraq-ocr-") as tmpdir_str:
+            tmpdir = Path(tmpdir_str)
+            png_path = _render_page_png(source, page_index, tmpdir, dpi=dpi)
+            return png_path.read_bytes()
+    if fmt == UploadFormat.DJVU:
+        with tempfile.TemporaryDirectory(prefix="waraq-ocr-") as tmpdir_str:
+            tmpdir = Path(tmpdir_str)
+            png_path = _render_djvu_page_png(source, page_index, tmpdir, dpi)
+            return png_path.read_bytes()
+    if is_image_format(fmt):
+        return _read_image_page_bytes(source, fmt, page_index)
+    if is_direct_text_format(fmt):
+        raise PageOcrError(
+            f"OCR is not applicable to direct-text format {fmt.value!r} — "
+            "text was extracted at upload time. Open the page directly."
+        )
+    raise PageOcrError(f"Unsupported source format for OCR: {fmt.value}")
+
+
+def _is_sentinel_bbox(bbox: BoundingBox) -> bool:
+    """The default detector emits `(0, 0, 0, 0)` because it doesn't
+    decode image dimensions. A real adapter returns a non-degenerate
+    box. We crop only when the box is non-degenerate."""
+    return bbox.x1 <= bbox.x0 or bbox.y1 <= bbox.y0
+
+
+def _crop_block_bytes(image_bytes: bytes, bbox: BoundingBox) -> bytes:
+    """Crop `image_bytes` to `bbox`. Falls back to the original bytes
+    when PIL is missing or the crop fails — better to send the whole
+    page to OCR than to fail the run."""
+    if _is_sentinel_bbox(bbox):
+        return image_bytes
+    try:
+        from PIL import Image
+    except ImportError:
+        return image_bytes
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            cropped = img.crop((bbox.x0, bbox.y0, bbox.x1, bbox.y1))
+            buf = BytesIO()
+            cropped.save(buf, format="PNG")
+            return buf.getvalue()
+    except Exception:
+        return image_bytes
+
+
+async def _ensure_blocks_and_segments(
+    *,
+    session: AsyncSession,
+    page: Page,
+    detected_blocks: list[DetectedBlock],
+) -> list[tuple[Block, Segment, DetectedBlock]]:
+    """Materialize one `(Block, Segment)` row per `DetectedBlock` in
+    reading order. Idempotent: a re-run with the same detector returns
+    the existing rows in the same order, no new rows created.
+
+    First-detector-wins: if a row already exists at a given
+    `block_index`, its layout fields are NOT overwritten. Re-running
+    OCR after an explicit reset is the canonical path to update
+    layout metadata.
+
+    Concurrency: takes a row-level lock on the Page row so two
+    concurrent OCR runs on the same page serialize. DB-side, the
+    UNIQUE partial index on `(page_uuid, block_index) WHERE active`
+    (migration 0023) is the second line of defense.
+
+    Block/Segment creation order: each detected block becomes one
+    `(Block, Segment)` pair with `block_index = i` (detection order)
+    and `satz_index = 0` (one segment per block at this stage; sub-
+    batch D's three-track consensus may later split segments within
+    a block).
+    """
+    # Row-lock the Page so concurrent OCR runs serialize.
     await session.execute(select(Page).where(Page.page_uuid == page.page_uuid).with_for_update())
 
-    block_q = await session.execute(
+    existing_q = await session.execute(
         select(Block)
         .where(Block.page_uuid == page.page_uuid)
         .where(Block.active.is_(True))
         .order_by(Block.block_index.asc())
     )
-    block: Block | None = block_q.scalars().first()
-    if block is None:
-        block = Block(
-            block_uuid=new_uuid(),
-            page_uuid=page.page_uuid,
-            block_type="main_text",
-            block_index=0,
-        )
-        session.add(block)
-        await session.flush()
+    existing_blocks: list[Block] = list(existing_q.scalars())
+    existing_by_index: dict[int, Block] = {b.block_index: b for b in existing_blocks}
 
-    seg_q = await session.execute(
-        select(Segment)
-        .where(Segment.block_uuid == block.block_uuid)
-        .where(Segment.active.is_(True))
-        .order_by(Segment.satz_index.asc())
-    )
-    segment: Segment | None = seg_q.scalars().first()
-    if segment is None:
-        segment = Segment(
-            satz_uuid=new_uuid(),
-            block_uuid=block.block_uuid,
-            satz_index=0,
-            lock_flag=LockFlag.NONE,
-            text_content="",
+    paired: list[tuple[Block, Segment, DetectedBlock]] = []
+    for i, detected in enumerate(detected_blocks):
+        block = existing_by_index.get(i)
+        if block is None:
+            block = Block(
+                block_uuid=new_uuid(),
+                page_uuid=page.page_uuid,
+                block_type=detected.block_class.value,
+                block_index=i,
+                reading_direction=detected.reading_direction,
+                text_density=detected.text_density,
+                baseline_y=detected.baseline_y,
+            )
+            session.add(block)
+            await session.flush()
+
+        seg_q = await session.execute(
+            select(Segment)
+            .where(Segment.block_uuid == block.block_uuid)
+            .where(Segment.active.is_(True))
+            .order_by(Segment.satz_index.asc())
         )
-        session.add(segment)
-        await session.flush()
+        segment: Segment | None = seg_q.scalars().first()
+        if segment is None:
+            segment = Segment(
+                satz_uuid=new_uuid(),
+                block_uuid=block.block_uuid,
+                satz_index=0,
+                lock_flag=LockFlag.NONE,
+                text_content="",
+            )
+            session.add(segment)
+            await session.flush()
+        paired.append((block, segment, detected))
+    return paired
+
+
+async def _ensure_block_and_segment(
+    *,
+    session: AsyncSession,
+    page: Page,
+    detected: DetectedBlock | None = None,
+) -> tuple[Block, Segment]:
+    """Single-block convenience wrapper — preserved for callers that
+    used the pre-sub-batch-C single-block API.
+
+    Internally delegates to `_ensure_blocks_and_segments`. When
+    `detected` is None, the legacy `main_text` + RTL fallback is used
+    so callers without a detector still see the historical behaviour.
+    """
+    if detected is None:
+        # Legacy path: emit a default `main_text` block. Mirrors the
+        # pre-sub-batch-B fallback exactly.
+        from waraq.schemas.enums import BlockClass as _BlockClass
+        from waraq.schemas.enums import ReadingDirection as _ReadingDirection
+
+        detected = DetectedBlock(
+            block_class=_BlockClass.MAIN_TEXT,
+            reading_direction=_ReadingDirection.RTL,
+            bbox=BoundingBox(x0=0, y0=0, x1=0, y1=0),
+        )
+    paired = await _ensure_blocks_and_segments(
+        session=session, page=page, detected_blocks=[detected]
+    )
+    block, segment, _ = paired[0]
     return block, segment
 
 
-async def run_ocr_for_page(*, session: AsyncSession, page: Page) -> PageOcrResult:
+def _select_primary_index(detected_blocks: list[DetectedBlock]) -> int:
+    """Pick the primary block index: first MAIN_TEXT in reading order;
+    otherwise index 0 (defensive — `detect_blocks` guarantees the list
+    is non-empty)."""
+    for i, db in enumerate(detected_blocks):
+        if db.block_class == BlockClass.MAIN_TEXT:
+            return i
+    return 0
+
+
+async def run_ocr_for_page(
+    *,
+    session: AsyncSession,
+    page: Page,
+    gemini_fn: GeminiExtractorFn | None = None,
+    cloud_vision_fn: CloudVisionExtractorFn | None = None,
+    run_stage3: bool = True,
+    morphology_fn: MorphologyAnalyzableFn | None = None,
+    diacritizer_fn: DiacritizerFn | None = None,
+    openai_validator: AiValidator | None = None,
+    gemini_validator: AiValidator | None = None,
+) -> PageOcrResult:
     """Drive the full per-page OCR sequence end-to-end.
 
-    Renders the page out of its SCAN-PO source PDF, provisions a
-    default Block + Segment if absent, then calls the canonical
-    `start_ocr_job` + `run_ocr_job` path. Pure write of Revision +
-    OCR-PO via PROVENANCE-Kern; no Decision Events. The page's
-    `ocr_status` is left untouched so the caller can drive the
-    review state machine separately.
-    """
-    source_pdf = await _resolve_source_pdf(session=session, page=page)
+    Renders the page out of its SCAN-PO source PDF, runs the
+    Stage-1 layout detector to get one or more `DetectedBlock`s,
+    materializes a Block + Segment per detected block, then for
+    each block runs Stage-2 routed OCR via `consensus.run_engines`.
 
-    # Rasterize in a per-call tempdir; cleaned up regardless of outcome.
+    Pure write of Revision + OCR-PO via PROVENANCE-Kern; no Decision
+    Events. The page's `ocr_status` is left untouched so the caller
+    can drive the review state machine separately.
+
+    Engine callables can be injected for testing; production defaults
+    use `gemini.extract_text` + `cloud_vision.extract_with_confidence`.
+    """
+    source_file, source_fmt = await _resolve_source_file(session=session, page=page)
+
     def _do_render() -> bytes:
-        with tempfile.TemporaryDirectory(prefix="waraq-ocr-") as tmpdir_str:
-            tmpdir = Path(tmpdir_str)
-            png_path = _render_page_png(source_pdf, page.page_index, tmpdir)
-            return png_path.read_bytes()
+        return _rasterize_page(source_file, source_fmt, page.page_index, _RENDER_DPI)
 
     image_bytes = await asyncio.to_thread(_do_render)
 
-    block, segment = await _ensure_block_and_segment(session=session, page=page)
-
-    job = await start_ocr_job(session=session, page=page)
-    text = await run_ocr_job(
-        session=session,
-        ocr_job=job,
-        image_bytes=image_bytes,
-        mime_type="image/png",
-        target_segment=segment,
+    # §3.3 — OpenCV INTER_CUBIC upsample + denoise on low-DPI scans
+    # (sub-batch H production preprocessor; falls back to identity
+    # when cv2 isn't importable).
+    image_bytes, was_preprocessed = preprocess_if_needed(
+        image_bytes, _RENDER_DPI, preprocessor=opencv_preprocessor
     )
 
-    job_result = job.result or {}
-    rev_uuid_str = job_result.get("rev_uuid")
+    # §3.4 Stage-1 — OpenCV-backed layout detection (sub-batch H
+    # production adapter). Segments the rasterized page into
+    # reading-order Blocks via adaptive-threshold + morphological-close
+    # + contour analysis. Falls back to the canonical single-`main_text`
+    # block when the detector returns no regions or cv2 isn't usable.
+    detected_blocks = detect_blocks(image_bytes, _RENDER_DPI, detector=opencv_block_detector)
+    paired = await _ensure_blocks_and_segments(
+        session=session, page=page, detected_blocks=detected_blocks
+    )
+    primary_idx = _select_primary_index(detected_blocks)
+
+    gemini = gemini_fn if gemini_fn is not None else gemini_extract
+    cloud_vision = cloud_vision_fn if cloud_vision_fn is not None else cloud_vision_extract
+
+    # Sub-batch J — wire the production OCR-side AI validators as
+    # defaults when callers don't inject stubs. Each resolver returns
+    # None when the API key isn't set; `aggregate_stage3` then falls
+    # through to the neutral 0.5 stub via `run_ai_consensus`'s default.
+    if openai_validator is None:
+        openai_validator = _resolve_openai_ocr_validator()
+    if gemini_validator is None:
+        gemini_validator = _resolve_gemini_ocr_validator()
+
+    block_results: list[BlockOcrResult] = []
+
+    for block, segment, detected in paired:
+        block_image = _crop_block_bytes(image_bytes, detected.bbox)
+
+        # §3.4 Stage-2 — run the engines Stage-2 routes for this
+        # block's class in parallel; pick a primary text + breakdown.
+        consensus: ConsensusResult = await run_engines(
+            image_bytes=block_image,
+            mime_type="image/png",
+            block_class=detected.block_class,
+            gemini_fn=gemini,
+            cloud_vision_fn=cloud_vision,
+        )
+
+        # The pre-extracted text becomes the input to `run_ocr_job`'s
+        # canonical Job lifecycle. We pass it through a stub extractor
+        # so the existing extract-phase Job state transitions still
+        # fire (PENDING → RUNNING → COMPLETED), but no engine call
+        # happens twice.
+        consensus_text = consensus.primary_text
+
+        async def _stub_extractor(_image: bytes, _mime: str, _t: str = consensus_text) -> str:
+            return _t
+
+        # §3.4 Stage-3 — three-track consensus (sub-batch D). When
+        # enabled, runs rule-based + statistical + AI tracks over the
+        # Stage-2 primary text and aggregates into a final confidence.
+        # The Stage-3 confidence overrides the sub-batch C
+        # `aggregated_confidence` because it incorporates Stage-2's
+        # signal alongside three additional canonical tracks.
+        stage3: Stage3Result | None = None
+        confidence_for_po: float | None = consensus.aggregated_confidence
+        stage3_payload: dict[str, Any] | None = None
+        if run_stage3:
+            stage3 = await aggregate_stage3(
+                session=session,
+                candidate_text=consensus_text,
+                block_class=detected.block_class,
+                stage2=consensus,
+                morphology_fn=morphology_fn,
+                diacritizer_fn=diacritizer_fn,
+                openai_validator=openai_validator,
+                gemini_validator=gemini_validator,
+            )
+            confidence_for_po = stage3.confidence
+            stage3_payload = {
+                "confidence": stage3.confidence,
+                "stage2_score": stage3.stage2_score,
+                "divergence_penalty_applied": stage3.divergence_penalty_applied,
+                "rules": {
+                    "score": stage3.rule_result.score,
+                    "morphology_score": stage3.rule_result.morphology_score,
+                    "morphology_available": stage3.rule_result.morphology_available,
+                    "diacritization_score": stage3.rule_result.diacritization_score,
+                    "diacritization_available": stage3.rule_result.diacritization_available,
+                    "word_count": stage3.rule_result.word_count,
+                },
+                "statistical": {
+                    "score": stage3.statistical_result.score,
+                    "hit_count": stage3.statistical_result.hit_count,
+                    "scoped_to_kutub_as_sitta": stage3.statistical_result.scoped_to_kutub_as_sitta,
+                    "sample_titles": list(stage3.statistical_result.sample_titles),
+                },
+                "ai": {
+                    "score": stage3.ai_result.score,
+                    "agreement": stage3.ai_result.agreement,
+                    "verdicts": [
+                        {
+                            "engine": v.engine,
+                            "confidence": v.confidence,
+                            "correction_note": v.correction_note,
+                            "error_class": v.error_class,
+                        }
+                        for v in stage3.ai_result.verdicts
+                    ],
+                },
+            }
+
+        job = await start_ocr_job(session=session, page=page)
+        text = await run_ocr_job(
+            session=session,
+            ocr_job=job,
+            image_bytes=block_image,
+            mime_type="image/png",
+            extractor=_stub_extractor,
+            target_segment=segment,
+            confidence_score=confidence_for_po,
+            was_preprocessed=was_preprocessed,
+            source_dpi=_RENDER_DPI,
+            engine_breakdown=list(consensus.engines),
+            engine_agreement=consensus.agreement,
+            stage3_payload=stage3_payload,
+        )
+
+        job_result = job.result or {}
+        rev_uuid_str = job_result.get("rev_uuid")
+        block_results.append(
+            BlockOcrResult(
+                block_uuid=block.block_uuid,
+                segment_uuid=segment.satz_uuid,
+                block_class=detected.block_class,
+                text=text,
+                text_chars=int(job_result.get("text_chars", len(text))),
+                text_changed=bool(job_result.get("text_changed", False)),
+                rev_uuid=_uuid.UUID(rev_uuid_str) if rev_uuid_str else None,
+                engines_used=tuple(r.engine.value for r in consensus.engines),
+                engine_agreement=consensus.agreement,
+                stage3_confidence=stage3.confidence if stage3 is not None else None,
+                stage3_divergence_penalty_applied=(
+                    stage3.divergence_penalty_applied if stage3 is not None else False
+                ),
+            )
+        )
+
+    primary = block_results[primary_idx]
+    additional = tuple(r for i, r in enumerate(block_results) if i != primary_idx)
+
     return PageOcrResult(
         page_uuid=page.page_uuid,
-        text=text,
-        text_chars=int(job_result.get("text_chars", len(text))),
-        text_changed=bool(job_result.get("text_changed", False)),
-        segment_uuid=segment.satz_uuid,
-        block_uuid=block.block_uuid,
-        rev_uuid=_uuid.UUID(rev_uuid_str) if rev_uuid_str else None,
+        text=primary.text,
+        text_chars=primary.text_chars,
+        text_changed=primary.text_changed,
+        segment_uuid=primary.segment_uuid,
+        block_uuid=primary.block_uuid,
+        rev_uuid=primary.rev_uuid,
+        additional_blocks=additional,
     )
 
 
 __all__ = [
+    "BlockOcrResult",
     "PageOcrError",
     "PageOcrResult",
     "run_ocr_for_page",

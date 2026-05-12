@@ -8,10 +8,24 @@ export interface Account {
   email: string;
   display_name: string | null;
   active: boolean;
+  // Phase 5 sub-batch M — admission gate.
+  approval_status: "pending" | "approved" | "rejected";
+  is_admin: boolean;
 }
 
 export interface AuthToken {
   access_token: string;
+  token_type: string;
+}
+
+/**
+ * Phase 5 sub-batch M — response shape of /auth/register.
+ * Admins get a token immediately; non-admins land in `pending` with
+ * no token until an admin approves them via /admin/admissions/*.
+ */
+export interface RegisterResponse {
+  approval_status: "pending" | "approved" | "rejected";
+  access_token: string | null;
   token_type: string;
 }
 

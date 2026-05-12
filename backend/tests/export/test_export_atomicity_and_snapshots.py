@@ -176,19 +176,30 @@ class TestExportEventAtomicity:
             current_export_attempt_id=str(new_uuid()),
             preflight_run=run,
         )
-        store = InMemoryArtefactStore(fail_on_commit=True)
-        with pytest.raises(ArtefactStoreCommitFailed):
-            await run_export_job(session=db_session, config=config, artefact_store=store)
-
-        # No EXPORT_EVENT in DB at all.
-        po_count = (
+        # Snapshot existing EXPORT_EVENT count — interactive dev sessions
+        # may leave POs around from real exports against the same DB.
+        # The atomicity contract is "no NEW EXPORT_EVENT on commit failure",
+        # not "global table is empty".
+        po_count_before = (
             await db_session.execute(
                 select(func.count())
                 .select_from(ProvenanceObject)
                 .where(ProvenanceObject.po_type == POType.EXPORT_EVENT.value)
             )
         ).scalar_one()
-        assert po_count == 0
+        store = InMemoryArtefactStore(fail_on_commit=True)
+        with pytest.raises(ArtefactStoreCommitFailed):
+            await run_export_job(session=db_session, config=config, artefact_store=store)
+
+        # No NEW EXPORT_EVENT in DB.
+        po_count_after = (
+            await db_session.execute(
+                select(func.count())
+                .select_from(ProvenanceObject)
+                .where(ProvenanceObject.po_type == POType.EXPORT_EVENT.value)
+            )
+        ).scalar_one()
+        assert po_count_after == po_count_before
         # Store has no orphaned bytes.
         assert store.get(artefact_uuid=new_uuid()) is None
 

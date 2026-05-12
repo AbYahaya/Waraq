@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 
+import { apiPath } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 
 export interface ScanViewerProps {
@@ -31,7 +32,7 @@ export function ScanViewer({ pageUuid, pageIndex }: ScanViewerProps): JSX.Elemen
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    fetch(`/pages/${pageUuid}/source-pdf`, { headers })
+    fetch(apiPath(`/pages/${pageUuid}/source-pdf`), { headers })
       .then(async (resp) => {
         if (!resp.ok) {
           const text = await resp.text();

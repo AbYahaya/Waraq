@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError, api } from "@/lib/api";
-import type { Account, AuthToken } from "@/lib/types";
+import type { Account, RegisterResponse } from "@/lib/types";
 import { useAuthStore } from "@/store/auth";
 
 export function RegisterPage(): JSX.Element {
@@ -17,13 +17,15 @@ export function RegisterPage(): JSX.Element {
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [pendingAccount, setPendingAccount] = useState<string | null>(null);
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>): Promise<void> => {
     e.preventDefault();
     setError(null);
+    setPendingAccount(null);
     setSubmitting(true);
     try {
-      const token = await api.post<AuthToken>(
+      const resp = await api.post<RegisterResponse>(
         "/auth/register",
         {
           email,
@@ -32,12 +34,18 @@ export function RegisterPage(): JSX.Element {
         },
         { auth: false },
       );
-      const account = await api.get<Account>("/auth/me", {
-        headers: { Authorization: `Bearer ${token.access_token}` },
-        auth: false,
-      });
-      setSession(token.access_token, account);
-      navigate("/", { replace: true });
+      if (resp.approval_status === "approved" && resp.access_token) {
+        // Admin email auto-approved → log in immediately.
+        const account = await api.get<Account>("/auth/me", {
+          headers: { Authorization: `Bearer ${resp.access_token}` },
+          auth: false,
+        });
+        setSession(resp.access_token, account);
+        navigate("/", { replace: true });
+      } else {
+        // Non-admin: account is pending; admin must approve before login.
+        setPendingAccount(email);
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Registration failed");
     } finally {
@@ -53,6 +61,23 @@ export function RegisterPage(): JSX.Element {
           <CardDescription>Sign up to start a translation project.</CardDescription>
         </CardHeader>
         <CardContent>
+          {pendingAccount ? (
+            <div className="space-y-4">
+              <div className="rounded border border-amber-200 bg-amber-50 p-4">
+                <p className="font-medium text-amber-900">
+                  Application received
+                </p>
+                <p className="text-sm text-amber-800 mt-2">
+                  Your account <span className="font-mono">{pendingAccount}</span>{" "}
+                  is awaiting administrator approval. You will be able to log in
+                  once an admin approves your application.
+                </p>
+              </div>
+              <Link to="/login" className="block text-center text-sm underline">
+                Back to sign in
+              </Link>
+            </div>
+          ) : (
           <form onSubmit={onSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
@@ -98,6 +123,7 @@ export function RegisterPage(): JSX.Element {
               </Link>
             </p>
           </form>
+          )}
         </CardContent>
       </Card>
     </div>

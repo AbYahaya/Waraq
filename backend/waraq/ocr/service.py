@@ -39,9 +39,13 @@ from waraq.identity.service import new_uuid
 from waraq.invariant.enums import OperationMode
 from waraq.invariant.exceptions import GuardViolation
 from waraq.jobs import complete_job, fail_job, start_job
+from waraq.ocr.confidence import classify_confidence
+from waraq.ocr.consensus import EngineResult
 from waraq.ocr.exceptions import OcrError
 from waraq.ocr.gemini import extract_text
+from waraq.ocr.homoglyph import HomoglyphCorrector, find_homoglyph_candidates
 from waraq.ocr.profiling import profile_exception
+from waraq.ocr.quality import QualityScore, compute_quality_score
 from waraq.provenance import create_po
 from waraq.revision import create_revision
 from waraq.schemas import Job, Page, Revision, Segment
@@ -77,6 +81,15 @@ async def run_ocr_job(
     mime_type: str = "image/png",
     extractor: TextExtractor | None = None,
     target_segment: Segment | None = None,
+    confidence_score: float | None = None,
+    was_preprocessed: bool = False,
+    source_dpi: int | None = None,
+    expected_chars: int = 0,
+    homoglyph_corrector: HomoglyphCorrector | None = None,
+    run_quality_check: bool = True,
+    engine_breakdown: list[EngineResult] | None = None,
+    engine_agreement: str | None = None,
+    stage3_payload: dict[str, Any] | None = None,
 ) -> str:
     """Execute the OCR Job and (if `target_segment` is provided) write the
     canonical Revision + OCR-PO pair.
@@ -151,12 +164,102 @@ async def run_ocr_job(
             # OCR-PO is written on every successful OCR pass — change or
             # no-change. The PO records that OCR happened; the Revision
             # records the change.
+            # §3.4 Stage-5 quality score + Stage-4 homoglyph candidates.
+            # Quality score feeds confidence_score when no caller-supplied
+            # value exists; explicit caller value (e.g. Stage-3 consensus
+            # in sub-batch D) takes precedence — the consensus signal
+            # subsumes single-engine quality heuristics.
+            quality: QualityScore | None = None
+            if run_quality_check:
+                quality = compute_quality_score(text, expected_chars=expected_chars)
+                if confidence_score is None:
+                    confidence_score = quality.overall
+
+            # Stage-4 homoglyph candidate detection — read-only
+            # suggestion list, never auto-applied (§2.2 "no silent
+            # winners" / H-1/H-2). Default corrector emits no
+            # suggestions; real adapters surface candidates the user
+            # or Stage-3 consensus reviews.
+            homoglyph_suggestions = find_homoglyph_candidates(text, corrector=homoglyph_corrector)
+
+            # Phase 4 sub-batch A — §4.4 confidence taxonomy + §3.3
+            # preprocessing audit. Confidence may now come from Stage-5
+            # quality scoring (when run_quality_check=True) or from a
+            # Stage-3 consensus pass (sub-batch D); either way the
+            # taxonomy classifier is the same.
+            confidence_class = (
+                classify_confidence(confidence_score).value
+                if confidence_score is not None
+                else None
+            )
             ocr_po_payload: dict[str, Any] = {
                 "model": settings.gemini_ocr_model,
                 "text_chars": len(text),
                 "text_changed": text_changed,
                 "rev_uuid": str(revision.rev_uuid) if revision is not None else None,
                 "ocr_job_uuid": str(ocr_job.job_uuid),
+                "confidence_score": confidence_score,
+                "confidence_class": confidence_class,
+                "was_preprocessed": was_preprocessed,
+                "source_dpi": source_dpi,
+                # Stage-5 quality breakdown — None when run_quality_check=False.
+                "quality_breakdown": (
+                    {
+                        "overall": quality.overall,
+                        "completeness": quality.completeness.score,
+                        "structural_symmetry": quality.structural_symmetry.score,
+                        "char_count": quality.char_count.score,
+                        "known_passage": quality.known_passage.score,
+                    }
+                    if quality is not None
+                    else None
+                ),
+                # Stage-4 homoglyph candidate count + first-N
+                # serialization. Empty when default corrector is in use.
+                "homoglyph_suggestion_count": len(homoglyph_suggestions),
+                "homoglyph_suggestions": [
+                    {
+                        "position": s.position,
+                        "original": s.original,
+                        "replacement": s.replacement,
+                        "confidence": s.confidence,
+                        "rationale": s.rationale,
+                    }
+                    for s in homoglyph_suggestions[:32]
+                ],
+                # Sub-batch C — Stage-2 multi-engine breakdown.
+                # `engines` is None for legacy single-engine callers (the
+                # extractor-driven path); when set, the §3.6-symmetric
+                # two-engine driver populated it. `engine_agreement` is
+                # the coarse v1.0 agreement label; sub-batch D refines.
+                #
+                # Sub-batch N-2 (2026-05-12): each engine's `text` is
+                # persisted alongside `text_chars` so the audit-dashboard
+                # divergent-case can show a side-by-side reading
+                # comparison. Additive payload extension; legacy OCR-POs
+                # written before N-2 lack `text` per engine — the audit
+                # UI shows a "(re-run OCR to populate)" notice for them.
+                "engines": (
+                    [
+                        {
+                            "engine": r.engine.value,
+                            "text": r.text,
+                            "text_chars": len(r.text),
+                            "confidence": r.confidence,
+                            "error_class": r.error_class,
+                        }
+                        for r in engine_breakdown
+                    ]
+                    if engine_breakdown is not None
+                    else None
+                ),
+                "engine_agreement": engine_agreement,
+                # Sub-batch D — §3.4 Stage-3 three-track consensus
+                # breakdown. None for callers that don't run Stage-3
+                # (e.g. existing T-4.1.2 unit tests). When set, the
+                # caller-aggregated final confidence has typically
+                # overridden `confidence_score` already.
+                "stage3": stage3_payload,
             }
             await create_po(
                 session=session,

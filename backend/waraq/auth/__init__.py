@@ -1,5 +1,7 @@
 from waraq.auth.exceptions import (
     AccountInactive,
+    AccountPendingApproval,
+    AccountRejected,
     AuthError,
     EmailAlreadyRegistered,
     InvalidCredentials,
@@ -16,6 +18,8 @@ from waraq.auth.tokens import TokenPayload, issue_token, verify_token
 
 __all__ = [
     "AccountInactive",
+    "AccountPendingApproval",
+    "AccountRejected",
     "AuthError",
     "EmailAlreadyRegistered",
     "InvalidCredentials",

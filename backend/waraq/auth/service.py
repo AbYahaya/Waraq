@@ -1,4 +1,5 @@
-"""Sprint -0.5 — Account auth service.
+"""Sprint -0.5 — Account auth service. Phase 5 sub-batch M adds the
+admission gate.
 
 Three operations:
 - register_account(email, password, display_name=None) → Account
@@ -8,25 +9,37 @@ Three operations:
 
 Email is normalized to lowercase + stripped before any DB op.
 
+**Phase 5 admission gate (sub-batch M)**: `register_account` sets the
+new account's `approval_status` to `APPROVED` for emails in
+`ADMIN_EMAILS` env (bootstrap rule — at least one approver must exist)
+and `PENDING` for everyone else. `authenticate` refuses non-approved
+accounts with `AccountPendingApproval` / `AccountRejected` so the user
+sees a specific reason rather than a generic "invalid credentials".
+
 Caller owns the transaction. `register_account` flushes; commit/rollback
 is the caller's responsibility.
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 import uuid as _uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from waraq.admission import is_admin_email
 from waraq.auth.exceptions import (
     AccountInactive,
+    AccountPendingApproval,
+    AccountRejected,
     EmailAlreadyRegistered,
     InvalidCredentials,
 )
 from waraq.auth.passwords import hash_password, verify_password
 from waraq.identity.service import new_uuid
 from waraq.schemas import Account
+from waraq.schemas.enums import ApprovalStatus
 
 
 def _normalize_email(email: str) -> str:
@@ -50,11 +63,24 @@ async def register_account(
     if existing is not None:
         raise EmailAlreadyRegistered(email=normalized)
 
+    # M admission gate: admin emails auto-approve at registration so
+    # the very first admin can immediately act on the pending queue;
+    # everyone else starts in `pending` and waits for an admin.
+    is_admin = is_admin_email(normalized)
+    initial_status = ApprovalStatus.APPROVED if is_admin else ApprovalStatus.PENDING
+    approved_at = _dt.datetime.now(_dt.UTC) if is_admin else None
+
     account = Account(
         account_uuid=new_uuid(),
         email=normalized,
         password_hash=hash_password(password),
         display_name=display_name,
+        approval_status=initial_status,
+        approved_at=approved_at,
+        # Self-approval for admins — there's no other approver at
+        # bootstrap time. Subsequent admins are still auto-approved
+        # the same way (admin status is env-driven, not DB-driven).
+        approved_by_account_uuid=None,
     )
     session.add(account)
     await session.flush()
@@ -90,6 +116,17 @@ async def authenticate(
 
     if not account.active:
         raise AccountInactive(account_uuid=account.account_uuid)
+
+    # M admission gate. Surface pending / rejected with explicit
+    # error classes so the UI can show a useful message instead of
+    # the generic 401.
+    if account.approval_status == ApprovalStatus.PENDING:
+        raise AccountPendingApproval(account_uuid=account.account_uuid)
+    if account.approval_status == ApprovalStatus.REJECTED:
+        raise AccountRejected(
+            account_uuid=account.account_uuid,
+            reason=account.rejection_reason,
+        )
 
     return account
 

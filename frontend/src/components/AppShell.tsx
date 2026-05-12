@@ -32,11 +32,25 @@ export function AppShell(): JSX.Element {
           </Link>
           <div className="flex items-center gap-4 text-sm">
             <Link
+              to="/diagnostics"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              Diagnostics
+            </Link>
+            <Link
               to="/admin"
               className="text-muted-foreground hover:text-foreground"
             >
               Admin
             </Link>
+            {account?.is_admin && (
+              <Link
+                to="/admin/admissions"
+                className="text-muted-foreground hover:text-foreground"
+              >
+                Admissions
+              </Link>
+            )}
             {account && <NotificationPanel />}
             {account && (
               <span className="text-muted-foreground">

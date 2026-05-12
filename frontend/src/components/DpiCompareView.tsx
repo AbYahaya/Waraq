@@ -12,6 +12,7 @@
 
 import { useEffect, useState } from "react";
 
+import { apiPath } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 import { cn } from "@/lib/utils";
 
@@ -93,7 +94,7 @@ function DpiImage({ pageUuid, dpi, label }: DpiImageProps): JSX.Element {
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    fetch(`/pages/${pageUuid}/render-png?dpi=${dpi}`, { headers })
+    fetch(apiPath(`/pages/${pageUuid}/render-png?dpi=${dpi}`), { headers })
       .then(async (resp) => {
         if (!resp.ok) {
           const text = await resp.text();

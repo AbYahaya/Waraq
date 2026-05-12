@@ -36,7 +36,7 @@ import re
 import uuid as _uuid
 from collections.abc import Callable
 
-from waraq.audit.service import RuleCheck, RuleFinding
+from waraq.audit.service import RuleCheck, RuleContext, RuleFinding
 from waraq.schemas import Segment
 
 # Broad Arabic-block letter class. Covers the full U+0600..U+06FF range
@@ -213,23 +213,57 @@ def rule_b_04(segment: Segment) -> list[RuleFinding]:
 
 
 @_decorator_for("C-01")
-def rule_c_01(segment: Segment) -> list[RuleFinding]:
+def rule_c_01(segment: Segment, ctx: RuleContext | None = None) -> list[RuleFinding]:
     """Terminologieeintrag verletzt.
 
-    v1.0: detection_context is intentionally light because precise
-    detection requires a glossary lookup the rule body cannot perform
-    (no DB access from check functions per the pure-by-design contract
-    in audit/service.py). Fires on the marker `[TERM-VIOLATION]` in the
-    detection_context field — used by tests to inject deterministic
-    findings. A real implementation will run inside the audit pipeline
-    with the glossary cached on the AuditRunContext (M5 refinement).
+    Phase 4 sub-batch G upgrade: when the audit-run pre-loaded the
+    project glossary into `ctx.glossary`, the rule actually compares
+    every glossary entry whose canonical_label appears in the source
+    against the target — flagging entries whose canonical gloss is
+    NOT present in the target.
+
+    Both signals are kept:
+
+      - The legacy `[TERM-VIOLATION]` marker still fires (deterministic
+        path used by tests + manual reviewer flagging).
+      - When `ctx.glossary` is non-empty, every missing-gloss case
+        produces an additional C-01 finding with detection_context
+        carrying `concept_id`, `canonical_label`, `expected_gloss`.
+
+    Per the pure-by-design contract: this rule still does NO DB access
+    of its own; the audit-runner builds the context once and passes it
+    in. When `ctx is None` (legacy callers / tests without context)
+    the marker-only behaviour is preserved exactly.
     """
-    _src, tgt = _source_target(segment)
+    src, tgt = _source_target(segment)
     if tgt is None:
         return []
+
+    findings: list[RuleFinding] = []
     if "[TERM-VIOLATION]" in tgt:
-        return [_finding(segment.satz_uuid, "C-01", "terminology_violation_marker")]
-    return []
+        findings.append(_finding(segment.satz_uuid, "C-01", "terminology_violation_marker"))
+
+    if ctx is not None and ctx.glossary:
+        for entry in ctx.glossary:
+            label = entry.canonical_label
+            if not label or label not in src:
+                continue
+            if entry.gloss in tgt:
+                continue
+            findings.append(
+                RuleFinding(
+                    regelkennung="C-01",
+                    satz_uuid=segment.satz_uuid,
+                    detection_context={
+                        "match": "glossary_lookup",
+                        "concept_id": str(entry.concept_id),
+                        "canonical_label": entry.canonical_label,
+                        "expected_gloss": entry.gloss,
+                        "binding_level": entry.binding_level,
+                    },
+                )
+            )
+    return findings
 
 
 @_decorator_for("C-02")

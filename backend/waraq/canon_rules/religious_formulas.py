@@ -64,3 +64,30 @@ def normalize_religious_formulas(text: str) -> str:
     for src in _SPELLED_OUT_JJ:
         out = out.replace(src, JALLA_JALALUHU)
     return out
+
+
+def has_religious_formula_violations(text: str) -> bool:
+    """Predicate counterpart to `normalize_religious_formulas`.
+
+    Returns True iff `text` contains any unambiguous spelled-out form
+    of ﷺ / ﷻ that the normalizer would collapse. Wired into the §2.2
+    pre-export verifier as the third canonical-rule kind alongside
+    digit + EI2 violations: a write path that bypassed `apply_all`
+    (raw DB insert, partial migration, stale fixture) is caught
+    before the export artefact ships.
+
+    Idempotent. Pure: no side effects, no I/O.
+    """
+    if not text:
+        return False
+    if any(src in text for src in _SPELLED_OUT_SAW):
+        return True
+    return any(src in text for src in _SPELLED_OUT_JJ)
+
+
+__all__ = [
+    "JALLA_JALALUHU",
+    "SALLA_ALLAHU_ALAYHI_WA_SALLAM",
+    "has_religious_formula_violations",
+    "normalize_religious_formulas",
+]

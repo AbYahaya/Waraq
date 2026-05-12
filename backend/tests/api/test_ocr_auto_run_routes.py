@@ -213,11 +213,16 @@ class TestAutoRunPage:
 
 @pytest.mark.asyncio
 class TestAutoRunProject:
-    async def test_runs_only_ausstehend_pages(
+    async def test_returns_202_with_total_ausstehend_pages(
         self,
         auth_client: httpx.AsyncClient,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Sub-batch O — endpoint now returns 202 + Job UUID + the
+        snapshot count of ausstehend pages. The BackgroundTask runs
+        the actual loop; service-level tests in test_ocr_auto_run.py
+        exercise the per-page progress + completion. Here we verify
+        the 202 contract and the upfront page snapshot count."""
         from sqlalchemy.ext.asyncio import (
             AsyncSession,
             async_sessionmaker,
@@ -230,12 +235,14 @@ class TestAutoRunProject:
         from waraq.schemas import Page
         from waraq.schemas.enums import OcrStatus
 
+        # Stub run_ocr_for_page so the BackgroundTask doesn't try to
+        # actually call Gemini. The task may still run after this test
+        # returns; the stub keeps it from blowing up.
         monkeypatch.setattr(router_mod, "run_ocr_for_page", _stub_result_factory("ok"))
 
         r = await auth_client.post("/projects", json={"name": "p"})
         project_uuid = r.json()["project_uuid"]
 
-        # Seed: 2 ausstehend pages + 1 already-GO page.
         engine = create_async_engine(_test_database_url(), future=True)
         sm = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
         try:
@@ -255,11 +262,12 @@ class TestAutoRunProject:
             await engine.dispose()
 
         r = await auth_client.post(f"/ocr/projects/{project_uuid}/auto-run")
-        assert r.status_code == 200, r.text
+        assert r.status_code == 202, r.text
         body = r.json()
-        assert body["pages_processed"] == 2
-        assert body["pages_skipped"] == 1
-        assert len(body["skipped_page_uuids"]) == 1
+        assert body["state"] == "pending"
+        # 2 ausstehend pages; the GO page is not in the snapshot total.
+        assert body["total_pages"] == 2
+        assert "ocr_job_uuid" in body
 
     async def test_unknown_project_returns_404(self, auth_client: httpx.AsyncClient) -> None:
         r = await auth_client.post(f"/ocr/projects/{_uuid.uuid4()}/auto-run")
@@ -270,14 +278,18 @@ class TestAutoRunProject:
         auth_client: httpx.AsyncClient,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Empty project — no pages — no errors, processed=0.
+        """Sub-batch O — empty project still returns 202; total_pages=0
+        means the BackgroundTask transitions PENDING → RUNNING →
+        COMPLETED almost immediately. Just verify the 202 + zero
+        snapshot."""
+        _ = monkeypatch  # nothing to patch; no run_ocr_for_page calls
         r = await auth_client.post("/projects", json={"name": "p"})
         project_uuid = r.json()["project_uuid"]
         r = await auth_client.post(f"/ocr/projects/{project_uuid}/auto-run")
-        assert r.status_code == 200
+        assert r.status_code == 202
         body = r.json()
-        assert body["pages_processed"] == 0
-        assert body["pages_skipped"] == 0
+        assert body["total_pages"] == 0
+        assert body["state"] == "pending"
 
 
 @pytest.mark.asyncio

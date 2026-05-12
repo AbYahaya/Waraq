@@ -32,11 +32,15 @@ from fastapi import FastAPI
 
 from waraq.api.routers import (
     admin_router,
+    admissions_router,
+    audit_dashboard_router,
     auth_router,
     conflicts_router,
+    diagnostics_router,
     entities_router,
     export_router,
     glossary_router,
+    hadith_router,
     health_router,
     history_router,
     lock_router,
@@ -101,6 +105,14 @@ def create_app() -> FastAPI:
     app.include_router(toc_router.router)
     # Phase 3 sub-batch F — notifications + idle-timeout support.
     app.include_router(notifications_router.router)
+    # Phase 4 sub-batch J — §4.16 hadith verification HTTP route.
+    app.include_router(hadith_router.router)
+    # Phase 4 sub-batch J — diagnostic endpoints for the UI test surface.
+    app.include_router(diagnostics_router.router)
+    # Phase 5 sub-batch M — admin admission gate (simplified §2.3 row 8).
+    app.include_router(admissions_router.router)
+    # Sub-batch N (out-of-phase) — Project audit dashboard.
+    app.include_router(audit_dashboard_router.router)
     return app
 
 

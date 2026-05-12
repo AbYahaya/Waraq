@@ -14,6 +14,16 @@ from waraq.auth import (
     register_account,
 )
 from waraq.identity import new_uuid
+from waraq.schemas import Account
+from waraq.schemas.enums import ApprovalStatus
+
+
+async def _force_approve(session: AsyncSession, account: Account) -> None:
+    """Test helper: bump an account from the M default `pending` to
+    `approved` so the legacy auth-service happy-path tests still pass.
+    The admission-gate behavior gets its own coverage in `test_admission.py`."""
+    account.approval_status = ApprovalStatus.APPROVED
+    await session.flush()
 
 
 @pytest.mark.asyncio
@@ -45,6 +55,9 @@ class TestAuthenticate:
         registered = await register_account(
             session=db_session, email="me@x.com", password="hunter2"
         )
+        # Phase 5 M admission gate: register defaults to `pending`;
+        # this happy-path test pre-approves the account so login succeeds.
+        await _force_approve(db_session, registered)
 
         loaded = await authenticate(session=db_session, email="me@x.com", password="hunter2")
         assert loaded.account_uuid == registered.account_uuid
@@ -63,6 +76,7 @@ class TestAuthenticate:
 
     async def test_inactive_account_raises_account_inactive(self, db_session: AsyncSession) -> None:
         account = await register_account(session=db_session, email="off@x.com", password="hunter2")
+        await _force_approve(db_session, account)
         # Deactivate via the canonical IDENTITY service.
         from waraq.identity.service import mark_inactive
 
@@ -74,7 +88,10 @@ class TestAuthenticate:
         assert exc.value.account_uuid == account.account_uuid
 
     async def test_email_lookup_is_case_insensitive(self, db_session: AsyncSession) -> None:
-        await register_account(session=db_session, email="MixedCase@Example.COM", password="x")
+        registered = await register_account(
+            session=db_session, email="MixedCase@Example.COM", password="x"
+        )
+        await _force_approve(db_session, registered)
         loaded = await authenticate(session=db_session, email="mixedcase@example.com", password="x")
         assert loaded.email == "mixedcase@example.com"
 

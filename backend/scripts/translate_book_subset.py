@@ -38,11 +38,11 @@ from waraq.release_gate import start_translation
 from waraq.schemas import Account, Block, Page, Project, Segment
 from waraq.schemas.enums import OcrStatus
 from waraq.translation.openai_translator import make_openai_translator
+from waraq.translation.persistence import make_translation_persistence_hook
 from waraq.translation.service import (
     run_translation_job,
     start_translation_job,
 )
-from waraq.translation.persistence import make_translation_persistence_hook
 
 
 def _extract_pdf_subset(src: Path, n_pages: int, start_page_idx: int) -> Path:
@@ -128,7 +128,7 @@ async def main(pdf_path: str, n_pages: int = 3, start_page: int = 30) -> None:
 
         # --- Stage 3: per-page OCR + segment seeding ---------------------
         segments: list[Segment] = []
-        for page, png_path in zip(pages, page_pngs):
+        for page, png_path in zip(pages, page_pngs, strict=True):
             block = Block(
                 block_uuid=new_uuid(),
                 page_uuid=page.page_uuid,
@@ -156,16 +156,12 @@ async def main(pdf_path: str, n_pages: int = 3, start_page: int = 30) -> None:
                 mime_type="image/png",
                 target_segment=seg,
             )
-            print(
-                f"[3] OCR p{page.page_index}: {len(text)} chars: {text[:80]!r}…"
-            )
+            print(f"[3] OCR p{page.page_index}: {len(text)} chars: {text[:80]!r}…")
             page.ocr_status = OcrStatus.GO
         await session.flush()
 
         # --- Stage 4: release gate → start_translation -------------------
-        de_start = await start_translation(
-            session=session, project_uuid=project.project_uuid
-        )
+        de_start = await start_translation(session=session, project_uuid=project.project_uuid)
         print(f"[4] uebersetzungsstart DE: {de_start.decision_event_uuid}")
 
         # --- Stage 5: translation ----------------------------------------
@@ -179,17 +175,12 @@ async def main(pdf_path: str, n_pages: int = 3, start_page: int = 30) -> None:
         result = await run_translation_job(
             session=session, job=job, translator=translator, on_segment_translated=hook
         )
-        print(
-            f"[5] translation done: {len(result.chunks)} chunk(s), "
-            f"{len(result.skipped)} skipped"
-        )
+        print(f"[5] translation done: {len(result.chunks)} chunk(s), {len(result.skipped)} skipped")
         for seg in segments:
             await session.refresh(seg)
 
         # --- Stage 6: preflight ------------------------------------------
-        pf_run = await start_preflight_run(
-            session=session, project_uuid=project.project_uuid
-        )
+        pf_run = await start_preflight_run(session=session, project_uuid=project.project_uuid)
         for i in range(1, PFLICHTFRAGE_COUNT + 1):
             await confirm_pflichtfrage(
                 session=session,

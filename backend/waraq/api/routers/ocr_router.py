@@ -1,27 +1,32 @@
-"""OCR endpoints — start an OCR job for a Page, run it for a Segment.
+"""OCR endpoints.
 
-Two endpoints are exposed:
+Three families:
 
-POST /ocr/pages/{page_uuid}/start
-    Create a PENDING OCR Job for the given Page.
+1. **Per-segment** (M1) — `POST /ocr/pages/{u}/start` + `POST /ocr/jobs/{u}/run/{s}`.
+   Synchronous; multipart upload of page bytes.
 
-POST /ocr/jobs/{job_uuid}/run/{satz_uuid}
-    Multipart upload of the page image bytes; runs the OCR job against the
-    target Segment, writes Revision (on text change) + OCR-PO. Returns the
-    extracted text.
+2. **Per-page auto-run** (M3) — `POST /ocr/pages/{u}/auto-run`. Renders the
+   page from the SCAN-PO, runs OCR, persists revision + OCR-PO. Synchronous
+   in HTTP scope — single page is short enough to wait on (10–30 s).
 
-The HTTP layer doesn't (yet) handle PDF→image rasterization — clients
-provide page images directly. That's a deliberate scope choice for M1
-closeout; rasterization belongs in the OCR pipeline expansion in M3.
+3. **Per-project auto-run** (sub-batch O, 2026-05-12) — `POST
+   /ocr/projects/{u}/auto-run` is now **detached**: returns 202 + the
+   tracking Job's UUID immediately and the loop runs in a BackgroundTask.
+   Companion endpoints `GET /ocr/ocr-jobs/{u}` (status polling) and
+   `POST /ocr/ocr-jobs/{u}/cancel` (cooperative abort) replace the old
+   "synchronous in HTTP scope" pattern that froze the UI for minutes
+   and died on page refresh. `GET /ocr/projects/{u}/ocr-jobs/in-flight`
+   lets the frontend resume the progress UI after a page refresh.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid as _uuid
+from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.api._ownership import owned_page_or_404, owned_project_or_404
@@ -35,9 +40,18 @@ from waraq.ocr import (
     run_ocr_job,
     start_ocr_job,
 )
+from waraq.ocr.auto_run import (
+    OCR_AUTO_RUN_JOB_TYPE,
+    find_in_flight_for_project,
+    request_cancel,
+    run_ocr_auto_run_job_in_background,
+    start_ocr_auto_run_job,
+)
 from waraq.ocr.page_runner import PageOcrError, run_ocr_for_page
 from waraq.schemas import Job, Page, Project, Segment
 from waraq.schemas.enums import OcrStatus
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ocr", tags=["ocr"])
 
@@ -173,10 +187,44 @@ class PageOcrAutoResponse(BaseModel):
 
 
 class ProjectOcrAutoResponse(BaseModel):
+    """Pre-O response shape — preserved for the legacy synchronous
+    callers (kept as deprecated; new callers use `OcrAutoRunStartResponse`).
+    """
+
     project_uuid: _uuid.UUID
     pages_processed: int
     pages_skipped: int
     skipped_page_uuids: list[_uuid.UUID]
+
+
+# Sub-batch O response shapes.
+
+
+class OcrAutoRunStartResponse(BaseModel):
+    """Returned 202 ACCEPTED when the project auto-run is queued. The
+    frontend polls `GET /ocr/ocr-jobs/{job_uuid}` for progress."""
+
+    ocr_job_uuid: _uuid.UUID
+    project_uuid: _uuid.UUID
+    state: str
+    total_pages: int
+
+
+class OcrJobStatusResponse(BaseModel):
+    """Progress + state of an OCR auto-run Job. The poll target for
+    the frontend progress UI."""
+
+    ocr_job_uuid: _uuid.UUID
+    project_uuid: _uuid.UUID
+    state: str  # JobState.value
+    total_pages: int
+    processed_count: int
+    skipped_count: int
+    current_page_index: int | None
+    cancel_requested: bool
+    last_error: dict[str, Any] | None
+    result: dict[str, Any] | None
+    created_at: str  # ISO-8601
 
 
 @router.post(
@@ -211,8 +259,35 @@ async def auto_run_page(
                 "ocr_status": page.ocr_status.value,
             },
         )
+    # Sub-batch O — add visibility + bounded wait. Per-page is still
+    # synchronous in HTTP scope (single page is short enough to wait
+    # on), but the request is now logged and timeout-bounded so the
+    # caller can't hang on a stuck Gemini/Cloud Vision call forever.
+    import asyncio
+
+    from waraq.ocr.auto_run import PER_PAGE_TIMEOUT_SECONDS
+
+    logger.info(
+        "ocr.page.start",
+        extra={"page_uuid": str(page_uuid), "page_index": page.page_index},
+    )
     try:
-        result = await run_ocr_for_page(session=session, page=page)
+        result = await asyncio.wait_for(
+            run_ocr_for_page(session=session, page=page),
+            timeout=PER_PAGE_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as exc:
+        logger.exception(
+            "ocr.page.timeout",
+            extra={
+                "page_uuid": str(page_uuid),
+                "timeout_s": PER_PAGE_TIMEOUT_SECONDS,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"OCR exceeded {PER_PAGE_TIMEOUT_SECONDS:.0f}s per-page timeout",
+        ) from exc
     except PageOcrError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except H1H2Violation as exc:
@@ -228,6 +303,14 @@ async def auto_run_page(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OCR error: {exc!s}"
         ) from exc
+    logger.info(
+        "ocr.page.done",
+        extra={
+            "page_uuid": str(page_uuid),
+            "page_index": page.page_index,
+            "text_chars": result.text_chars,
+        },
+    )
     return PageOcrAutoResponse(
         page_uuid=result.page_uuid,
         text=result.text,
@@ -238,62 +321,155 @@ async def auto_run_page(
     )
 
 
+def _job_to_status(job: Job) -> OcrJobStatusResponse:
+    payload: dict[str, Any] = job.payload or {}
+    assert job.project_uuid is not None
+    return OcrJobStatusResponse(
+        ocr_job_uuid=job.job_uuid,
+        project_uuid=job.project_uuid,
+        state=job.state,
+        total_pages=int(payload.get("total_pages", 0)),
+        processed_count=int(payload.get("processed_count", 0)),
+        skipped_count=int(payload.get("skipped_count", 0)),
+        current_page_index=(
+            int(payload["current_page_index"])
+            if isinstance(payload.get("current_page_index"), int)
+            else None
+        ),
+        cancel_requested=bool(payload.get("cancel_requested", False)),
+        last_error=(job.error if isinstance(job.error, dict) else None),
+        result=(job.result if isinstance(job.result, dict) else None),
+        created_at=job.created_at.isoformat(),
+    )
+
+
 @router.post(
     "/projects/{project_uuid}/auto-run",
-    response_model=ProjectOcrAutoResponse,
+    response_model=OcrAutoRunStartResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def auto_run_project(
     project_uuid: _uuid.UUID,
+    background_tasks: BackgroundTasks,
     session: DbSession,
     current: CurrentAccount,
-) -> ProjectOcrAutoResponse:
-    """Run OCR sequentially on every `ausstehend` page of the project.
+) -> OcrAutoRunStartResponse:
+    """Sub-batch O — kick off project-wide OCR auto-run **detached**.
 
-    Synchronous in HTTP scope — the request is open for the duration of
-    every page's Gemini call, so this is intended for small projects in
-    a dev workflow. For larger jobs, drive the per-page endpoint from
-    the client to keep individual requests short.
+    Creates a PENDING Job, queues the runner via BackgroundTasks, and
+    returns 202 + the Job's UUID immediately. The frontend polls
+    `GET /ocr/ocr-jobs/{job_uuid}` for progress and uses
+    `POST /ocr/ocr-jobs/{job_uuid}/cancel` for cooperative abort.
 
-    Pages already past `ausstehend` are skipped (their UUIDs are
-    returned for transparency). Any per-page failure aborts the loop;
-    successfully-OCR'd pages are persisted because each page's writes
-    are flushed in turn.
+    Pages already past `ausstehend` are skipped by the runner. The
+    per-page OCR call is bounded by `PER_PAGE_TIMEOUT_SECONDS` so a
+    hung upstream can't stall the whole run; on timeout the job
+    fails with `error.phase = page_timeout`.
     """
     project = await owned_project_or_404(session, project_uuid, current.account_uuid)
-    result = await session.execute(
-        select(Page)
-        .where(Page.project_uuid == project.project_uuid)
-        .where(Page.active.is_(True))
-        .order_by(Page.page_index.asc())
+    job = await start_ocr_auto_run_job(session=session, project=project)
+    await session.commit()  # ensure the Job is visible to the BackgroundTask's session
+
+    from waraq.db.session import _sessionmaker
+
+    background_tasks.add_task(
+        run_ocr_auto_run_job_in_background, job.job_uuid, _sessionmaker
     )
-    pages: list[Page] = list(result.scalars())
-    processed: int = 0
-    skipped: list[_uuid.UUID] = []
-    for page in pages:
-        if page.ocr_status != OcrStatus.AUSSTEHEND:
-            skipped.append(page.page_uuid)
-            continue
-        try:
-            await run_ocr_for_page(session=session, page=page)
-        except PageOcrError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"page {page.page_index}: {exc}",
-            ) from exc
-        except MissingGeminiApiKey as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="OCR provider not configured (missing API key)",
-            ) from exc
-        except (GeminiApiError, OcrError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"page {page.page_index}: {exc!s}",
-            ) from exc
-        processed += 1
-    return ProjectOcrAutoResponse(
-        project_uuid=project_uuid,
-        pages_processed=processed,
-        pages_skipped=len(skipped),
-        skipped_page_uuids=skipped,
+    logger.info(
+        "ocr_auto_run.queued",
+        extra={
+            "ocr_job_uuid": str(job.job_uuid),
+            "project_uuid": str(project.project_uuid),
+            "total_pages": (job.payload or {}).get("total_pages", 0),
+        },
     )
+    return OcrAutoRunStartResponse(
+        ocr_job_uuid=job.job_uuid,
+        project_uuid=project.project_uuid,
+        state=job.state,
+        total_pages=int((job.payload or {}).get("total_pages", 0)),
+    )
+
+
+@router.get(
+    "/ocr-jobs/{job_uuid}",
+    response_model=OcrJobStatusResponse,
+)
+async def get_ocr_job_status(
+    job_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> OcrJobStatusResponse:
+    """Progress + state poll target for the frontend OCR auto-run UI."""
+    job: Job | None = await session.get(Job, job_uuid)
+    if (
+        job is None
+        or job.job_type != OCR_AUTO_RUN_JOB_TYPE
+        or job.project_uuid is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found"
+        )
+    project: Project | None = await session.get(Project, job.project_uuid)
+    if project is None or project.account_uuid != current.account_uuid:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found"
+        )
+    return _job_to_status(job)
+
+
+@router.post(
+    "/ocr-jobs/{job_uuid}/cancel",
+    response_model=OcrJobStatusResponse,
+)
+async def cancel_ocr_job(
+    job_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> OcrJobStatusResponse:
+    """Request cooperative cancel of an OCR auto-run Job.
+
+    Sets `payload.cancel_requested = true`. The runner checks the flag
+    between pages and aborts with `error.phase = user_cancelled`.
+    Idempotent — calling cancel on a terminal job is a no-op.
+    """
+    job: Job | None = await session.get(Job, job_uuid)
+    if (
+        job is None
+        or job.job_type != OCR_AUTO_RUN_JOB_TYPE
+        or job.project_uuid is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found"
+        )
+    project: Project | None = await session.get(Project, job.project_uuid)
+    if project is None or project.account_uuid != current.account_uuid:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found"
+        )
+    job = await request_cancel(session=session, job=job)
+    await session.commit()
+    return _job_to_status(job)
+
+
+@router.get(
+    "/projects/{project_uuid}/ocr-jobs/in-flight",
+    response_model=OcrJobStatusResponse | None,
+)
+async def get_in_flight_ocr_job(
+    project_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> OcrJobStatusResponse | None:
+    """Resume helper: the frontend calls this on workspace mount so a
+    page refresh can pick up an in-flight progress bar. Returns the
+    most-recent non-terminal OCR auto-run Job for the project, or
+    null if none."""
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
+    job = await find_in_flight_for_project(
+        session=session, project_uuid=project.project_uuid
+    )
+    if job is None:
+        return None
+    return _job_to_status(job)
+

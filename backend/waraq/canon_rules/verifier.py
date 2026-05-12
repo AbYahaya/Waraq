@@ -42,6 +42,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.canon_rules.digit_guard import has_arabic_indic_digits
+from waraq.canon_rules.religious_formulas import has_religious_formula_violations
 from waraq.canon_rules.transliteration import has_ei2_violations
 from waraq.schemas import Block, Page, Segment
 
@@ -49,15 +50,16 @@ from waraq.schemas import Block, Page, Segment
 class CanonRuleViolationKind(StrEnum):
     """The §2.2 canonical-rule violation kinds the verifier scans for.
 
-    Religious-formula violations (multi-character spellings of ﷺ / ﷻ)
-    are NOT included in v1.0 — they're auto-normalized at write time
-    and a meaningful predicate would have to enumerate the dozens of
-    spelling variants the normalizer collapses. Adding it later is a
-    one-liner once the predicate exists.
+    All three canonical rules from §2.2 are scanned: Western digits,
+    EI2 transliteration, and religious-formula glyphs. Each rule has
+    an auto-normalize entry point in `apply_all`; the verifier is the
+    defense-in-depth twin that catches any write path that bypassed
+    auto-normalize (raw DB insert, partial migration, stale fixture).
     """
 
     ARABIC_INDIC_DIGITS = "arabic_indic_digits"
     EI2_TRANSLITERATION = "ei2_transliteration"
+    RELIGIOUS_FORMULA_NOT_GLYPH = "religious_formula_not_glyph"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,13 @@ async def verify_canon_rules_for_export(
                 CanonRuleViolation(
                     satz_uuid=satz_uuid,
                     kind=CanonRuleViolationKind.EI2_TRANSLITERATION,
+                )
+            )
+        if has_religious_formula_violations(text):
+            violations.append(
+                CanonRuleViolation(
+                    satz_uuid=satz_uuid,
+                    kind=CanonRuleViolationKind.RELIGIOUS_FORMULA_NOT_GLYPH,
                 )
             )
     return violations

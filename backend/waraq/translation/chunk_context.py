@@ -26,13 +26,74 @@ the translation `_execute` loop, never by HTTP directly.
 
 from __future__ import annotations
 
+import re
 import uuid as _uuid
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from waraq.arabic import to_skeleton
 from waraq.schemas import Concept, Entity
+
+# §4.17 "no glossary hit" heuristic — module-level constants so they
+# can be tuned in one place during Phase-7 calibration.
+#
+# Detection rule: an Arabic-word substring is an `UntrackedTermCandidate`
+# when ALL of the following hold:
+#   - It is purely Arabic-script (U+0600..U+06FF).
+#   - Its skeleton (NFC + Tatweel + diacritic-strip + alif-collapse)
+#     is at least `_UNTRACKED_TERM_MIN_SKELETON_LEN` characters.
+#   - Its skeleton does NOT match the skeleton of any glossary or
+#     entity canonical_label (otherwise the existing GlossaryHit /
+#     EntityHit path already covers it).
+#   - It is not in the small `_UNTRACKED_TERM_STOPWORDS` filter — a
+#     tight allow-list of high-frequency function words whose
+#     "looks technical" signal is misleading.
+#
+# We deliberately do NOT bound the candidate count here — the chunk
+# brief surfaces every candidate. Per-call truncation lives at the
+# prompt-construction site so the budget can vary by engine.
+_ARABIC_WORD_RE_CTX = re.compile(r"[؀-ۿ]+")
+_UNTRACKED_TERM_MIN_SKELETON_LEN: int = 4
+_UNTRACKED_TERM_STOPWORDS: frozenset[str] = frozenset(
+    {
+        # Articles / particles the heuristic must not surface.
+        "الذي",
+        "التي",
+        "الذين",
+        "هذا",
+        "هذه",
+        "ذلك",
+        "تلك",
+        "هؤلاء",
+        # Common verbs / prepositions / conjunctions.
+        "كان",
+        "كانت",
+        "قال",
+        "قالت",
+        "قالوا",
+        "أن",
+        "إن",
+        "أنت",
+        "أنا",
+        "نحن",
+        "هم",
+        "هي",
+        "هو",
+        "على",
+        "إلى",
+        "عن",
+        "من",
+        "في",
+        "ما",
+        "لا",
+        "ثم",
+        "بل",
+        "لكن",
+        "ولكن",
+    }
+)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -72,6 +133,33 @@ class EntityHit:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class UntrackedTermCandidate:
+    """A source-text token flagged by the §4.17 "no glossary hit"
+    heuristic — a word that LOOKS like it could be a technical term
+    but is NOT present in the project's / account's glossary.
+
+    The translator prompt forwards these to the LLM with the directive
+    "if you treat any of these as a technical term, render with the
+    §4.17 AI-footnote pattern (`gloss (Arabic) [Anm.: …; Source: AI]`)".
+
+    The detection itself never flags terms as definitely-technical —
+    that judgement stays with the LLM (canon-defensible: §2.2 "no
+    silent winners", §4.17 "AI-generated footnote with [Source: AI]
+    marker"). The heuristic just surfaces likely candidates so the
+    LLM doesn't miss them.
+
+    Attributes:
+        surface_form: The Arabic substring as it appears in the
+            source. Diacritics preserved.
+        skeleton: Diacritic-stripped, Tatweel-stripped form (the
+            uniqueness key).
+    """
+
+    surface_form: str
+    skeleton: str
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class ChunkBrief:
     """The §3.6 per-chunk brief: glossary + entity hits relevant to a
     specific source-text chunk. Empty when the project has no glossary
@@ -83,10 +171,13 @@ class ChunkBrief:
 
     glossary_hits: list[GlossaryHit] = field(default_factory=list)
     entity_hits: list[EntityHit] = field(default_factory=list)
+    untracked_term_candidates: list[UntrackedTermCandidate] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
-        return not self.glossary_hits and not self.entity_hits
+        return (
+            not self.glossary_hits and not self.entity_hits and not self.untracked_term_candidates
+        )
 
 
 class ChunkContextResolver:
@@ -171,6 +262,34 @@ class ChunkContextResolver:
             previously_used_concept_ids=previously_used,
         )
 
+    def _resolve_untracked_term_candidates(
+        self,
+        source_text: str,
+        covered_skeletons: set[str],
+    ) -> list[UntrackedTermCandidate]:
+        """§4.17 "no glossary hit" detection.
+
+        Scan the source for Arabic words whose skeleton is not already
+        covered by a glossary / entity hit — those are the candidates
+        the LLM may treat as technical terms via the AI-footnote
+        pattern. Returns each unique surface form once (first
+        occurrence wins). Order is source-position to preserve a
+        deterministic prompt ordering."""
+        seen_skeletons: set[str] = set(covered_skeletons)
+        out: list[UntrackedTermCandidate] = []
+        for match in _ARABIC_WORD_RE_CTX.finditer(source_text):
+            word = match.group(0)
+            if word in _UNTRACKED_TERM_STOPWORDS:
+                continue
+            skel = to_skeleton(word)
+            if len(skel) < _UNTRACKED_TERM_MIN_SKELETON_LEN:
+                continue
+            if skel in seen_skeletons:
+                continue
+            seen_skeletons.add(skel)
+            out.append(UntrackedTermCandidate(surface_form=word, skeleton=skel))
+        return out
+
     def resolve(self, source_text: str) -> ChunkBrief:
         """Scan `source_text` for substring matches against every loaded
         glossary + entity canonical_label. Returns a brief with the
@@ -182,7 +301,7 @@ class ChunkContextResolver:
         (translation), the hit is skipped — there is no rendering to
         enforce.
         """
-        if not source_text or (not self._glossary and not self._entities):
+        if not source_text:
             return ChunkBrief()
 
         glossary_hits: list[GlossaryHit] = []
@@ -227,7 +346,27 @@ class ChunkContextResolver:
                 )
                 seen_entities.add(entity.entity_id)
 
-        return ChunkBrief(glossary_hits=glossary_hits, entity_hits=entity_hits)
+        # §4.17 "no glossary hit" — flag any source word whose skeleton
+        # isn't already covered by the glossary / entity matches above
+        # so the translator prompt can route it through the AI-footnote
+        # pattern. The set of "covered" skeletons is the join of all
+        # glossary + entity surface skeletons.
+        covered_skeletons: set[str] = set()
+        for h in glossary_hits:
+            sk = to_skeleton(h.surface_form)
+            if sk:
+                covered_skeletons.add(sk)
+        for eh in entity_hits:
+            sk = to_skeleton(eh.surface_form)
+            if sk:
+                covered_skeletons.add(sk)
+        untracked = self._resolve_untracked_term_candidates(source_text, covered_skeletons)
+
+        return ChunkBrief(
+            glossary_hits=glossary_hits,
+            entity_hits=entity_hits,
+            untracked_term_candidates=untracked,
+        )
 
 
 async def _query_used_concept_ids(
@@ -273,4 +412,5 @@ __all__ = [
     "ChunkContextResolver",
     "EntityHit",
     "GlossaryHit",
+    "UntrackedTermCandidate",
 ]

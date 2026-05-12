@@ -21,6 +21,44 @@ dependencies = [
     "google-genai>=1.0",
     "python-docx>=1.1",
     "openai>=2.0",
+    # Phase 4 sub-batch B' — Stage-3 rule-based + multi-engine OCR.
+    # CAMeL Tools is the canonical morphology library (decided
+    # 2026-05-06); pulls torch CPU + transformers + tokenizers (~5 GB
+    # venv overhead) but enables §4.16.7 V-1↔V-2 refinement, §4.17
+    # untracked-term detection, and Stage-3 rule-based grammar checks.
+    "camel-tools>=1.5",
+    # Lightweight Arabic-grammar tashkeel checker. Used in Stage-3
+    # rule-based consensus alongside CAMeL.
+    "mishkal>=0.4",
+    # Google Cloud Vision DOCUMENT_TEXT_DETECTION as the §3.4 Stage-2
+    # second OCR engine alongside Gemini. Runtime use is gated on
+    # GOOGLE_APPLICATION_CREDENTIALS being configured.
+    "google-cloud-vision>=3.7",
+    # OpenCV adaptive preprocessing primitives behind the §3.3
+    # preprocessing harness. Headless build = no GUI deps.
+    "opencv-python-headless>=4.10",
+    # Phase 5 sub-batch K-1 — HEIC/HEIF image format support. Registers
+    # a HEIF opener with PIL so `Image.open(...)` handles `.heic` like
+    # any other format. JPEG/PNG/TIFF/WEBP are native to Pillow.
+    "pillow-heif>=0.18",
+    # Phase 5 sub-batch K-2 — ODT (OpenDocument Text) reader. DOCX is
+    # already covered by `python-docx` (read + write share the lib).
+    # TXT / XML / HTML are stdlib-only.
+    "odfpy>=1.4",
+    # Phase 5 sub-batch K-3 — e-book formats. `ebooklib` handles EPUB
+    # (ZIP-of-XHTML); `mobi` handles MOBI / AZW / AZW3 (Amazon Kindle
+    # non-DRM). DjVu uses the `ddjvu` / `djvused` system tools from
+    # `djvulibre-bin` — adapter is wired here, system install is a
+    # deployment concern (mirrors the `pdftoppm` / `poppler-utils`
+    # pattern for PDF rasterize).
+    "ebooklib>=0.18",
+    "mobi>=0.3",
+    # Phase 5 sub-batch K-4 — archive formats. `zipfile` (stdlib)
+    # handles ZIP/CBZ. `rarfile` handles RAR/CBR — it requires the
+    # `unrar` system binary on PATH (`apt install unrar`). Adapter
+    # wired; system install activates RAR uploads (same pattern as
+    # djvulibre-bin / poppler-utils).
+    "rarfile>=4.2",
 ]
 
 [project.optional-dependencies]
@@ -89,4 +127,29 @@ disallow_untyped_defs = true
 # mypy shouldn't fail when the package isn't on disk.
 [[tool.mypy.overrides]]
 module = ["camel_tools.*"]
+ignore_missing_imports = true
+
+# kraken is an optional install (Phase 4 §3.3 manuscript reading line,
+# project-flag gated). Same lazy-import pattern as camel-tools.
+[[tool.mypy.overrides]]
+module = ["kraken", "kraken.*"]
+ignore_missing_imports = true
+
+# odfpy (Phase 5 K-2 ODT reader) and pillow_heif (K-1 HEIC opener) ship
+# without py.typed markers. We import them inside try/except and stay
+# typed at the boundary. K-3 adds ebooklib (EPUB) and mobi (MOBI/AZW/AZW3).
+# K-4 adds rarfile (RAR/CBR; needs unrar system binary).
+[[tool.mypy.overrides]]
+module = [
+    "odf",
+    "odf.*",
+    "pillow_heif",
+    "pillow_heif.*",
+    "ebooklib",
+    "ebooklib.*",
+    "mobi",
+    "mobi.*",
+    "rarfile",
+    "rarfile.*",
+]
 ignore_missing_imports = true

@@ -119,6 +119,23 @@ def make_openai_translator(
                     "NAMED ENTITIES (use the canonical Arabic spelling "
                     "transliterated into German per EI2):\n" + "\n".join(lines)
                 )
+            # §4.17 "no glossary hit" — surface untracked candidates so
+            # the LLM emits the AI-footnote pattern when it judges any
+            # of them to be a technical term. We cap at 16 to bound
+            # the prompt budget; longer chunks naturally surface fewer
+            # standalone candidates anyway.
+            if brief.untracked_term_candidates:
+                cands = brief.untracked_term_candidates[:16]
+                lines = [f"  - {c.surface_form}" for c in cands]
+                prompt_blocks.append(
+                    "POTENTIAL TECHNICAL TERMS NOT IN GLOSSARY (§4.17 — "
+                    "when you treat any of these as a technical term, render "
+                    'on first occurrence as: "{German rendering} '
+                    "({Arabic original}) [Anm.: brief explanation; "
+                    'Source: AI]"; subsequent occurrences use the German '
+                    "rendering alone. If a candidate is NOT a technical "
+                    "term, translate normally — no footnote):\n" + "\n".join(lines)
+                )
 
         if context.upstream_window:
             recent = "\n".join(f"  - {entry}" for entry in context.upstream_window[-3:])

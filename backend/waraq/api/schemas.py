@@ -41,6 +41,14 @@ class AccountResponse(BaseModel):
     email: str
     display_name: str | None
     active: bool
+    # M admission gate — surfaced on /auth/me so the frontend can
+    # render UI conditionally (admin vs. regular user, approval state).
+    approval_status: str = "approved"  # legacy callers may not supply
+    # True iff the account's email is in the `ADMIN_EMAILS` env (the
+    # bootstrap admin allowlist). Used by the frontend to show the
+    # admin admissions link. Server-computed; the response model has
+    # a default so legacy callers stay shape-compatible.
+    is_admin: bool = False
 
 
 # --- Projects -----------------------------------------------------------
@@ -83,12 +91,45 @@ class UploadStatusResponse(BaseModel):
     expected_next_chunk: int | None
 
 
+class DuplicateMatchResponse(BaseModel):
+    """One existing Page in this project that matches the upload on
+    filename or content. Surfaced in pre-upload precheck (filename
+    match) and post-finalize response (sha256 match). Both kinds are
+    warnings — the user can confirm "upload anyway" via the frontend
+    modal. Canon §2.1 / §2.2 row 6."""
+
+    page_uuid: _uuid.UUID
+    page_index: int
+    upload_job_uuid: _uuid.UUID | None
+    original_filename: str | None
+    source_sha256: str | None
+    match_kind: str  # "filename" | "sha256"
+
+
 class UploadFinalizeResponse(BaseModel):
     job_uuid: _uuid.UUID
     state: str
     page_count: int
     page_uuids: list[_uuid.UUID]
     source_sha256: str
+    # K-5 row 6 SHA-256 dedupe: any prior pages in this project whose
+    # content matches the just-uploaded file. Empty list = unique
+    # content. Frontend shows the post-upload duplicate modal when
+    # non-empty.
+    duplicate_sha256_matches: list[DuplicateMatchResponse] = []
+
+
+class UploadPrecheckResponse(BaseModel):
+    """K-5 rows 6+7. Frontend calls `GET /projects/{u}/upload-precheck`
+    when the user picks a file (before any bytes upload). The response
+    drives two modal warnings:
+      - `filename_matches` non-empty → "filename already exists" modal
+      - `project_has_existing_pages` True → "1-book-at-a-time" modal
+    Both warnings, NOT hard blocks. SHA-256 match is reported
+    post-upload via `UploadFinalizeResponse.duplicate_sha256_matches`."""
+
+    filename_matches: list[DuplicateMatchResponse]
+    project_has_existing_pages: bool
 
 
 # --- OCR ----------------------------------------------------------------

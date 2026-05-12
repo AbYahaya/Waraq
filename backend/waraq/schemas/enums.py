@@ -19,6 +19,26 @@ class ChangeSource(StrEnum):
     STYLE_PROFILE = "style_profile"
 
 
+class ApprovalStatus(StrEnum):
+    """Phase 5 sub-batch M — Account.approval_status.
+
+    Simplified admission gate (canon §2.3 row 8 partial — tier system
+    + subscription deferred). State machine:
+      pending  → approved | rejected     (by admin action)
+      rejected → approved                (admin overturns rejection)
+      approved → (terminal for v1.0; tier system will add transitions)
+
+    New accounts default to `pending`. Accounts whose email is in
+    `ADMIN_EMAILS` env are auto-approved at registration (bootstrap
+    rule — there has to be at least one approver). Login refuses
+    `pending` and `rejected` accounts with explicit error classes.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class DecisionSource(StrEnum):
     """Per Dokument 1 §4.10 / CLAUDE.md §5.9 — ten unveränderlich values.
 
@@ -141,6 +161,45 @@ class OcrSeverity(StrEnum):
     KRITISCH = "kritisch"
     HOCH = "hoch"
     MITTEL = "mittel"
+
+
+class BlockClass(StrEnum):
+    """Per Dokument 1 §3.4 — canonical OCR Stage-1 / Stage-2 block class.
+
+    Six values. The Stage-1 layout detector classifies each detected
+    block; Stage-2 OCR routes per class (different reading lines for
+    main_text vs Qurʾān vs marginalia). Adding a seventh value here is a
+    canon-amendment-shaped change.
+
+    Legacy synonyms in pre-Phase-4 data: `UE` (Überschrift, Heading 1)
+    and `HD` (Heading 2) — both historically modelled as `block_type`
+    string values for the TOC + DOCX-export paths. Migration 0024
+    extends the CHECK constraint to allow these legacy values alongside
+    the canonical six until a follow-up cleanup migrates them to
+    `(HEADING, heading_level=1|2)`. Both code paths read; new writes
+    use the canonical values.
+    """
+
+    MAIN_TEXT = "main_text"
+    FOOTNOTE = "footnote"
+    HEADING = "heading"
+    QURAN = "quran"
+    HADITH = "hadith"
+    MARGINALIA = "marginalia"
+
+
+class ReadingDirection(StrEnum):
+    """Per Dokument 1 §3.4 — text reading direction per Block.
+
+    Arabic is RTL (default for this project's documents); LTR captures
+    the rare interspersed Latin-script block. UNKNOWN is the harness
+    fallback when a detector cannot decide — callers treat UNKNOWN like
+    RTL for layout but log it so detector calibration can target it.
+    """
+
+    RTL = "rtl"
+    LTR = "ltr"
+    UNKNOWN = "unknown"
 
 
 class ScopeType(StrEnum):

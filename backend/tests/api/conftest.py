@@ -11,6 +11,7 @@ don't collide.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -134,6 +135,37 @@ async def _cleanup_account(account_uuid: Any) -> None:
                     .where(Segment.satz_uuid.in_(segment_uuids))
                     .values(current_rev_uuid=None)
                 )
+                # Sub-batch J: hadith aggregate + single-source rows
+                # FK back to segments via satz_uuid. Their FK_DELETE
+                # behaviour blocks the segment delete unless we drop
+                # them first. Order matters: single_source FK→aggregate.
+                from waraq.schemas import (
+                    HadithAggregateResult,
+                    HadithSingleSourceResult,
+                )
+
+                aggregate_uuids = (
+                    (
+                        await session.execute(
+                            select(HadithAggregateResult.aggregate_uuid).where(
+                                HadithAggregateResult.satz_uuid.in_(segment_uuids)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if aggregate_uuids:
+                    await session.execute(
+                        delete(HadithSingleSourceResult).where(
+                            HadithSingleSourceResult.aggregate_uuid.in_(aggregate_uuids)
+                        )
+                    )
+                    await session.execute(
+                        delete(HadithAggregateResult).where(
+                            HadithAggregateResult.aggregate_uuid.in_(aggregate_uuids)
+                        )
+                    )
                 # Child tables that FK to revisions/segments must die first.
                 await session.execute(
                     delete(TranslationObservation).where(
@@ -249,12 +281,25 @@ async def auth_client(
     email = f"test-{new_uuid()}@waraq-test.example.com"
     password = "test-password-12345"
 
+    # Phase 5 M admission gate: auth_client's account must be approved
+    # to log in. The simplest way is to add its email to ADMIN_EMAILS
+    # so `register_account` auto-approves it. This matches the bootstrap
+    # rule and keeps the test on the normal-register path.
+    existing_admins = os.environ.get("ADMIN_EMAILS", "")
+    monkeypatch.setenv(
+        "ADMIN_EMAILS",
+        f"{existing_admins},{email}".lstrip(","),
+    )
+    # Clear get_settings cache so the new ADMIN_EMAILS is picked up.
+    db_session_module.get_settings.cache_clear()
+
     resp = await http_client.post(
         "/auth/register",
         json={"email": email, "password": password, "display_name": "Test"},
     )
     assert resp.status_code == 201, resp.text
     token = resp.json()["access_token"]
+    assert token is not None, "auth_client expects approved account with token"
 
     # Look up the account_uuid we just created so cleanup can find it.
     engine = create_async_engine(_test_database_url(), future=True)

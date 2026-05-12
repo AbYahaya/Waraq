@@ -120,9 +120,21 @@ class TestResolverFromProject:
             account_uuid=account.account_uuid,
         )
         brief = resolver.resolve("ذكر الإجماع")
-        assert brief.is_empty
+        # Sub-batch G: assertion narrowed to glossary + entity hits.
+        # Untracked-term candidates may surface — that's expected since
+        # the inactive concept doesn't cover the surface form.
+        assert brief.glossary_hits == []
+        assert brief.entity_hits == []
 
-    async def test_no_match_returns_empty_brief(self, db_session: AsyncSession) -> None:
+    async def test_no_glossary_match_returns_no_glossary_hits(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Sub-batch G refined the brief shape: text without glossary
+        matches no longer produces an empty brief — the §4.17 "no
+        glossary hit" heuristic surfaces untracked-term candidates
+        for the LLM to route through the AI-footnote pattern. What
+        the test ACTUALLY asserts is "no GlossaryHit + no EntityHit".
+        """
         project, account = await _seed_project(db_session)
         db_session.add(
             Concept(
@@ -141,7 +153,8 @@ class TestResolverFromProject:
             account_uuid=account.account_uuid,
         )
         brief = resolver.resolve("هذا نص بدون مصطلحات معجمية.")
-        assert brief.is_empty
+        assert brief.glossary_hits == []
+        assert brief.entity_hits == []
 
     async def test_skips_entries_without_gloss(self, db_session: AsyncSession) -> None:
         project, account = await _seed_project(db_session)

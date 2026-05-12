@@ -3,13 +3,13 @@ from __future__ import annotations
 import uuid as _uuid
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from waraq.db.base import Base, TimestampMixin
 from waraq.invariant.enums import LockFlag
-from waraq.schemas.enums import OcrStatus
+from waraq.schemas.enums import OcrStatus, ReadingDirection
 
 
 class Project(Base, TimestampMixin):
@@ -61,11 +61,33 @@ class Block(Base, TimestampMixin):
         ForeignKey("pages.page_uuid", ondelete="RESTRICT"),
         nullable=False,
     )
-    # Canonical value set locked in Sprint-OCR per Dokument 1 §3.4 (OCR Stage 2
-    # block classification). Intentionally an unconstrained string here so that
-    # the constraint lands in the same migration that introduces the classifier.
+    # Canonical value set per Dokument 1 §3.4 (OCR Stage-2 block class).
+    # Migration 0024 lands a CHECK constraint allowing the canonical six
+    # `BlockClass` values plus the legacy `UE` / `HD` heading synonyms
+    # used by the TOC + DOCX-export paths until those callers migrate to
+    # `(heading, heading_level=1|2)`.
     block_type: Mapped[str] = mapped_column(String(32), nullable=False)
     block_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # §3.4 Stage-1 reading-direction map. Defaults to RTL (Arabic primary).
+    # The `unknown` sentinel captures detector ambiguity so calibration can
+    # target it; treat unknown like RTL for layout decisions.
+    reading_direction: Mapped[ReadingDirection] = mapped_column(
+        SAEnum(
+            ReadingDirection,
+            name="reading_direction",
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        nullable=False,
+        server_default=ReadingDirection.RTL.value,
+    )
+    # §3.4 Stage-1 text-density signal (black-pixel ratio in [0, 1]) and
+    # baseline y-coordinate. Both NULL until a real layout detector
+    # (LayoutParser / DocTR) populates them; the v1.0 default detector
+    # leaves them None.
+    text_density: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_y: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Segment(Base, TimestampMixin):

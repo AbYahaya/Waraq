@@ -65,10 +65,48 @@ class RuleFinding:
     detection_context: dict[str, Any]
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GlossaryEntry:
+    """One row of the rule-evaluation glossary cache. Read-only.
+
+    Attributes:
+        concept_id: UUID of the source `concepts` row.
+        canonical_label: Arabic surface form (the source-side key).
+        gloss: Canonical German rendering (the §4.12.1 Tier 1 target).
+        binding_level: ``"project"`` or ``"account"`` per §4.19.
+    """
+
+    concept_id: _uuid.UUID
+    canonical_label: str
+    gloss: str
+    binding_level: str
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RuleContext:
+    """Read-only project-scoped context passed to rule check functions
+    that need data the segment alone doesn't carry.
+
+    Pure-by-design: rules NEVER mutate the context. The dispatcher
+    builds it once per audit-run before iterating segments and passes
+    the same instance to every rule call.
+
+    The default empty context preserves the pre-Phase-4 marker-only
+    behaviour for tests + callers that don't pre-load data.
+    """
+
+    glossary: tuple[GlossaryEntry, ...] = ()
+
+
 # Type alias for rule check signature. Pure-by-design: takes a Segment
-# (and the audit run's project context), returns a list of findings. No
-# DB writes, no exceptions for "no finding".
-RuleCheck = Callable[[Segment], list[RuleFinding]]
+# (and optionally a RuleContext), returns a list of findings. No DB
+# writes, no exceptions for "no finding".
+#
+# Phase 4 sub-batch G: rules MAY accept a second positional `ctx`
+# argument typed `RuleContext | None`. Rules without a `ctx` argument
+# stay valid and are called with the single-arg signature; the
+# dispatcher uses `inspect.signature` to disambiguate.
+RuleCheck = Callable[..., list[RuleFinding]]
 
 
 # --- record_befund ---------------------------------------------------
@@ -242,12 +280,61 @@ class AuditRunResult:
     by_severity: dict[str, int]
 
 
+async def build_default_rule_context(
+    session: AsyncSession,
+    project_uuid: _uuid.UUID,
+) -> RuleContext:
+    """Build a RuleContext from the project's active glossary.
+
+    Pulls every active `concepts` row scoped to `project_uuid` (the
+    HTTP audit-runner is responsible for pulling account-scoped rows
+    too via a follow-up call when needed; v1.0 audit only reads
+    project-scoped glossary). Skips concepts without a `gloss` — there
+    is no canonical target rendering to enforce.
+    """
+    from waraq.schemas import Concept
+
+    rows = await session.execute(
+        select(Concept).where(Concept.active.is_(True)).where(Concept.project_uuid == project_uuid)
+    )
+    entries: list[GlossaryEntry] = []
+    for c in rows.scalars():
+        if not c.gloss or not c.canonical_label:
+            continue
+        entries.append(
+            GlossaryEntry(
+                concept_id=c.concept_id,
+                canonical_label=c.canonical_label,
+                gloss=c.gloss,
+                binding_level=c.binding_level,
+            )
+        )
+    return RuleContext(glossary=tuple(entries))
+
+
+def _call_rule(rule: RuleCheck, segment: Segment, ctx: RuleContext) -> list[RuleFinding]:
+    """Dispatch helper — calls `rule(segment)` for the legacy
+    single-arg signature, `rule(segment, ctx)` for context-aware rules
+    (sub-batch G refinement)."""
+    import inspect
+
+    try:
+        params = inspect.signature(rule).parameters
+    except (TypeError, ValueError):
+        # Builtins / C-functions — fall back to single-arg call.
+        return rule(segment)
+    if len(params) >= 2:
+        return rule(segment, ctx)
+    return rule(segment)
+
+
 async def run_audit_for_project(
     *,
     session: AsyncSession,
     project_uuid: _uuid.UUID,
     rules: Iterable[RuleCheck],
     severity_table: SeverityTable | None = None,
+    rule_context: RuleContext | None = None,
 ) -> AuditRunResult:
     """Execute one audit-run over a project's segments.
 
@@ -268,6 +355,7 @@ async def run_audit_for_project(
     """
     table = severity_table if severity_table is not None else default_severity_table()
     rules_list = list(rules)
+    ctx = rule_context if rule_context is not None else RuleContext()
 
     job = Job(
         job_uuid=new_uuid(),
@@ -293,7 +381,7 @@ async def run_audit_for_project(
         segments = await _segments_in_project(session, project_uuid=project_uuid)
         for segment in segments:
             for rule in rules_list:
-                findings = rule(segment)
+                findings = _call_rule(rule, segment, ctx)
                 for finding in findings:
                     befund = await record_befund(
                         session=session,

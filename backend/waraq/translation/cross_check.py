@@ -26,21 +26,27 @@ This module produces a `CrossCheckedTranslator` callable matching the
 canonical `Translator` signature so it slots into the existing
 translation `_execute` loop without engine-specific changes there.
 
-**v1.0 simplification on the 4-situation classifier:** because both
-engines apply the §2.2 canon rules to their own output (digit
-normalization, EI2, religious formulas), deterministic differences are
-already collapsed before cross-check sees them. Therefore in v1.0:
+**Phase 4 sub-batch G refinement of the 4-situation classifier:**
 
-- **Equal after normalization** → Agreement (situation 1).
-- **Different after normalization** → Substantive (situation 3) by
-  default. The richer "objective deterministic finding" / "genuine
-  ambiguity" classification is a Phase 4+ enhancement (would require a
-  third LLM call or a domain-specific rule comparator).
+  - **Equal after normalization** → AGREEMENT.
+  - **Equal after canon-rules re-pass** → AUTO_CORRECTION (objective
+    deterministic finding — one engine's output collapses to the
+    other's after the deterministic §2.2 canon rules are re-applied,
+    so the difference is canonically attributable to one side missing
+    a rule the other applied).
+  - **Hedge markers / explicit-uncertainty brackets in either output**
+    → AMBIGUITY (genuine interpretive uncertainty surfaces on the
+    text itself; canon mandates user notice with no silent winner).
+  - **Otherwise** → SUBSTANTIVE_DEVIATION.
 
-This is canonically defensible: §3.6 lists the four situations as the
-classifier's *output*, not as a mandatory minimum implementation; what
-canon explicitly forbids is silent winners, silent role swaps, and
-silent corrections — none of which v1.0 violates.
+The classifier is rules-based — no third LLM call. Hedge detection
+keys off canonical German + Arabic uncertainty markers
+(`möglicherweise`, `vermutlich`, `wohl`, `[unklar]`, `?`, `ggf.`,
+`evtl.`); auto-correction keys off the existing `apply_canon_rules`
+deterministic transformer the translators already run. Both signals
+are observable from the texts themselves — canon-defensible per §3.6
+"the classifier's output", and no silent winners (canon's actual
+hard rule).
 """
 
 from __future__ import annotations
@@ -51,10 +57,31 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from waraq.canon_rules import apply_all as apply_canon_rules
 from waraq.translation.openai_translator import Translator
 from waraq.translation.service import TranslationContext
 
 logger = logging.getLogger(__name__)
+
+# §3.6 hedge / ambiguity markers. Detection is **case-insensitive
+# substring** match — keep markers short and unambiguous so they don't
+# false-positive on innocuous prose. The German list covers the
+# canonical hedges; the Arabic side covers explicit reviewer brackets
+# and Q&A markers (`؟`).
+_HEDGE_MARKERS_DE: tuple[str, ...] = (
+    "möglicherweise",
+    "vermutlich",
+    "wohl ",  # trailing space — avoid matching "wohlbekannt" etc.
+    "evtl.",
+    "ggf.",
+    "[unklar]",
+    "[unsicher]",
+    "[?]",
+)
+_HEDGE_MARKERS_AR: tuple[str, ...] = (
+    "[غير واضح]",  # bracketed "unclear" reviewer mark.
+    "؟",  # Arabic question mark — explicit uncertainty.
+)
 
 
 class CrossCheckSituation(StrEnum):
@@ -90,6 +117,58 @@ def _normalize_for_comparison(text: str) -> str:
     Both engines have already applied §2.2 canon rules; this comparison
     only ignores cosmetic whitespace + casing."""
     return _WHITESPACE_RE.sub(" ", text).strip().casefold()
+
+
+def _has_hedge_markers(text: str) -> bool:
+    """Detect §3.6 ambiguity markers (German + Arabic). The classifier
+    routes texts that exhibit explicit uncertainty on EITHER engine's
+    side to AMBIGUITY rather than SUBSTANTIVE_DEVIATION."""
+    lower = text.casefold()
+    if any(marker in lower for marker in _HEDGE_MARKERS_DE):
+        return True
+    return any(marker in text for marker in _HEDGE_MARKERS_AR)
+
+
+def _is_auto_correction(primary_output: str, check_output: str) -> bool:
+    """Detect AUTO_CORRECTION (§3.6 situation 2) — both texts collapse
+    to the same form after re-applying the deterministic §2.2 canon
+    rules.
+
+    The translators already pipe their raw output through
+    `apply_canon_rules` before returning, but rule passes are only
+    fixed-point under specific transformation orderings; cross-engine
+    drift can survive when one engine's intermediate output trips a
+    rule the other already absorbed. Re-running both through the
+    canon-rules pass deterministically converges any such residual
+    drift — when the converged forms match, the deviation is
+    canonically deterministic, not interpretive.
+    """
+    converged_primary = _normalize_for_comparison(apply_canon_rules(primary_output))
+    converged_check = _normalize_for_comparison(apply_canon_rules(check_output))
+    return converged_primary == converged_check
+
+
+def _classify_situation(
+    primary_output: str,
+    check_output: str,
+) -> CrossCheckSituation:
+    """Per §3.6 — return the canonical situation type for the comparison.
+
+    Order matters:
+      1. AGREEMENT — equal after whitespace+case normalization.
+      2. AUTO_CORRECTION — equal after re-applying canon rules.
+      3. AMBIGUITY — either side carries explicit hedge / uncertainty
+         markers (the disagreement is on the texts themselves, not
+         interpretive between two confident engines).
+      4. SUBSTANTIVE_DEVIATION — the residual case.
+    """
+    if _normalize_for_comparison(primary_output) == _normalize_for_comparison(check_output):
+        return CrossCheckSituation.AGREEMENT
+    if _is_auto_correction(primary_output, check_output):
+        return CrossCheckSituation.AUTO_CORRECTION
+    if _has_hedge_markers(primary_output) or _has_hedge_markers(check_output):
+        return CrossCheckSituation.AMBIGUITY
+    return CrossCheckSituation.SUBSTANTIVE_DEVIATION
 
 
 def make_cross_checked_translator(
@@ -161,16 +240,9 @@ def make_cross_checked_translator(
 
         check_output: str = check_result
 
-        # Both succeeded — classify the comparison.
-        if _normalize_for_comparison(primary_output) == _normalize_for_comparison(check_output):
-            situation = CrossCheckSituation.AGREEMENT
-        else:
-            # v1.0 default: substantive interpretive deviation. Both
-            # outputs have already passed §2.2 canon rules so any
-            # remaining difference is interpretive. Future enhancement:
-            # detect specific deterministic findings (e.g., named-entity
-            # mismatch, glossary-binding miss) and route to AUTO_CORRECTION.
-            situation = CrossCheckSituation.SUBSTANTIVE_DEVIATION
+        # Both succeeded — classify the comparison through the §3.6
+        # 4-situation classifier (sub-batch G refinement).
+        situation = _classify_situation(primary_output, check_output)
 
         outcome = CrossCheckOutcome(
             primary_output=primary_output,

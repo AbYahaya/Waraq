@@ -189,11 +189,17 @@ class TestIngestText:
             sections=sections,
         )
         assert result.inserted_count == 3
-        # Both registry rows exist; old one inactive.
+        # Both registry rows exist for THIS test's two source_versions;
+        # filter on those versions so a real-corpus ingest under the same
+        # text_slug (e.g. interactive `fetch_openiti.py` runs against the
+        # dev DB) doesn't pollute the assertion.
+        test_versions = {"phase2e-test-A", "phase2e-test-B"}
         registries = list(
             (
                 await db_session.execute(
-                    select(ShamelaRegistry).where(ShamelaRegistry.text_slug == "sahih_bukhari")
+                    select(ShamelaRegistry)
+                    .where(ShamelaRegistry.text_slug == "sahih_bukhari")
+                    .where(ShamelaRegistry.source_version.in_(test_versions))
                 )
             ).scalars()
         )

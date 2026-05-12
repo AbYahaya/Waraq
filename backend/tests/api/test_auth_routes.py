@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 import pytest
 
@@ -10,15 +12,27 @@ from waraq.identity import new_uuid
 
 @pytest.mark.asyncio
 class TestRegisterAndLogin:
-    async def test_register_returns_token(self, http_client: httpx.AsyncClient) -> None:
+    async def test_register_returns_token(
+        self, http_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Phase 5 M: admin emails auto-approve and get a token; non-admin
+        # emails get pending status with no token. Add this email to
+        # ADMIN_EMAILS so the happy path under test (token-on-register)
+        # still works.
         email = f"reg-{new_uuid()}@waraq-test.example.com"
+        existing = os.environ.get("ADMIN_EMAILS", "")
+        monkeypatch.setenv("ADMIN_EMAILS", f"{existing},{email}".lstrip(","))
+        from waraq.db.session import get_settings
+
+        get_settings.cache_clear()
         resp = await http_client.post(
             "/auth/register",
             json={"email": email, "password": "supersecret"},
         )
         assert resp.status_code == 201
         body = resp.json()
-        assert body["token_type"] == "Bearer"
+        assert body["approval_status"] == "approved"
+        assert body["token_type"] == "bearer"
         assert body["access_token"]
 
         # Cleanup so we don't leak.
@@ -54,9 +68,19 @@ class TestRegisterAndLogin:
         )
         assert resp.status_code == 409
 
-    async def test_login_with_correct_credentials(self, http_client: httpx.AsyncClient) -> None:
+    async def test_login_with_correct_credentials(
+        self, http_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         email = f"login-{new_uuid()}@waraq-test.example.com"
         password = "myPassword123"
+
+        # Phase 5 M: pre-approve this account by adding it to ADMIN_EMAILS
+        # so the login happy path under test still works.
+        existing = os.environ.get("ADMIN_EMAILS", "")
+        monkeypatch.setenv("ADMIN_EMAILS", f"{existing},{email}".lstrip(","))
+        from waraq.db.session import get_settings
+
+        get_settings.cache_clear()
 
         # Register
         await http_client.post("/auth/register", json={"email": email, "password": password})

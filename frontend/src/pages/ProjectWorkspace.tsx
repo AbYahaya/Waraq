@@ -9,8 +9,8 @@
  * comparison panes broadcasts a cross-pane scroll-sync event.
  */
 
-import { Navigate, useNavigate, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -22,6 +22,7 @@ import { DifficultyBadge } from "@/components/DifficultyBadge";
 import { DpiCompareView } from "@/components/DpiCompareView";
 import { GuidedReviewPanel } from "@/components/GuidedReviewPanel";
 import { MultiPaneView, type PaneConfig } from "@/components/MultiPaneView";
+import { OcrAutoRunPanel } from "@/components/OcrAutoRunPanel";
 import { OcrExportDialog } from "@/components/OcrExportDialog";
 import { OcrPane } from "@/components/OcrPane";
 import { OcrReviewBar } from "@/components/OcrReviewBar";
@@ -35,8 +36,8 @@ import { TranslationPane } from "@/components/TranslationPane";
 import { UploadPdfDialog } from "@/components/UploadPdfDialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { ApiError, api } from "@/lib/api";
-import { qk, queries } from "@/lib/queries";
+import { ApiError } from "@/lib/api";
+import { queries } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
 type SinglePane = "original" | "ocr" | "translation";
@@ -68,26 +69,9 @@ export function ProjectWorkspacePage(): JSX.Element {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [translateExportOpen, setTranslateExportOpen] = useState(false);
-  const [bulkOcrError, setBulkOcrError] = useState<string | null>(null);
-  const [bulkOcrResult, setBulkOcrResult] = useState<string | null>(null);
-  const qc = useQueryClient();
-  const bulkOcrMutation = useMutation({
-    mutationFn: () =>
-      api.post<{ pages_processed: number; pages_skipped: number }>(
-        `/ocr/projects/${projectUuid}/auto-run`,
-      ),
-    onSuccess: (r) => {
-      setBulkOcrError(null);
-      setBulkOcrResult(
-        `Auto-OCR complete: ${r.pages_processed} processed, ${r.pages_skipped} skipped`,
-      );
-      void qc.invalidateQueries({ queryKey: qk.projectPages(projectUuid) });
-    },
-    onError: (err) => {
-      setBulkOcrResult(null);
-      setBulkOcrError(err instanceof ApiError ? err.detail : "Bulk OCR failed");
-    },
-  });
+  // Sub-batch O — the bulk OCR mutation is replaced by OcrAutoRunPanel,
+  // which polls the new BackgroundTask-driven /ocr/ocr-jobs/{u} endpoint
+  // for live progress, survives page refresh, and exposes a Cancel button.
 
   // Auto-redirect to first page when none is selected.
   useEffect(() => {
@@ -150,19 +134,7 @@ export function ProjectWorkspacePage(): JSX.Element {
           </div>
           <div className="flex flex-wrap gap-2 mt-2">
             <Button size="sm" variant="outline" onClick={() => setUploadOpen(true)}>
-              Upload PDF
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setBulkOcrError(null);
-                setBulkOcrResult(null);
-                bulkOcrMutation.mutate();
-              }}
-              disabled={bulkOcrMutation.isPending}
-            >
-              {bulkOcrMutation.isPending ? "Running OCR…" : "Auto-OCR all pages"}
+              Upload book, document, image, or archive
             </Button>
             <Button size="sm" variant="outline" onClick={() => setExportOpen(true)}>
               OCR text
@@ -170,13 +142,13 @@ export function ProjectWorkspacePage(): JSX.Element {
             <Button size="sm" onClick={() => setTranslateExportOpen(true)}>
               Translate &amp; export
             </Button>
+            <Button size="sm" variant="outline" asChild>
+              <Link to={`/projects/${projectUuid}/audit`}>Audit</Link>
+            </Button>
           </div>
-          {bulkOcrResult && (
-            <p className="text-xs text-emerald-700 mt-2">{bulkOcrResult}</p>
-          )}
-          {bulkOcrError && (
-            <p className="text-xs text-destructive mt-2">{bulkOcrError}</p>
-          )}
+          <div className="mt-2">
+            <OcrAutoRunPanel projectUuid={projectUuid} />
+          </div>
         </div>
         <ReleaseGatePanel projectUuid={projectUuid} />
         <GuidedReviewPanel projectUuid={projectUuid} />

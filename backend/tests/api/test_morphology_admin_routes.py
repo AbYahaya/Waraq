@@ -27,11 +27,19 @@ class TestMorphologyAvailability:
     async def test_reports_unavailable_without_camel(
         self, auth_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # camel-tools is not installed in CI/dev. is_available() returns False.
+        # Force the camel-unavailable branch by stubbing `is_available`.
+        # The real morphology DB may be installed on this host
+        # (Phase 4 sub-batch J operator step 3); the test asserts the
+        # availability endpoint correctly REPORTS the unavailable case.
         from waraq.morphology import service as svc
 
-        # Force a fresh import path by clearing any cached analyzer.
         monkeypatch.setattr(svc, "_analyzer", None)
+        monkeypatch.setattr(svc, "is_available", lambda: False)
+        # The HTTP route imports `is_available` directly into the
+        # router module at import time, so patch the binding there too.
+        from waraq.api.routers import morphology_router as router_mod
+
+        monkeypatch.setattr(router_mod, "is_available", lambda: False)
         r = await auth_client.get("/morphology/availability")
         assert r.status_code == 200
         body = r.json()
@@ -47,9 +55,18 @@ class TestMorphologyAnalyze:
     async def test_503_when_not_installed(
         self, auth_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from waraq.morphology import service as svc
+        # Force the not-installed branch by stubbing `analyze_word`
+        # to raise `MorphologyNotInstalled` regardless of whether the
+        # real DB is on this host (Phase 4 sub-batch J operator step 3
+        # installed it, but the route's 503 contract still needs
+        # coverage).
+        from waraq.api.routers import morphology_router as router_mod
+        from waraq.morphology.exceptions import MorphologyNotInstalled
 
-        monkeypatch.setattr(svc, "_analyzer", None)
+        def _raise(_word: str) -> list[object]:
+            raise MorphologyNotInstalled("camel-tools is not installed")
+
+        monkeypatch.setattr(router_mod, "analyze_word", _raise)
         r = await auth_client.post("/morphology/analyze", json={"word": "كتاب"})
         assert r.status_code == 503
         body = r.json()

@@ -59,8 +59,7 @@ async def _run(text_path: Path, source_version: str, source_name: str) -> None:
 def main() -> None:
     if len(sys.argv) < 3:
         print(
-            "Usage: ingest_tanzil_quran.py <text-path> <source-version> "
-            "[<source-name>]",
+            "Usage: ingest_tanzil_quran.py <text-path> <source-version> [<source-name>]",
             file=sys.stderr,
         )
         sys.exit(2)
