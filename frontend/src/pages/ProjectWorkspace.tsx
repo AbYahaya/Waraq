@@ -18,6 +18,7 @@ import {
   ComparisonModeSelector,
   type ComparisonMode,
 } from "@/components/ComparisonModeSelector";
+import { DeleteProjectDialog } from "@/components/DeleteProjectDialog";
 import { DifficultyBadge } from "@/components/DifficultyBadge";
 import { DpiCompareView } from "@/components/DpiCompareView";
 import { GuidedReviewPanel } from "@/components/GuidedReviewPanel";
@@ -69,6 +70,7 @@ export function ProjectWorkspacePage(): JSX.Element {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [translateExportOpen, setTranslateExportOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   // Sub-batch O — the bulk OCR mutation is replaced by OcrAutoRunPanel,
   // which polls the new BackgroundTask-driven /ocr/ocr-jobs/{u} endpoint
   // for live progress, survives page refresh, and exposes a Cancel button.
@@ -145,6 +147,15 @@ export function ProjectWorkspacePage(): JSX.Element {
             <Button size="sm" variant="outline" asChild>
               <Link to={`/projects/${projectUuid}/audit`}>Audit</Link>
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setDeleteOpen(true)}
+              className="text-destructive border-destructive/40 hover:bg-destructive/10"
+              title="Hide this project from your projects list. Server-side this is inactivation (H-5); data is preserved."
+            >
+              Delete
+            </Button>
           </div>
           <div className="mt-2">
             <OcrAutoRunPanel projectUuid={projectUuid} />
@@ -171,6 +182,12 @@ export function ProjectWorkspacePage(): JSX.Element {
         onOpenChange={setTranslateExportOpen}
         projectUuid={projectUuid}
         projectName={projectQ.data?.name ?? "Waraq Export"}
+      />
+      <DeleteProjectDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        projectUuid={projectUuid}
+        projectName={projectQ.data?.name ?? "this project"}
       />
 
       <main className="flex flex-col min-h-0">

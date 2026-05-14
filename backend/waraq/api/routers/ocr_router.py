@@ -42,7 +42,9 @@ from waraq.ocr import (
 )
 from waraq.ocr.auto_run import (
     OCR_AUTO_RUN_JOB_TYPE,
+    STALE_HEARTBEAT_THRESHOLD_SECONDS,
     find_in_flight_for_project,
+    reap_orphan_jobs,
     request_cancel,
     run_ocr_auto_run_job_in_background,
     start_ocr_auto_run_job,
@@ -400,7 +402,15 @@ async def get_ocr_job_status(
     session: DbSession,
     current: CurrentAccount,
 ) -> OcrJobStatusResponse:
-    """Progress + state poll target for the frontend OCR auto-run UI."""
+    """Progress + state poll target for the frontend OCR auto-run UI.
+
+    Sub-batch O follow-up (2026-05-12): if the row is RUNNING/PENDING
+    but `updated_at` is older than the stale-heartbeat threshold, the
+    worker process is dead. Self-heal inline (reap → FAILED) so the
+    frontend doesn't keep polling a zombie row. The startup reaper
+    catches the same case at boot; this catches mid-flight worker
+    deaths that happen after boot.
+    """
     job: Job | None = await session.get(Job, job_uuid)
     if (
         job is None
@@ -415,6 +425,20 @@ async def get_ocr_job_status(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found"
         )
+    if job.state in ("running", "pending"):
+        reaped = await reap_orphan_jobs(
+            session=session, threshold_seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS
+        )
+        if job.job_uuid in reaped:
+            await session.commit()
+            await session.refresh(job)
+            logger.warning(
+                "ocr_auto_run.poll.reaped_stale",
+                extra={
+                    "job_uuid": str(job.job_uuid),
+                    "project_uuid": str(job.project_uuid),
+                },
+            )
     return _job_to_status(job)
 
 

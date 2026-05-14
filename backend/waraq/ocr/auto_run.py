@@ -26,6 +26,7 @@ import asyncio
 import logging
 import uuid as _uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -45,9 +46,25 @@ logger = logging.getLogger(__name__)
 OCR_AUTO_RUN_JOB_TYPE = "ocr_auto_run"
 
 # Hard cap per page so a hung upstream OCR call can't stall the whole
-# project loop. Conservative — Gemini + Cloud Vision typically finish in
-# 10-30s; 120s leaves room for retries the SDK might do internally.
-PER_PAGE_TIMEOUT_SECONDS: float = 120.0
+# project loop. Sub-batch O follow-up (2026-05-12): bumped 120 → 240
+# after real-traffic measurement showed Stage-2 + Stage-3 per typical
+# Arabic A4 page totals ~100s (2 blocks × ~50s each, post-kernel-fix).
+# 240s gives 2× safety margin while still bounding a genuinely stuck
+# call. The PER_PAGE_TIMEOUT_SECONDS knob is the right place to relax
+# this; the orphan reaper uses 2.5× this value so it stays consistent.
+PER_PAGE_TIMEOUT_SECONDS: float = 240.0
+
+# Heartbeat staleness threshold for orphan reaping (sub-batch O follow-up,
+# 2026-05-12). FastAPI BackgroundTasks die when the uvicorn worker dies
+# (--reload restart, crash, OOM), leaving the Job row stuck in RUNNING
+# with no worker to drive it. The runner commits between pages — those
+# commits bump `Job.updated_at` via TimestampMixin's `onupdate=func.now()`,
+# so `updated_at` is a free heartbeat.
+#
+# Threshold = 2.5 × PER_PAGE_TIMEOUT_SECONDS gives a healthy worker plenty
+# of headroom (even a worst-case 120s page leaves 180s of slack) without
+# letting a dead worker's row sit stuck for long.
+STALE_HEARTBEAT_THRESHOLD_SECONDS: int = int(PER_PAGE_TIMEOUT_SECONDS * 2.5)
 
 
 class OcrAutoRunCancelled(Exception):
@@ -330,6 +347,58 @@ async def request_cancel(*, session: AsyncSession, job: Job) -> Job:
     return job
 
 
+async def reap_orphan_jobs(
+    *,
+    session: AsyncSession,
+    threshold_seconds: int = STALE_HEARTBEAT_THRESHOLD_SECONDS,
+) -> list[_uuid.UUID]:
+    """Mark stale RUNNING/PENDING ocr_auto_run Jobs as FAILED.
+
+    Stale = `Job.updated_at` older than `threshold_seconds`. The runner
+    commits between pages, and TimestampMixin's `onupdate=func.now()`
+    refreshes `updated_at` on every commit, so a healthy worker keeps
+    its row fresh well within the threshold. A row that hasn't been
+    touched in that window had its worker process die — orphaned.
+
+    Used by:
+      - The app's lifespan startup hook (sweep all stale jobs once on
+        boot, so a previous-server crash doesn't leave the UI staring
+        at a zombie progress bar after restart).
+      - The status-poll endpoint (self-heal stale rows inline so the
+        frontend doesn't have to wait for next boot to unstick).
+
+    Returns the list of reaped job_uuids. Safe to call concurrently
+    (each row is locked individually via fail_job's UPDATE).
+    """
+    threshold = datetime.now(UTC) - timedelta(seconds=threshold_seconds)
+    result = await session.execute(
+        select(Job)
+        .where(Job.job_type == OCR_AUTO_RUN_JOB_TYPE)
+        .where(Job.state.in_([JobState.RUNNING.value, JobState.PENDING.value]))
+        .where(Job.updated_at < threshold)
+    )
+    orphans = list(result.scalars())
+    reaped: list[_uuid.UUID] = []
+    for job in orphans:
+        previous_state = job.state
+        await fail_job(
+            session=session,
+            job=job,
+            error={
+                "phase": "server_restart_orphan",
+                "previous_state": previous_state,
+                "reaped_at": datetime.now(UTC).isoformat(),
+                "threshold_seconds": threshold_seconds,
+                "note": (
+                    "No heartbeat for >threshold — worker process died. "
+                    "Job marked FAILED so the UI stops polling."
+                ),
+            },
+        )
+        reaped.append(job.job_uuid)
+    return reaped
+
+
 async def find_in_flight_for_project(
     *,
     session: AsyncSession,
@@ -353,8 +422,10 @@ async def find_in_flight_for_project(
 __all__ = [
     "OCR_AUTO_RUN_JOB_TYPE",
     "PER_PAGE_TIMEOUT_SECONDS",
+    "STALE_HEARTBEAT_THRESHOLD_SECONDS",
     "OcrAutoRunCancelled",
     "find_in_flight_for_project",
+    "reap_orphan_jobs",
     "request_cancel",
     "run_ocr_auto_run_job_in_background",
     "start_ocr_auto_run_job",

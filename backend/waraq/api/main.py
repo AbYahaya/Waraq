@@ -28,6 +28,11 @@ M4 expansion adds (Bearer token):
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from waraq.api.routers import (
@@ -63,6 +68,68 @@ from waraq.api.routers import (
     uploads_router,
 )
 
+logger = logging.getLogger(__name__)
+
+
+# Bound the lifespan reaper so a slow DB doesn't block app boot.
+# Tight enough that the frontend doesn't see ECONNREFUSED for long;
+# loose enough to cover a typical first-connection SSL handshake. If
+# the reap can't finish in this window the poll-time self-heal in
+# `get_ocr_job_status` will catch the same orphans on next poll.
+_STARTUP_REAP_TIMEOUT_SECONDS: float = 5.0
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """App startup/shutdown.
+
+    Startup: sweep orphan OCR auto-run Jobs (sub-batch O follow-up,
+    2026-05-12). FastAPI BackgroundTasks die when the worker process
+    dies, leaving Job rows stuck in RUNNING with no driver. The sweep
+    fails any RUNNING/PENDING `ocr_auto_run` Job whose `updated_at` is
+    older than the stale-heartbeat threshold, so a restart doesn't
+    leave the UI staring at a zombie progress bar.
+
+    The reap is wall-clock-bounded so a slow / unreachable DB can't
+    keep the app socket bound-but-unresponsive for minutes (frontend
+    sees ECONNREFUSED in that window). If the timeout fires, the
+    poll-time self-heal in `get_ocr_job_status` will catch the same
+    orphans on the next status poll.
+    """
+    # Import lazily so test fixtures that swap in alternative
+    # sessionmakers (or skip DB entirely) aren't forced through a
+    # module-level DB-touching import.
+    from waraq.db.session import _sessionmaker
+    from waraq.ocr.auto_run import reap_orphan_jobs
+
+    async def _do_reap() -> None:
+        async with _sessionmaker()() as session:
+            reaped = await reap_orphan_jobs(session=session)
+            await session.commit()
+            if reaped:
+                logger.info(
+                    "ocr_auto_run.startup.reaped_orphans",
+                    extra={
+                        "count": len(reaped),
+                        "job_uuids": [str(u) for u in reaped],
+                    },
+                )
+
+    try:
+        await asyncio.wait_for(_do_reap(), timeout=_STARTUP_REAP_TIMEOUT_SECONDS)
+    except TimeoutError:
+        # DB was slow on boot; not fatal. Poll-time self-heal still
+        # reaps orphans whenever a client polls a status endpoint.
+        logger.warning(
+            "ocr_auto_run.startup.reap_timeout",
+            extra={"timeout_s": _STARTUP_REAP_TIMEOUT_SECONDS},
+        )
+    except Exception:
+        # A broken DB shouldn't prevent the app from booting at all —
+        # /health/db will surface the underlying error.
+        logger.exception("ocr_auto_run.startup.reap_failed")
+    yield
+
 
 def create_app() -> FastAPI:
     """Application factory. Tests instantiate this; production servers use
@@ -71,6 +138,7 @@ def create_app() -> FastAPI:
         title="Waraq",
         description="Translation platform for classical Arabic Islamic texts",
         version="0.2.0",
+        lifespan=lifespan,
     )
 
     # M1 layer

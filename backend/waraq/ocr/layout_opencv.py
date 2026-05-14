@@ -48,7 +48,14 @@ logger = logging.getLogger(__name__)
 # Tunables — Phase 7 gold-corpus calibration target. Documented in
 # constants so a single recalibration sweep is a 5-line edit.
 _HORIZONTAL_KERNEL: tuple[int, int] = (40, 1)
-_VERTICAL_KERNEL: tuple[int, int] = (1, 5)
+# Sub-batch O follow-up (2026-05-12): bumped (1,5) → (1,40). At 200 DPI
+# a 5-pixel vertical kernel can't bridge the ~50-pixel gap between
+# adjacent text lines, so every line became its own contour — a 22-block
+# A4 page made OCR run ~10× over the per-page timeout. (1,40) merges
+# lines within a paragraph while still separating paragraph-from-footer
+# at typical Arabic line spacings. Calibration sweep on output.pdf
+# (A4, 200 DPI): 22→2 blocks. See _probe_kernel_tuning.py archive.
+_VERTICAL_KERNEL: tuple[int, int] = (1, 40)
 _MIN_BLOCK_AREA: int = 800  # pixels² — drop noise specks
 _MIN_BLOCK_HEIGHT: int = 12  # pixels — drop single-line stragglers
 

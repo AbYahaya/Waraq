@@ -15,6 +15,7 @@ sessionmaker factory; the inner `_execute` body is what we exercise.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -24,8 +25,10 @@ from tests.audit._helpers import seed_project
 from waraq.identity import new_uuid
 from waraq.ocr.auto_run import (
     OCR_AUTO_RUN_JOB_TYPE,
+    STALE_HEARTBEAT_THRESHOLD_SECONDS,
     _execute,
     find_in_flight_for_project,
+    reap_orphan_jobs,
     request_cancel,
     start_ocr_auto_run_job,
 )
@@ -272,3 +275,126 @@ class TestFindInFlight:
             session=db_session, project_uuid=project_b.project_uuid
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------
+# Sub-batch O follow-up (2026-05-12) — orphan reaper
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestReapOrphanJobs:
+    """`reap_orphan_jobs` fails stale RUNNING/PENDING auto-run Jobs.
+
+    "Stale" = `Job.updated_at` older than the threshold. The runner
+    commits between pages and `TimestampMixin.onupdate=func.now()`
+    refreshes `updated_at` on each commit, so a healthy worker keeps
+    its row fresh. A dead worker leaves the row's `updated_at`
+    frozen — the reaper fails it so the UI stops polling.
+    """
+
+    async def test_reaps_stale_running_job(self, db_session: AsyncSession) -> None:
+        from datetime import datetime, timedelta
+
+        from sqlalchemy import text as sql_text
+
+        from waraq.jobs import start_job
+
+        project = await seed_project(db_session)
+        job = await start_ocr_auto_run_job(session=db_session, project=project)
+        await start_job(session=db_session, job=job)
+        await db_session.flush()
+        # Backdate updated_at past the threshold so the row looks stale.
+        past = datetime.now(UTC) - timedelta(
+            seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 60
+        )
+        await db_session.execute(
+            sql_text("UPDATE jobs SET updated_at = :ts WHERE job_uuid = :u"),
+            {"ts": past, "u": job.job_uuid},
+        )
+        reaped = await reap_orphan_jobs(session=db_session)
+        assert job.job_uuid in reaped
+        await db_session.refresh(job)
+        assert job.state == JobState.FAILED.value
+        assert (job.error or {})["phase"] == "server_restart_orphan"
+        assert (job.error or {})["previous_state"] == JobState.RUNNING.value
+
+    async def test_reaps_stale_pending_job(self, db_session: AsyncSession) -> None:
+        from datetime import datetime, timedelta
+
+        from sqlalchemy import text as sql_text
+
+        project = await seed_project(db_session)
+        job = await start_ocr_auto_run_job(session=db_session, project=project)
+        # Still PENDING. Backdate it.
+        past = datetime.now(UTC) - timedelta(
+            seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 60
+        )
+        await db_session.flush()
+        await db_session.execute(
+            sql_text("UPDATE jobs SET updated_at = :ts WHERE job_uuid = :u"),
+            {"ts": past, "u": job.job_uuid},
+        )
+        reaped = await reap_orphan_jobs(session=db_session)
+        assert job.job_uuid in reaped
+        await db_session.refresh(job)
+        assert job.state == JobState.FAILED.value
+        assert (job.error or {})["previous_state"] == JobState.PENDING.value
+
+    async def test_does_not_reap_fresh_running_job(
+        self, db_session: AsyncSession
+    ) -> None:
+        from waraq.jobs import start_job
+
+        project = await seed_project(db_session)
+        job = await start_ocr_auto_run_job(session=db_session, project=project)
+        await start_job(session=db_session, job=job)
+        await db_session.flush()
+        # updated_at is current — not stale.
+        reaped = await reap_orphan_jobs(session=db_session)
+        assert job.job_uuid not in reaped
+        await db_session.refresh(job)
+        assert job.state == JobState.RUNNING.value
+
+    async def test_does_not_reap_terminal_jobs(
+        self, db_session: AsyncSession
+    ) -> None:
+        from datetime import datetime, timedelta
+
+        from sqlalchemy import text as sql_text
+
+        from waraq.jobs import complete_job, start_job
+
+        project = await seed_project(db_session)
+        job = await start_ocr_auto_run_job(session=db_session, project=project)
+        await start_job(session=db_session, job=job)
+        await complete_job(session=db_session, job=job, result={})
+        await db_session.flush()
+        # Even if very old, COMPLETED is untouchable.
+        past = datetime.now(UTC) - timedelta(
+            seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 600
+        )
+        await db_session.execute(
+            sql_text("UPDATE jobs SET updated_at = :ts WHERE job_uuid = :u"),
+            {"ts": past, "u": job.job_uuid},
+        )
+        reaped = await reap_orphan_jobs(session=db_session)
+        assert job.job_uuid not in reaped
+        await db_session.refresh(job)
+        assert job.state == JobState.COMPLETED.value
+
+    async def test_does_not_reap_unseeded_fresh_jobs(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Sanity check: a freshly-seeded job is NOT reaped by a call
+        whose threshold matches our heartbeat policy. (We can't assert
+        the full reap list is empty — the test suite shares a DB and
+        prior tests may leave older `ocr_auto_run` rows around.)"""
+        from waraq.jobs import start_job
+
+        project = await seed_project(db_session)
+        job = await start_ocr_auto_run_job(session=db_session, project=project)
+        await start_job(session=db_session, job=job)
+        await db_session.flush()
+        reaped = await reap_orphan_jobs(session=db_session)
+        assert job.job_uuid not in reaped

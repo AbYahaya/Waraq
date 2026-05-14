@@ -75,10 +75,15 @@ class TestOpenCVDetector:
 
     def test_classifies_tall_block_as_heading(self) -> None:
         # One thick block (heading) + two thin blocks (main text).
+        # Sub-batch O follow-up (2026-05-12): bumped vertical-kernel
+        # to (1, 40) so adjacent text lines merge into paragraph
+        # regions. Test fixture spacing was originally 40 px between
+        # main_text blocks — now bumped to 60 px so they stay distinct
+        # under the new kernel.
         png = _png_with_blocks(
             (60, 30, 740, 130),  # height 100 — tall
             (60, 200, 740, 230),  # height 30 — normal
-            (60, 270, 740, 300),  # height 30 — normal
+            (60, 290, 740, 320),  # height 30 — normal (gap=60 from prev)
         )
         blocks = opencv_block_detector(png, 200)
         # The first block (tall) should be HEADING; the others MAIN_TEXT.

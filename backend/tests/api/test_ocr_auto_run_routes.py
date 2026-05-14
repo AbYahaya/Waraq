@@ -11,6 +11,7 @@ ausstehend-only filter) is what's under test.
 from __future__ import annotations
 
 import uuid as _uuid
+from datetime import UTC
 from typing import Any
 
 import httpx
@@ -290,6 +291,118 @@ class TestAutoRunProject:
         body = r.json()
         assert body["total_pages"] == 0
         assert body["state"] == "pending"
+
+
+@pytest.mark.asyncio
+class TestStatusEndpointSelfHeals:
+    """Sub-batch O follow-up (2026-05-12) — `GET /ocr/ocr-jobs/{u}`
+    self-heals a stale RUNNING row whose worker process died. Without
+    this, the UI would poll a zombie row forever (the "Cancelling…
+    for 20 hours" failure mode).
+    """
+
+    async def test_stale_running_job_is_reaped_on_poll(
+        self,
+        auth_client: httpx.AsyncClient,
+    ) -> None:
+        from datetime import datetime, timedelta
+
+        from sqlalchemy import text as sql_text
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from tests.conftest import _test_database_url
+        from waraq.identity import new_uuid
+        from waraq.ocr.auto_run import (
+            OCR_AUTO_RUN_JOB_TYPE,
+            STALE_HEARTBEAT_THRESHOLD_SECONDS,
+        )
+        from waraq.schemas import Job
+
+        r = await auth_client.post("/projects", json={"name": "p"})
+        project_uuid = r.json()["project_uuid"]
+
+        engine = create_async_engine(_test_database_url(), future=True)
+        sm = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        job_uuid = new_uuid()
+        try:
+            async with sm() as session, session.begin():
+                session.add(
+                    Job(
+                        job_uuid=job_uuid,
+                        job_type=OCR_AUTO_RUN_JOB_TYPE,
+                        state="running",
+                        project_uuid=_uuid.UUID(project_uuid),
+                        payload={
+                            "total_pages": 2,
+                            "processed_count": 1,
+                            "cancel_requested": True,
+                        },
+                    )
+                )
+                await session.flush()
+                past = datetime.now(UTC) - timedelta(
+                    seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 60
+                )
+                await session.execute(
+                    sql_text(
+                        "UPDATE jobs SET updated_at = :ts WHERE job_uuid = :u"
+                    ),
+                    {"ts": past, "u": job_uuid},
+                )
+        finally:
+            await engine.dispose()
+
+        r = await auth_client.get(f"/ocr/ocr-jobs/{job_uuid}")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # The poll triggers the self-heal; state should now be 'failed'.
+        assert body["state"] == "failed"
+        assert body["last_error"]["phase"] == "server_restart_orphan"
+
+    async def test_fresh_running_job_is_not_reaped(
+        self,
+        auth_client: httpx.AsyncClient,
+    ) -> None:
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from tests.conftest import _test_database_url
+        from waraq.identity import new_uuid
+        from waraq.ocr.auto_run import OCR_AUTO_RUN_JOB_TYPE
+        from waraq.schemas import Job
+
+        r = await auth_client.post("/projects", json={"name": "p"})
+        project_uuid = r.json()["project_uuid"]
+
+        engine = create_async_engine(_test_database_url(), future=True)
+        sm = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        job_uuid = new_uuid()
+        try:
+            async with sm() as session, session.begin():
+                session.add(
+                    Job(
+                        job_uuid=job_uuid,
+                        job_type=OCR_AUTO_RUN_JOB_TYPE,
+                        state="running",
+                        project_uuid=_uuid.UUID(project_uuid),
+                        payload={"total_pages": 2, "processed_count": 1},
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+        r = await auth_client.get(f"/ocr/ocr-jobs/{job_uuid}")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # updated_at is fresh — no reap.
+        assert body["state"] == "running"
 
 
 @pytest.mark.asyncio

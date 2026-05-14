@@ -15,11 +15,23 @@
  * runner aborts at the next page boundary.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { qk } from "@/lib/queries";
+
+// Shared mutation key for the per-page Run-OCR mutation in OcrReviewBar.
+// The panel uses `useIsMutating({ mutationKey })` against this so the
+// project-wide Start button disables while ANY per-page run is in flight.
+export const OCR_PAGE_AUTO_RUN_MUTATION_KEY = ["ocr-page-auto-run"] as const;
+
+// Shared query key for the in-flight project auto-run lookup. The panel
+// fetches/invalidates it; OcrReviewBar reads it via
+// `useProjectOcrAutoRunActive` to disable its per-page Run-OCR button
+// when the project-wide run is active.
+const inFlightKey = (projectUuid: string) =>
+  ["ocr-auto-run", "in-flight", projectUuid] as const;
 
 interface OcrJobStatus {
   ocr_job_uuid: string;
@@ -44,6 +56,31 @@ interface OcrAutoRunStartResponse {
 
 const TERMINAL_STATES = new Set(["completed", "failed"]);
 
+/**
+ * Reads the project-wide OCR auto-run in-flight state. Returns `true`
+ * iff there's a non-terminal `ocr_auto_run` Job for the project.
+ *
+ * Used by `OcrReviewBar` to disable its per-page "Run OCR" button when
+ * the bulk run is active. The runner row-locks the Page row, so a
+ * per-page click during the bulk run would block at the DB level and
+ * hang the UI — disabling the button surfaces the conflict explicitly.
+ */
+export function useProjectOcrAutoRunActive(projectUuid: string): boolean {
+  const q = useQuery<OcrJobStatus | null>({
+    queryKey: inFlightKey(projectUuid),
+    queryFn: () =>
+      api.get<OcrJobStatus | null>(
+        `/ocr/projects/${projectUuid}/ocr-jobs/in-flight`,
+      ),
+    // Poll while there IS an in-flight job (so the bar picks up the
+    // terminal transition without waiting for an explicit invalidate).
+    // When idle (data === null), the panel will invalidate on start, so
+    // no polling needed.
+    refetchInterval: (rq) => (rq.state.data ? 2000 : false),
+  });
+  return q.data !== null && q.data !== undefined;
+}
+
 export function OcrAutoRunPanel({
   projectUuid,
 }: {
@@ -55,13 +92,22 @@ export function OcrAutoRunPanel({
   const [starting, setStarting] = useState(false);
 
   // On mount: check for an in-flight job so a refresh picks the progress
-  // UI back up.
+  // UI back up. Shares its queryKey with `useProjectOcrAutoRunActive` so
+  // `OcrReviewBar` reads the same state without a separate fetch.
   const inFlightQ = useQuery<OcrJobStatus | null>({
-    queryKey: ["ocr-auto-run", "in-flight", projectUuid],
+    queryKey: inFlightKey(projectUuid),
     queryFn: () =>
       api.get<OcrJobStatus | null>(
         `/ocr/projects/${projectUuid}/ocr-jobs/in-flight`,
       ),
+  });
+
+  // Number of per-page Run-OCR mutations currently in flight (any page,
+  // any component). Drives the Start button's disabled state — we
+  // refuse to launch project-wide while a per-page run is still
+  // running, since both would race on the same Page row lock.
+  const perPageRunCount = useIsMutating({
+    mutationKey: [...OCR_PAGE_AUTO_RUN_MUTATION_KEY],
   });
 
   useEffect(() => {
@@ -89,10 +135,13 @@ export function OcrAutoRunPanel({
   });
 
   // When the job reaches a terminal state, invalidate the pages list
-  // so OCR'd pages reflect their new status in the sidebar.
+  // so OCR'd pages reflect their new status in the sidebar. Also
+  // invalidate the in-flight query so OcrReviewBar re-enables its
+  // per-page Run-OCR button.
   useEffect(() => {
     if (statusQ.data && TERMINAL_STATES.has(statusQ.data.state)) {
       void qc.invalidateQueries({ queryKey: qk.projectPages(projectUuid) });
+      void qc.invalidateQueries({ queryKey: inFlightKey(projectUuid) });
     }
   }, [statusQ.data, qc, projectUuid]);
 
@@ -104,12 +153,16 @@ export function OcrAutoRunPanel({
         `/ocr/projects/${projectUuid}/auto-run`,
       );
       setActiveJobUuid(resp.ocr_job_uuid);
+      // Invalidate the shared in-flight query so other components
+      // (e.g. OcrReviewBar via useProjectOcrAutoRunActive) flip into
+      // the "bulk run is active, disable per-page" state immediately.
+      void qc.invalidateQueries({ queryKey: inFlightKey(projectUuid) });
     } catch (e) {
       setStartError(e instanceof ApiError ? e.detail : "Failed to start Auto-OCR");
     } finally {
       setStarting(false);
     }
-  }, [projectUuid]);
+  }, [projectUuid, qc]);
 
   const cancelRun = useCallback(async () => {
     if (!activeJobUuid) return;
@@ -136,16 +189,27 @@ export function OcrAutoRunPanel({
 
   // ------------------------------------------------------------ idle
   if (!activeJobUuid) {
+    const perPageBusy = perPageRunCount > 0;
     return (
       <div className="space-y-1">
         <Button
           size="sm"
           variant="outline"
           onClick={startRun}
-          disabled={starting || inFlightQ.isLoading}
+          disabled={starting || inFlightQ.isLoading || perPageBusy}
+          title={
+            perPageBusy
+              ? "A per-page Run-OCR is in progress. Wait for it to finish before starting the bulk run."
+              : undefined
+          }
         >
           {starting ? "Starting…" : "Auto-OCR all pages"}
         </Button>
+        {perPageBusy && (
+          <p className="text-[10px] text-muted-foreground">
+            Per-page OCR in progress — bulk run disabled until it finishes.
+          </p>
+        )}
         {startError && (
           <p className="text-xs text-destructive">{startError}</p>
         )}

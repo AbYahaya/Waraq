@@ -13,6 +13,10 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
+import {
+  OCR_PAGE_AUTO_RUN_MUTATION_KEY,
+  useProjectOcrAutoRunActive,
+} from "@/components/OcrAutoRunPanel";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -78,7 +82,11 @@ export function OcrReviewBar({
     onError: (err) => setError(err instanceof ApiError ? err.detail : "Failed"),
   });
 
+  // Shared mutationKey lets `OcrAutoRunPanel` detect that a per-page
+  // Run-OCR is in flight (via `useIsMutating`) and disable its bulk
+  // Start button while this is running.
   const ocrAutoRunMutation = useMutation({
+    mutationKey: [...OCR_PAGE_AUTO_RUN_MUTATION_KEY],
     mutationFn: () =>
       api.post<{
         page_uuid: string;
@@ -93,6 +101,13 @@ export function OcrReviewBar({
     },
     onError: (err) => setError(err instanceof ApiError ? err.detail : "OCR failed"),
   });
+
+  // Is the project-wide bulk auto-run active? If so, refuse the
+  // per-page Run-OCR click — the runner row-locks each Page row, so
+  // a concurrent per-page click would block at the DB level and just
+  // hang the UI. Surfacing the conflict in the button state is
+  // clearer than letting the request stall.
+  const bulkAutoRunActive = useProjectOcrAutoRunActive(projectUuid);
 
   const approveAsGoMutation = useMutation({
     mutationFn: () =>
@@ -172,7 +187,12 @@ export function OcrReviewBar({
                 setError(null);
                 ocrAutoRunMutation.mutate();
               }}
-              disabled={ocrAutoRunMutation.isPending}
+              disabled={ocrAutoRunMutation.isPending || bulkAutoRunActive}
+              title={
+                bulkAutoRunActive
+                  ? "Project-wide Auto-OCR is running. Wait or cancel it before running OCR on a single page."
+                  : undefined
+              }
             >
               {ocrAutoRunMutation.isPending ? "Running OCR…" : "Run OCR"}
             </Button>
