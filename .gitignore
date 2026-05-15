@@ -57,7 +57,7 @@ Thumbs.db
 # Will be selectively removed from gitignore as needed.
 # Only the root README.md is tracked; everything else (CLAUDE.md, WORKLOG.md,
 # MILESTONES.md, all docs/canon/**/*.md, all *.docx) stays local for now.
-*.md
+#*.md
 !/README.md
 *.docx
 
