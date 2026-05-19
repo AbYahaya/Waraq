@@ -129,12 +129,6 @@ disallow_untyped_defs = true
 module = ["camel_tools.*"]
 ignore_missing_imports = true
 
-# kraken is an optional install (Phase 4 §3.3 manuscript reading line,
-# project-flag gated). Same lazy-import pattern as camel-tools.
-[[tool.mypy.overrides]]
-module = ["kraken", "kraken.*"]
-ignore_missing_imports = true
-
 # odfpy (Phase 5 K-2 ODT reader) and pillow_heif (K-1 HEIC opener) ship
 # without py.typed markers. We import them inside try/except and stay
 # typed at the boundary. K-3 adds ebooklib (EPUB) and mobi (MOBI/AZW/AZW3).

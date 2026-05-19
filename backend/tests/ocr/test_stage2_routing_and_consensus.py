@@ -78,10 +78,8 @@ class TestRoutingTable:
 
 
 class TestOcrEngineEnum:
-    def test_canonical_three_values(self) -> None:
-        # Sub-batch kraken: KRAKEN added as the §3.3 manuscript-line
-        # engine, project-flag gated (see test_kraken_adapter.py).
-        assert {e.value for e in OcrEngine} == {"gemini", "openai", "kraken"}
+    def test_canonical_two_values(self) -> None:
+        assert {e.value for e in OcrEngine} == {"gemini", "openai"}
 
 
 # ---------------------------------------------------------------------

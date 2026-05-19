@@ -30,13 +30,6 @@ Endpoints (all GET unless noted, all auth-gated):
         CAMeL Tools morphology analyses (operator step 3 — DB
         installed 2026-05-10).
 
-  - `POST /diagnostics/kraken/recognize`  (multipart `image`)
-        Run the kraken manuscript-OCR adapter on an uploaded image.
-        Project-flag-gated in the §3.4 pipeline; the diagnostics
-        surface bypasses the project context so the user can verify
-        the adapter end-to-end without first wiring the flag into
-        the workspace UI.
-
 Each endpoint returns plain JSON; errors return structured
 `{detail, ...}` 4xx/5xx so the tester can read the failure mode at a
 glance.
@@ -49,7 +42,7 @@ import os
 import uuid as _uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from sqlalchemy import desc, select
 
@@ -62,16 +55,6 @@ from waraq.morphology import (
 )
 from waraq.morphology import (
     is_available as morphology_is_available,
-)
-from waraq.ocr.kraken import (
-    KrakenRecognitionError,
-    KrakenUnavailable,
-)
-from waraq.ocr.kraken import (
-    extract_with_confidence as kraken_extract,
-)
-from waraq.ocr.kraken import (
-    is_available as kraken_is_available,
 )
 from waraq.quran import lookup_aya, lookup_translation_aya
 from waraq.schemas import ProvenanceObject
@@ -370,7 +353,6 @@ class EnvironmentDiagnostic(BaseModel):
     google_application_credentials_set: bool
     sunnah_com_api_key_present: bool
     morphology_db_available: bool
-    kraken_available: bool
 
 
 @router.get("/environment", response_model=EnvironmentDiagnostic)
@@ -387,92 +369,7 @@ async def environment_diagnostic(
         google_application_credentials_set=bool(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")),
         sunnah_com_api_key_present=bool(os.environ.get("SUNNAH_COM_API_KEY")),
         morphology_db_available=morphology_is_available(),
-        kraken_available=kraken_is_available(),
-    )
-
-
-# ---------------------------------------------------------------------
-# kraken recognition — verifies the manuscript/calligraphy adapter.
-# ---------------------------------------------------------------------
-
-
-class KrakenRecognizeDiagnostic(BaseModel):
-    available: bool
-    text: str
-    text_chars: int
-    confidence: float | None
-    model_path: str
-    error: str | None = None
-
-
-_KRAKEN_MAX_BYTES = 20 * 1024 * 1024  # 20 MB — hard upper bound for the diagnostics surface.
-
-
-@router.post("/kraken/recognize", response_model=KrakenRecognizeDiagnostic)
-async def kraken_recognize(
-    current: CurrentAccount,
-    image: UploadFile = File(..., description="Page image (PNG/JPEG/TIFF) to recognise."),
-) -> KrakenRecognizeDiagnostic:
-    """Run the kraken adapter on the uploaded image and return the
-    recognised text + averaged confidence.
-
-    Bypasses the §3.4 page pipeline so the tester can confirm kraken
-    works on a manuscript scan without first wiring the project-flag
-    into the workspace UI. Errors land as `available: false` +
-    structured `error` string rather than HTTP 500 — the UI shows
-    them inline."""
-    _ = current
-    from waraq.ocr.kraken import _resolve_model_path
-
-    model_path = _resolve_model_path()
-    payload = await image.read()
-    if len(payload) > _KRAKEN_MAX_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Image exceeds {_KRAKEN_MAX_BYTES} byte limit for the diagnostics surface.",
-        )
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Empty upload — supply an image file.",
-        )
-
-    mime_type = image.content_type or "image/png"
-    try:
-        result = await kraken_extract(payload, mime_type)
-    except KrakenUnavailable as exc:
-        return KrakenRecognizeDiagnostic(
-            available=False,
-            text="",
-            text_chars=0,
-            confidence=None,
-            model_path=model_path,
-            error=str(exc),
-        )
-    except KrakenRecognitionError as exc:
-        return KrakenRecognizeDiagnostic(
-            available=True,
-            text="",
-            text_chars=0,
-            confidence=None,
-            model_path=model_path,
-            error=str(exc),
-        )
-
-    return KrakenRecognizeDiagnostic(
-        available=True,
-        text=result.text,
-        text_chars=len(result.text),
-        confidence=result.confidence,
-        model_path=model_path,
-        error=None,
     )
 
 
 __all__ = ["router"]
-
-
-def _silence_status() -> Any:
-    """Reserved — keeps `status` import live if a future endpoint
-    raises HTTPException with explicit status codes."""
-    return status, HTTPException

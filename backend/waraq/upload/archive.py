@@ -26,8 +26,8 @@ raises `ArchiveCorrupted` for unreadable archives; raises
 `EmptyArchive` when zero supported entries are found.
 
 RAR/CBR support requires the `unrar` system binary (apt install unrar).
-Mirrors the `pdftoppm` / `djvulibre-bin` / kraken pattern: adapter
-wired in code, system install activates.
+Mirrors the `pdftoppm` / `djvulibre-bin` pattern: adapter wired in code,
+system install activates.
 """
 
 from __future__ import annotations

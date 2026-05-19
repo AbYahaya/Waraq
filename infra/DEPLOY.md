@@ -1,7 +1,7 @@
 # Waraq deploy — Fly.io
 
 Initial deploy of the Waraq backend. Frontend deploy plan is captured
-separately at the bottom (Cloudflare Pages or static-on-Fly).
+separately at the bottom (Vercel through GitHub or static-on-Fly).
 
 ## Prerequisites
 
@@ -54,9 +54,9 @@ flyctl secrets set JWT_SECRET="$(openssl rand -hex 32)"
 flyctl secrets set ADMIN_EMAILS="user@example.com"
 
 # Browser origins allowed to call the API from a separately hosted
-# frontend. Add the final Cloudflare Pages / preview URL after frontend
+# frontend. Add the final Vercel production / preview URL after frontend
 # deploy, comma-separated if there is more than one.
-flyctl secrets set CORS_ORIGINS="https://<frontend>.pages.dev"
+flyctl secrets set CORS_ORIGINS="https://<frontend>.vercel.app"
 
 # Optional Hadith / Qurʾān API keys (for §4.16 / §4.15 enrichment;
 # inert if missing).
@@ -95,17 +95,17 @@ curl https://<app>.fly.dev/health              # should return 200
 
 Two viable paths — pick one when ready:
 
-### Option A — Cloudflare Pages (recommended)
+### Option A — Vercel through GitHub (recommended)
 
 ```bash
 cd frontend
 npm run build                                  # produces dist/
-# Configure Cloudflare Pages to build from frontend/ on push.
+# Configure Vercel to build from frontend/ on push.
 # Set VITE_API_URL=https://<backend>.fly.dev as an env var.
 ```
 
-Pros: free, global CDN, instant rollback.
-Cons: separate deploy; backend `CORS_ORIGINS` must include the Pages URL.
+Pros: GitHub-native deploy previews, global CDN, simple rollback.
+Cons: separate deploy; backend `CORS_ORIGINS` must include the Vercel production and preview origins you want testers to use.
 
 ### Option B — Static-on-Fly (single domain)
 

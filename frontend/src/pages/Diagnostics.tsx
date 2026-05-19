@@ -16,11 +16,10 @@
  *   6. OCR-PO inspector (paste a satz_uuid, see Stage-2/3/4/5 payload)
  *   7. Hadith verification (POST /segments/{u}/hadith/verify)
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { api, ApiError, apiPath } from "@/lib/api";
-import { useAuthStore } from "@/store/auth";
+import { api, ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -31,7 +30,6 @@ interface EnvDiag {
   google_application_credentials_set: boolean;
   sunnah_com_api_key_present: boolean;
   morphology_db_available: boolean;
-  kraken_available: boolean;
 }
 
 function Pill({ ok, label }: { ok: boolean; label: string }): JSX.Element {
@@ -123,10 +121,6 @@ function EnvironmentSection(): JSX.Element {
           <Pill
             ok={data.morphology_db_available}
             label="CAMeL morphology DB"
-          />
-          <Pill
-            ok={data.kraken_available}
-            label="kraken (manuscript OCR)"
           />
         </div>
       )}
@@ -708,122 +702,6 @@ function HadithVerifySection(): JSX.Element {
   );
 }
 
-// 8. kraken manuscript OCR ----------------------------------------------
-
-interface KrakenRecognizeResp {
-  available: boolean;
-  text: string;
-  text_chars: number;
-  confidence: number | null;
-  model_path: string;
-  error: string | null;
-}
-
-function KrakenSection(): JSX.Element {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [data, setData] = useState<KrakenRecognizeResp | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [busy, setBusy] = useState(false);
-
-  const onRecognize = useCallback(async () => {
-    if (!file) return;
-    setBusy(true);
-    setError(null);
-    setData(null);
-    try {
-      const fd = new FormData();
-      fd.append("image", file, file.name);
-      const token = useAuthStore.getState().token;
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const resp = await fetch(apiPath("/diagnostics/kraken/recognize"), {
-        method: "POST",
-        headers,
-        body: fd,
-      });
-      if (!resp.ok) {
-        const text = await resp.text();
-        throw new ApiError(resp.status, text || resp.statusText, text);
-      }
-      setData((await resp.json()) as KrakenRecognizeResp);
-    } catch (e) {
-      setError(e);
-    } finally {
-      setBusy(false);
-    }
-  }, [file]);
-
-  return (
-    <Section
-      title="8. kraken manuscript OCR (Phase 4 — §3.3 third engine)"
-      description="Project-flag-gated in the §3.4 pipeline; here we run kraken directly on an uploaded image. Use a handwritten/calligraphic Arabic scan — Gemini + Cloud Vision are stronger on printed editions."
-    >
-      <div className="flex items-end gap-2 flex-wrap">
-        <div>
-          <Label htmlFor="kraken-file">Image (PNG / JPEG / TIFF)</Label>
-          <input
-            ref={fileRef}
-            id="kraken-file"
-            type="file"
-            accept="image/png,image/jpeg,image/tiff,image/webp"
-            onChange={(e) => {
-              const f = e.target.files?.[0] ?? null;
-              setFile(f);
-              setData(null);
-              setError(null);
-            }}
-            className="text-sm file:mr-3 file:rounded file:border file:bg-background file:px-3 file:py-1.5 file:text-sm hover:file:bg-accent block mt-1"
-          />
-        </div>
-        <Button onClick={onRecognize} disabled={busy || !file}>
-          {busy ? "Recognising…" : "Recognise"}
-        </Button>
-      </div>
-      {file && (
-        <p className="text-xs text-muted-foreground mt-2">
-          {file.name} — {(file.size / 1024).toFixed(1)} KB
-        </p>
-      )}
-      {error ? <ErrorBlock error={error} /> : null}
-      {data && (
-        <div className="mt-3 text-sm">
-          <div className="text-xs text-muted-foreground">
-            model: <code>{data.model_path}</code> · available:{" "}
-            <span className={data.available ? "text-green-700" : "text-red-700"}>
-              {data.available ? "yes" : "no"}
-            </span>
-            {data.confidence !== null && (
-              <>
-                {" "}· confidence: {data.confidence.toFixed(3)}
-              </>
-            )}
-          </div>
-          {data.error && (
-            <div className="bg-amber-50 border border-amber-200 text-amber-900 text-xs rounded p-3 mt-2 whitespace-pre-wrap">
-              {data.error}
-            </div>
-          )}
-          {data.text && (
-            <div className="mt-3">
-              <div className="text-xs text-muted-foreground mb-1">
-                {data.text_chars} chars
-              </div>
-              <div
-                dir="rtl"
-                lang="ar"
-                className="text-base leading-relaxed border rounded p-3 bg-card whitespace-pre-wrap max-h-80 overflow-auto"
-              >
-                {data.text}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </Section>
-  );
-}
-
 // Page ------------------------------------------------------------------
 
 export function DiagnosticsPage(): JSX.Element {
@@ -847,7 +725,6 @@ export function DiagnosticsPage(): JSX.Element {
       <ShamelaSection />
       <OcrPoSection />
       <HadithVerifySection />
-      <KrakenSection />
     </div>
   );
 }

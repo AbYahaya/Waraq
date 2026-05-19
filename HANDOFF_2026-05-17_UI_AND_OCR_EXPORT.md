@@ -421,9 +421,9 @@ Current implementation status:
   - backend now reads `CORS_ORIGINS` from settings and installs FastAPI `CORSMiddleware` when configured
   - frontend now supports `VITE_API_URL`; when unset it keeps the existing local `/api` proxy behavior, and when set it calls the deployed backend directly
   - added `frontend/.env.example`
-  - updated deployment docs so Cloudflare Pages + Fly uses:
+  - updated deployment docs so Vercel through GitHub + Fly uses:
     - frontend `VITE_API_URL=https://<backend>.fly.dev`
-    - backend `CORS_ORIGINS=https://<frontend>.pages.dev`
+    - backend `CORS_ORIGINS=https://<frontend>.vercel.app`
   - verification passed:
     - `python3 -m py_compile backend/waraq/api/main.py backend/waraq/db/session.py`
     - `npm run build` in `frontend`
@@ -435,3 +435,26 @@ Current implementation status:
   - [frontend/.env.example](./frontend/.env.example)
   - [frontend/README.md](./frontend/README.md)
   - [infra/DEPLOY.md](./infra/DEPLOY.md)
+
+- Removed the retired Kraken OCR path before Vercel/Fly external testing:
+  - deleted the backend adapter and its dedicated test
+  - removed the `KRAKEN` engine enum, `use_kraken` routing flag, and consensus runner branch
+  - removed the backend diagnostics endpoint, frontend diagnostics card, environment pill, and mypy override
+  - removed active product/test/deployment-doc references; specialist manuscript OCR remains parked for v2.0 in the canon tracker
+  - uninstalled local backend venv package `kraken 7.0.2`
+  - verification to rerun after this edit:
+    - `python3 -m py_compile backend/waraq/ocr/routing.py backend/waraq/ocr/consensus.py backend/waraq/api/routers/diagnostics_router.py backend/waraq/upload/archive.py`
+    - `backend/.venv/bin/pytest tests/ocr/test_stage2_routing_and_consensus.py`
+    - `npm run build` in `frontend`
+- Files changed for Kraken removal:
+  - [backend/waraq/ocr/routing.py](./backend/waraq/ocr/routing.py)
+  - [backend/waraq/ocr/consensus.py](./backend/waraq/ocr/consensus.py)
+  - [backend/waraq/api/routers/diagnostics_router.py](./backend/waraq/api/routers/diagnostics_router.py)
+  - [frontend/src/pages/Diagnostics.tsx](./frontend/src/pages/Diagnostics.tsx)
+  - [backend/tests/ocr/test_stage2_routing_and_consensus.py](./backend/tests/ocr/test_stage2_routing_and_consensus.py)
+  - [backend/tests/ocr/test_kraken_adapter.py](./backend/tests/ocr/test_kraken_adapter.py)
+  - [backend/waraq/ocr/kraken.py](./backend/waraq/ocr/kraken.py)
+  - [backend/pyproject.toml](./backend/pyproject.toml)
+  - [API_KEYS.md](./API_KEYS.md)
+  - [TEST_PLAN.md](./TEST_PLAN.md)
+  - [CANON_TRACKER.md](./CANON_TRACKER.md)

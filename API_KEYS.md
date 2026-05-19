@@ -75,7 +75,7 @@ These are either self-hosted (no key) or auto-managed by Fly (creds auto-injecte
 | PostgreSQL | `fly postgres create` → `DATABASE_URL` auto-injected |
 | Redis | `fly redis create` → `REDIS_URL` auto-injected |
 | Tigris (S3-compatible storage) | `fly storage create` → `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_ENDPOINT_URL_S3` auto-injected |
-| kraken, Real-ESRGAN, CAMeL Tools, Farasa, Mishkal, LayoutParser, DocTR | Open source, self-hosted |
+| Real-ESRGAN, CAMeL Tools, Farasa, Mishkal, LayoutParser, DocTR | Open source, self-hosted |
 | Shamela | Depends on data source — BOK files / OpenITI corpus need no keys |
 | JWT signing | Generate locally: `openssl rand -hex 32` |
 | bcrypt | Library, no service |

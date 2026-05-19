@@ -53,10 +53,8 @@ GeminiExtractor = Callable[[bytes, str], Awaitable[str]]
 # return a small dataclass-shaped namespace without importing the real
 # OpenAiOcrResult.
 from waraq.ocr.openai_ocr import OpenAiOcrResult  # noqa: E402
-from waraq.ocr.kraken import KrakenResult  # noqa: E402
 
 OpenAiOcrExtractor = Callable[[bytes, str], Awaitable[OpenAiOcrResult]]
-KrakenExtractor = Callable[[bytes, str], Awaitable[KrakenResult]]
 
 
 # Agreement-class string constants — wire-stable, persisted on OCR-PO.
@@ -135,25 +133,6 @@ async def _run_one_openai(
         )
 
 
-async def _run_one_kraken(
-    fn: KrakenExtractor, image_bytes: bytes, mime_type: str
-) -> EngineResult:
-    try:
-        result = await fn(image_bytes, mime_type)
-        return EngineResult(
-            engine=OcrEngine.KRAKEN,
-            text=result.text,
-            confidence=result.confidence,
-        )
-    except Exception as exc:
-        return EngineResult(
-            engine=OcrEngine.KRAKEN,
-            text="",
-            confidence=None,
-            error_class=type(exc).__name__,
-        )
-
-
 def _classify_agreement(results: tuple[EngineResult, ...]) -> str:
     """Compute the agreement label across all engines that ran (and
     didn't error)."""
@@ -221,8 +200,6 @@ async def run_engines(
     block_class: BlockClass,
     gemini_fn: GeminiExtractor,
     openai_ocr_fn: OpenAiOcrExtractor,
-    kraken_fn: KrakenExtractor | None = None,
-    use_kraken: bool = False,
 ) -> ConsensusResult:
     """Run the engines Stage-2 routes for `block_class` in parallel and
     return the consensus result.
@@ -232,23 +209,14 @@ async def run_engines(
     Forcing explicit injection keeps this module decoupled from the
     Gemini / OpenAI OCR import surface and makes the test boundary
     obvious.
-
-    When `use_kraken=True`, the routing layer adds kraken to the
-    eligible set for non-QURAN classes (per §3.3 canon "gate behind
-    project-flag"). `kraken_fn` must then be supplied; passing
-    `use_kraken=True` without `kraken_fn` is treated as a programmer
-    error and falls through to "kraken not eligible" rather than
-    raising at runtime, so a partial wiring degrades gracefully.
     """
-    eligible = engines_for(block_class, use_kraken=use_kraken)
+    eligible = engines_for(block_class)
 
     awaitables: list[Awaitable[EngineResult]] = []
     if OcrEngine.GEMINI in eligible:
         awaitables.append(_run_one_gemini(gemini_fn, image_bytes, mime_type))
     if OcrEngine.OPENAI in eligible:
         awaitables.append(_run_one_openai(openai_ocr_fn, image_bytes, mime_type))
-    if OcrEngine.KRAKEN in eligible and kraken_fn is not None:
-        awaitables.append(_run_one_kraken(kraken_fn, image_bytes, mime_type))
 
     results_list = await asyncio.gather(*awaitables)
     results = tuple(results_list)

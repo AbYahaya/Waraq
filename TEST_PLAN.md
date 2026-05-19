@@ -33,15 +33,14 @@ Open **`/diagnostics`** from the top nav. This is the lean test surface — noth
 
 **Step:** load the page; the first section auto-loads.
 
-**Expected:** six pills:
+**Expected:** five pills:
 - ✓ OPENAI_API_KEY
 - ✓ GOOGLE_AI_API_KEY
 - ✓ GOOGLE_APPLICATION_CREDENTIALS (Cloud Vision)
 - ✗ SUNNAH_COM_API_KEY (P-1 hadith) — *red, you don't have one yet*
 - ✓ CAMeL morphology DB
-- ✗ kraken (manuscript OCR) — *red until you `pip install kraken` and download a model; the adapter is wired, just inactive*
 
-**If failing:** verify `backend/.env` has the corresponding keys; verify Cloud Vision JSON path is correct; verify CAMeL DB present at `~/.camel_tools/`. The kraken pill is expected red on a fresh install — see §9 for the activation walk-through.
+**If failing:** verify `backend/.env` has the corresponding keys; verify Cloud Vision JSON path is correct; verify CAMeL DB present at `~/.camel_tools/`.
 
 ### 1.2 — Tanzil-Hafs Qurʾān verse lookup (Phase 2D)
 
@@ -241,55 +240,6 @@ Paste the satz_uuid, leave "Manually trigger extended" unchecked, click **Verify
 
 ---
 
-## 4a. kraken manuscript / calligraphy OCR (Phase 4 sub-batch kraken)
-
-This is the third reading-line engine per §3.3, for **handwritten or calligraphic** Arabic scans where Gemini-Vision and Cloud Vision DOCUMENT_TEXT_DETECTION reliably fail. Project-flag gated — does NOT run in the default OCR pipeline. The Diagnostics page exposes a direct test surface so you can confirm the adapter works on your manuscript material without first wiring the flag into the workspace UI.
-
-### 4a.1 — Adapter wired without installing kraken
-
-**Step:** open `/diagnostics`, scroll to section 8 (**kraken manuscript OCR**). Upload any image (PNG/JPEG/TIFF), click **Recognise**.
-
-**Expected (when kraken is NOT installed in the venv):** structured error message:
-> kraken not installed in this venv. Install via `pip install kraken` and download a recognition model (e.g. `kraken get arabic_best`).
-
-The model path indicator shows the default `arabic_best.mlmodel` (or whatever `KRAKEN_MODEL_PATH` is set to). `available: no`. **This is the canon-honest no-signal state — the adapter is wired but the package isn't installed.** Section 1's `kraken (manuscript OCR)` pill is red, which matches.
-
-### 4a.2 — Activate kraken end-to-end
-
-**Step:**
-1. `cd /home/abyahaya/Waraq/Waraq/backend && .venv/bin/pip install kraken`
-2. Download a recognition model — for classical Arabic, the OpenITI / kraken-doc convention is:
-   ```bash
-   cd /home/abyahaya/Waraq/Waraq/backend
-   .venv/bin/kraken get arabic_best
-   ```
-   (Or grab any kraken `.mlmodel` and point `KRAKEN_MODEL_PATH` at it in `backend/.env`.)
-3. Restart the backend.
-4. Reload `/diagnostics`. The `kraken (manuscript OCR)` pill should now be **green**.
-5. Upload a handwritten Arabic page scan (or a calligraphic excerpt) in section 8, click **Recognise**.
-
-**Expected:** RTL-rendered Arabic text panel + numeric `confidence` between 0 and 1 (mean of per-character confidences across all predicted lines). The text quality on a good handwritten scan is the value-add over Gemini/Cloud Vision; on a printed scan, expect noisier output than the other two engines (which is why kraken is gated, not default).
-
-### 4a.3 — Wiring kraken into the multi-engine pipeline
-
-**Today (v1.0):** kraken's eligibility in `engines_for(block_class, *, use_kraken=...)` and `run_engines(..., kraken_fn=..., use_kraken=...)` is structurally present at the function-call boundary. No project-edit UI exists yet to flip the flag per-project; the diagnostics endpoint above is the canonical test surface for v1.0.
-
-**Future (canon-amendment-shaped):** when canon specifies a project-flag schema (e.g. `Project.ocr_use_kraken: bool`), the column plumbs into the existing `use_kraken` kwarg without changing routing-table semantics. **No code-changes-deferred to "make kraken work" — it works today, it's just gated.**
-
-### 4a.4 — What kraken does NOT do
-
-- **Qurʾān blocks:** even with `use_kraken=True`, the QURAN block class stays Gemini-only. Qurʾān script is canonically printed, and kraken's manuscript orientation would degrade rather than help on the Mushaf. Test: in the future workspace path where kraken is enabled per-project, a page mixing Qurʾān + main_text will route only the main_text blocks through kraken.
-- **eScriptorium:** the Django web frontend over kraken — explicitly out of scope per the project owner. The human-correction loop is the existing OCR-Review UI.
-- **Training new models:** kraken's training pipeline (`ketos train …`) is a deployment / curation concern, not a v1.0 application feature. Use the provided `arabic_best` model or any pretrained `.mlmodel`.
-
-**If failing:**
-- "kraken not installed" → step 1 in §4a.2
-- "kraken recognition model not found at …" → step 2 in §4a.2 (or fix `KRAKEN_MODEL_PATH`)
-- "kraken model load failed" → the file at `KRAKEN_MODEL_PATH` exists but isn't a valid model. Re-download.
-- HTTP 413 → image larger than 20 MB. Crop or downsample.
-
----
-
 ## 4b. Multi-format upload (Phase 5 sub-batch K-1)
 
 K-1 extends the upload flow from PDF-only to PDF + image formats per canon §2.1. The chunked transport is unchanged — the new code branches at finalize (page count) and at OCR (rasterize).
@@ -320,7 +270,7 @@ K-1 extends the upload flow from PDF-only to PDF + image formats per canon §2.1
 - Upload succeeds (HEIC opener is registered at module import via `pillow_heif`)
 - 1 page materialized
 - SCAN-PO `format: "heic"`
-- OCR works — kraken/Gemini/Cloud Vision all receive the PNG re-encoding
+- OCR works — Gemini and OpenAI OCR receive the PNG re-encoding
 
 ### 4b.4 — Upload a misnamed file (`book.pdf` whose body is a JPEG)
 
@@ -440,7 +390,7 @@ No DRM bypass — §7.4 IP-rights honor. The application refuses cleanly rather 
 **Expected** (current host state): **HTTP 503 Service Unavailable** with message:
 > djvused not found on PATH. DjVu uploads need the djvulibre-bin package — install via `apt install djvulibre-bin`.
 
-This is the canon-honest "adapter wired, system bin missing" state. Mirrors the kraken pattern.
+This is the canon-honest "adapter wired, system bin missing" state.
 
 ### 4d.5 — Activate DjVu support
 
@@ -904,7 +854,6 @@ npm run build
 | Shamela has only 16 texts (Bukhari ingested live; the rest registered) | Per §3.5 canonical floor; broader corpus is curation scope |
 | E-1..E-5 extended fetchers return empty hits | Per §4.16.2 Official Live API is post-v1.0 |
 | LayoutParser / Real-ESRGAN not installed | Per Phase 4 sub-batch H, OpenCV variants are the v1.0 production path |
-| kraken pill red until installed + model downloaded | Adapter wired; activation is per-host. See §4a |
 | Frontend is the M4 layer + Diagnostics page only | A proper Phase-5 UI is the next user-decided sprint |
 
 ---
