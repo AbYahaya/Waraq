@@ -13,10 +13,13 @@
 
 import { useAuthStore } from "@/store/auth";
 
-const API_PREFIX = "/api";
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
+const API_PREFIX = API_BASE || "/api";
 
 export const apiPath = (path: string): string =>
-  path.startsWith("http") ? path : `${API_PREFIX}${path}`;
+  path.startsWith("http")
+    ? path
+    : `${API_PREFIX}${path.startsWith("/") ? path : `/${path}`}`;
 
 export class ApiError extends Error {
   status: number;

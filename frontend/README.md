@@ -20,7 +20,7 @@ npm install
 npm run dev
 ```
 
-Vite proxies `/auth`, `/projects`, `/pages`, `/segments`, `/glossary`, `/entities`, `/conflicts`, `/translation-jobs`, `/ocr`, `/ocr-export`, `/uploads`, `/health` to the backend. Override the backend URL via `BACKEND_URL=...` env var (defaults to `http://127.0.0.1:8000`).
+Vite proxies `/api` to the backend. Override the local proxy target via `BACKEND_URL=...` env var (defaults to `http://127.0.0.1:8000`).
 
 ## Build
 
@@ -28,6 +28,10 @@ Vite proxies `/auth`, `/projects`, `/pages`, `/segments`, `/glossary`, `/entitie
 npm run build       # tsc -b && vite build → dist/
 npm run preview     # serve the built dist/
 ```
+
+For hosted frontend builds, set `VITE_API_URL=https://<backend>.fly.dev`.
+Leave it empty for local development so requests go through Vite's `/api`
+proxy.
 
 ## Toolchain
 

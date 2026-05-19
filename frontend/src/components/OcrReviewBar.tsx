@@ -33,11 +33,11 @@ import type { OcrPageStatus, Page } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_LABEL: Record<Page["ocr_status"], string> = {
-  ausstehend: "ausstehend",
+  ausstehend: "pending",
   in_review: "in review",
-  go: "go",
-  go_with_warning: "go (warning)",
-  no_go: "no-go",
+  go: "approved",
+  go_with_warning: "approved with warning",
+  no_go: "blocked",
 };
 
 const STATUS_TONE: Record<Page["ocr_status"], string> = {
@@ -93,11 +93,22 @@ export function OcrReviewBar({
         text: string;
         text_chars: number;
       }>(`/ocr/pages/${page.page_uuid}/auto-run`),
-    onSuccess: () => {
+    onSuccess: async () => {
       // Status doesn't change here — page stays `ausstehend` per the
       // canonical separation between OCR run and review state machine.
-      // Refresh segments so the new text shows in the editor / compare view.
-      void qc.invalidateQueries({ queryKey: qk.pageSegments(page.page_uuid) });
+      // Refresh both the segment list and the per-segment history. The
+      // OCR pane resolves source text from history first, so only
+      // invalidating `/pages/{u}/segments` can leave the UI showing the
+      // previous OCR/source revision even after a successful run.
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: qk.pageSegments(page.page_uuid) }),
+        qc.invalidateQueries({
+          predicate: (query) =>
+            Array.isArray(query.queryKey) &&
+            query.queryKey[0] === "segments" &&
+            query.queryKey[2] === "history",
+        }),
+      ]);
     },
     onError: (err) => setError(err instanceof ApiError ? err.detail : "OCR failed"),
   });
@@ -133,13 +144,13 @@ export function OcrReviewBar({
   });
 
   return (
-    <div className="px-3 py-3 border-b sticky top-0 bg-card z-10">
+    <div className="sticky top-0 z-10 border-b border-border/80 bg-card px-4 py-4">
       <div className="flex items-baseline justify-between gap-2 mb-2">
         <div>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
             Page {page.page_index}
           </div>
-          <div className="font-medium">OCR review</div>
+          <div className="font-medium text-[#1d221d]">OCR review</div>
         </div>
         <span
           className={cn(
@@ -151,7 +162,7 @@ export function OcrReviewBar({
         </span>
       </div>
 
-      <div className="inline-flex rounded border bg-background overflow-hidden mt-2">
+      <div className="mt-2 inline-flex overflow-hidden rounded-xl border border-border/80 bg-background">
         <button
           type="button"
           onClick={() => onViewModeChange("edit")}
@@ -174,7 +185,7 @@ export function OcrReviewBar({
               : "hover:bg-accent/50",
           )}
         >
-          AR | DE
+          Read
         </button>
       </div>
 

@@ -5,14 +5,19 @@ from __future__ import annotations
 import uuid as _uuid
 
 from fastapi import APIRouter, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from waraq.api._ownership import owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
-from waraq.api.schemas import ProjectCreateRequest, ProjectResponse
+from waraq.api.schemas import (
+    ProjectCreateRequest,
+    ProjectResponse,
+    ProjectTranslationAvailabilityResponse,
+)
 from waraq.identity.service import new_uuid
 from waraq.projects import delete_project as delete_project_service
-from waraq.schemas import Project
+from waraq.schemas import Block, Page, Project, Revision, Segment
+from waraq.schemas.enums import ChangeSource
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -58,6 +63,84 @@ async def get_project(
     # of the routes that already use it.
     project = await owned_project_or_404(session, project_uuid, current.account_uuid)
     return ProjectResponse.model_validate(project)
+
+
+@router.get(
+    "/{project_uuid}/translation-availability",
+    response_model=ProjectTranslationAvailabilityResponse,
+)
+async def get_project_translation_availability(
+    project_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> ProjectTranslationAvailabilityResponse:
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+
+    segment_rows = (
+        await session.execute(
+            select(Segment.satz_uuid)
+            .select_from(Segment)
+            .join(Block, Block.block_uuid == Segment.block_uuid)
+            .join(Page, Page.page_uuid == Block.page_uuid)
+            .where(Page.project_uuid == project_uuid)
+            .where(Segment.active.is_(True))
+        )
+    ).all()
+    segment_uuids = [row[0] for row in segment_rows]
+    total_segments = len(segment_uuids)
+
+    translated_segments = 0
+    fresh_translated_segments = 0
+    stale_translated_segments = 0
+
+    if segment_uuids:
+        revision_rows = (
+            await session.execute(
+                select(Revision.satz_uuid, Revision.change_source, Revision.created_at)
+                .where(Revision.satz_uuid.in_(segment_uuids))
+                .order_by(Revision.satz_uuid.asc(), Revision.created_at.asc())
+            )
+        ).all()
+
+        revision_summary: dict[_uuid.UUID, dict[str, object | None]] = {
+            satz_uuid: {"source_at": None, "target_at": None}
+            for satz_uuid in segment_uuids
+        }
+        for satz_uuid, change_source, created_at in revision_rows:
+            summary = revision_summary[satz_uuid]
+            if change_source == ChangeSource.RE_TRANSLATE.value:
+                summary["target_at"] = created_at
+            else:
+                summary["source_at"] = created_at
+
+        for satz_uuid in segment_uuids:
+            summary = revision_summary[satz_uuid]
+            source_at = summary["source_at"]
+            target_at = summary["target_at"]
+            if target_at is None:
+                continue
+            translated_segments += 1
+            if source_at is None or target_at >= source_at:
+                fresh_translated_segments += 1
+            else:
+                stale_translated_segments += 1
+
+    untranslated_segments = total_segments - translated_segments
+
+    return ProjectTranslationAvailabilityResponse(
+        project_uuid=project_uuid,
+        total_segments=total_segments,
+        translated_segments=translated_segments,
+        fresh_translated_segments=fresh_translated_segments,
+        stale_translated_segments=stale_translated_segments,
+        untranslated_segments=untranslated_segments,
+        has_translation=translated_segments > 0,
+        has_full_translation=total_segments > 0 and translated_segments == total_segments,
+        has_fresh_translation=fresh_translated_segments > 0,
+        has_full_fresh_translation=(
+            total_segments > 0 and fresh_translated_segments == total_segments
+        ),
+    )
 
 
 @router.delete(

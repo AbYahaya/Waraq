@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from waraq.ocr.cloud_vision import CloudVisionResult
+from waraq.ocr.openai_ocr import OpenAiOcrResult
 from waraq.ocr.consensus import (
     AGREEMENT_DIVERGENT,
     AGREEMENT_ENGINE_ERROR,
@@ -44,7 +44,7 @@ from waraq.schemas.enums import BlockClass
 
 class TestRoutingWithKrakenFlag:
     """The `use_kraken` flag adds KRAKEN to the eligible set for every
-    non-QURAN class. The base routing (Gemini + Cloud Vision) is
+    non-QURAN class. The base routing (Gemini + OpenAI OCR) is
     preserved — kraken is additive, not replacement."""
 
     def test_kraken_off_default(self) -> None:
@@ -56,7 +56,7 @@ class TestRoutingWithKrakenFlag:
         assert OcrEngine.KRAKEN in eligible
         # Other engines preserved — kraken is additive.
         assert OcrEngine.GEMINI in eligible
-        assert OcrEngine.CLOUD_VISION in eligible
+        assert OcrEngine.OPENAI in eligible
 
     def test_kraken_added_to_all_non_quran_classes(self) -> None:
         for cls in (
@@ -92,8 +92,8 @@ def _gemini_returns(text: str):
 
 
 def _cv_returns(text: str, confidence: float | None):
-    async def _fn(_image: bytes, _mime: str) -> CloudVisionResult:
-        return CloudVisionResult(text=text, confidence=confidence)
+    async def _fn(_image: bytes, _mime: str) -> OpenAiOcrResult:
+        return OpenAiOcrResult(text=text, confidence=confidence)
 
     return _fn
 
@@ -127,7 +127,7 @@ class TestConsensusKrakenInvocation:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله"),
-            cloud_vision_fn=_cv_returns("بسم الله", 0.9),
+            openai_ocr_fn=_cv_returns("بسم الله", 0.9),
             kraken_fn=kraken_fn,
             use_kraken=False,
         )
@@ -138,7 +138,7 @@ class TestConsensusKrakenInvocation:
         assert len(result.engines) == 2
         assert {r.engine for r in result.engines} == {
             OcrEngine.GEMINI,
-            OcrEngine.CLOUD_VISION,
+            OcrEngine.OPENAI,
         }
 
     async def test_kraken_runs_when_flag_set_and_fn_supplied(self) -> None:
@@ -147,7 +147,7 @@ class TestConsensusKrakenInvocation:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله"),
-            cloud_vision_fn=_cv_returns("بسم الله", 0.9),
+            openai_ocr_fn=_cv_returns("بسم الله", 0.9),
             kraken_fn=_kraken_returns("بسم الله", 0.85),
             use_kraken=True,
         )
@@ -155,7 +155,7 @@ class TestConsensusKrakenInvocation:
         assert len(result.engines) == 3
         assert {r.engine for r in result.engines} == {
             OcrEngine.GEMINI,
-            OcrEngine.CLOUD_VISION,
+            OcrEngine.OPENAI,
             OcrEngine.KRAKEN,
         }
         kraken_result = next(r for r in result.engines if r.engine == OcrEngine.KRAKEN)
@@ -172,7 +172,7 @@ class TestConsensusKrakenInvocation:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله"),
-            cloud_vision_fn=_cv_returns("بسم الله", 0.9),
+            openai_ocr_fn=_cv_returns("بسم الله", 0.9),
             kraken_fn=None,
             use_kraken=True,
         )
@@ -180,7 +180,7 @@ class TestConsensusKrakenInvocation:
         assert len(result.engines) == 2
         assert {r.engine for r in result.engines} == {
             OcrEngine.GEMINI,
-            OcrEngine.CLOUD_VISION,
+            OcrEngine.OPENAI,
         }
 
     async def test_kraken_skipped_on_quran_class_even_with_flag(self) -> None:
@@ -196,7 +196,7 @@ class TestConsensusKrakenInvocation:
             mime_type="image/png",
             block_class=BlockClass.QURAN,
             gemini_fn=_gemini_returns("بسم الله"),
-            cloud_vision_fn=_cv_returns("never", 0.9),
+            openai_ocr_fn=_cv_returns("never", 0.9),
             kraken_fn=kraken_fn,
             use_kraken=True,
         )
@@ -211,14 +211,14 @@ class TestConsensusKrakenInvocation:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله"),
-            cloud_vision_fn=_cv_returns("بسم الله", 0.9),
+            openai_ocr_fn=_cv_returns("بسم الله", 0.9),
             kraken_fn=_kraken_raises(KrakenUnavailable("model missing")),
             use_kraken=True,
         )
 
         # Surviving 2 engines agreed → not propagated as overall
         # engine_error (the agreement classifier only looks at
-        # successful results). Gemini + Cloud Vision exact-match.
+        # successful results). Gemini + OpenAI OCR exact-match.
         assert result.agreement == AGREEMENT_EXACT_MATCH
         kraken_result = next(r for r in result.engines if r.engine == OcrEngine.KRAKEN)
         assert kraken_result.text == ""
@@ -231,7 +231,7 @@ class TestConsensusKrakenInvocation:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله الرحمن"),
-            cloud_vision_fn=_cv_returns("سمع غير لذلك", 0.75),
+            openai_ocr_fn=_cv_returns("سمع غير لذلك", 0.75),
             kraken_fn=_kraken_returns("نص مختلف تماما", 0.6),
             use_kraken=True,
         )
@@ -346,7 +346,7 @@ class TestThreeEngineAllFail:
         async def gemini_raises(_image: bytes, _mime: str) -> str:
             raise RuntimeError("gemini boom")
 
-        async def cv_raises(_image: bytes, _mime: str) -> CloudVisionResult:
+        async def cv_raises(_image: bytes, _mime: str) -> OpenAiOcrResult:
             raise RuntimeError("cv boom")
 
         async def kraken_raises(_image: bytes, _mime: str) -> KrakenResult:
@@ -357,7 +357,7 @@ class TestThreeEngineAllFail:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=gemini_raises,
-            cloud_vision_fn=cv_raises,
+            openai_ocr_fn=cv_raises,
             kraken_fn=kraken_raises,
             use_kraken=True,
         )

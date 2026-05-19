@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.audit._helpers import seed_project, seed_segment
-from waraq.ocr.cloud_vision import CloudVisionResult
+from waraq.ocr.openai_ocr import OpenAiOcrResult
 from waraq.ocr.consensus import (
     AGREEMENT_DIVERGENT,
     AGREEMENT_ENGINE_ERROR,
@@ -46,14 +46,14 @@ class TestRoutingTable:
     """Stage-2 routing: which engines are eligible for which block class."""
 
     def test_quran_is_gemini_only(self) -> None:
-        # Cloud Vision systematically misreads Qurʾān script per
+        # The second OCR engine remains excluded for Qurʾān blocks per
         # the §3.4 Stage-2 routing rationale.
         eligible = engines_for(BlockClass.QURAN)
         assert eligible == frozenset({OcrEngine.GEMINI})
 
     def test_main_text_uses_both_engines(self) -> None:
         eligible = engines_for(BlockClass.MAIN_TEXT)
-        assert eligible == frozenset({OcrEngine.GEMINI, OcrEngine.CLOUD_VISION})
+        assert eligible == frozenset({OcrEngine.GEMINI, OcrEngine.OPENAI})
 
     def test_heading_footnote_hadith_marginalia_use_both(self) -> None:
         for cls in (
@@ -62,7 +62,7 @@ class TestRoutingTable:
             BlockClass.HADITH,
             BlockClass.MARGINALIA,
         ):
-            assert engines_for(cls) == frozenset({OcrEngine.GEMINI, OcrEngine.CLOUD_VISION}), cls
+            assert engines_for(cls) == frozenset({OcrEngine.GEMINI, OcrEngine.OPENAI}), cls
 
     def test_primary_engine_is_gemini(self) -> None:
         # §3.3 names Gemini the canonical main reading line. The
@@ -81,7 +81,7 @@ class TestOcrEngineEnum:
     def test_canonical_three_values(self) -> None:
         # Sub-batch kraken: KRAKEN added as the §3.3 manuscript-line
         # engine, project-flag gated (see test_kraken_adapter.py).
-        assert {e.value for e in OcrEngine} == {"gemini", "cloud_vision", "kraken"}
+        assert {e.value for e in OcrEngine} == {"gemini", "openai", "kraken"}
 
 
 # ---------------------------------------------------------------------
@@ -104,14 +104,14 @@ def _gemini_raises(exc: Exception):
 
 
 def _cv_returns(text: str, confidence: float | None):
-    async def _fn(_image: bytes, _mime: str) -> CloudVisionResult:
-        return CloudVisionResult(text=text, confidence=confidence)
+    async def _fn(_image: bytes, _mime: str) -> OpenAiOcrResult:
+        return OpenAiOcrResult(text=text, confidence=confidence)
 
     return _fn
 
 
 def _cv_raises(exc: Exception):
-    async def _fn(_image: bytes, _mime: str) -> CloudVisionResult:
+    async def _fn(_image: bytes, _mime: str) -> OpenAiOcrResult:
         raise exc
 
     return _fn
@@ -119,23 +119,23 @@ def _cv_raises(exc: Exception):
 
 @pytest.mark.asyncio
 class TestConsensusSingleEngine:
-    """QURAN routing → only Gemini runs. Cloud Vision callable is
+    """QURAN routing → only Gemini runs. OpenAI OCR callable is
     supplied (the API requires it) but never invoked."""
 
     async def test_quran_runs_gemini_only(self) -> None:
         cv_invoked = False
 
-        async def cv_fn(_image: bytes, _mime: str) -> CloudVisionResult:
+        async def cv_fn(_image: bytes, _mime: str) -> OpenAiOcrResult:
             nonlocal cv_invoked
             cv_invoked = True
-            return CloudVisionResult(text="should-not-run", confidence=0.99)
+            return OpenAiOcrResult(text="should-not-run", confidence=0.99)
 
         result = await run_engines(
             image_bytes=b"img",
             mime_type="image/png",
             block_class=BlockClass.QURAN,
             gemini_fn=_gemini_returns("بسم الله"),
-            cloud_vision_fn=cv_fn,
+            openai_ocr_fn=cv_fn,
         )
 
         assert cv_invoked is False
@@ -153,7 +153,7 @@ class TestConsensusSingleEngine:
             mime_type="image/png",
             block_class=BlockClass.QURAN,
             gemini_fn=_gemini_raises(RuntimeError("boom")),
-            cloud_vision_fn=_cv_returns("never", 0.9),
+            openai_ocr_fn=_cv_returns("never", 0.9),
         )
         assert result.agreement == AGREEMENT_ENGINE_ERROR
         assert result.primary_text == ""
@@ -172,7 +172,7 @@ class TestConsensusBothEngines:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله"),
-            cloud_vision_fn=_cv_returns("بسم الله", 0.92),
+            openai_ocr_fn=_cv_returns("بسم الله", 0.92),
         )
         assert result.agreement == AGREEMENT_EXACT_MATCH
         assert result.primary_engine_used == OcrEngine.GEMINI
@@ -188,7 +188,7 @@ class TestConsensusBothEngines:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم   الله\nالرحمن"),
-            cloud_vision_fn=_cv_returns("بسم الله الرحمن", 0.85),
+            openai_ocr_fn=_cv_returns("بسم الله الرحمن", 0.85),
         )
         assert result.agreement == AGREEMENT_EXACT_MATCH
 
@@ -202,7 +202,7 @@ class TestConsensusBothEngines:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns(gemini_text),
-            cloud_vision_fn=_cv_returns(cv_text, 0.80),
+            openai_ocr_fn=_cv_returns(cv_text, 0.80),
         )
         assert result.agreement == AGREEMENT_SKELETON_EQUAL
 
@@ -212,10 +212,10 @@ class TestConsensusBothEngines:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله الرحمن"),
-            cloud_vision_fn=_cv_returns("سمع غير لذلك", 0.75),
+            openai_ocr_fn=_cv_returns("سمع غير لذلك", 0.75),
         )
         assert result.agreement == AGREEMENT_DIVERGENT
-        # Only Cloud Vision reported a confidence — that single value
+        # Only OpenAI OCR reported a confidence — that single value
         # is the aggregate (the divergent rule's `min` over a single
         # value is itself).
         assert result.aggregated_confidence == pytest.approx(0.75)
@@ -226,7 +226,7 @@ class TestConsensusBothEngines:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("gemini-text"),
-            cloud_vision_fn=_cv_returns("cv-text", 0.5),
+            openai_ocr_fn=_cv_returns("cv-text", 0.5),
         )
         # §3.3 Gemini is canonical primary even when the texts diverge.
         assert result.primary_engine_used == OcrEngine.GEMINI
@@ -238,10 +238,10 @@ class TestConsensusBothEngines:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_raises(RuntimeError("rate-limit")),
-            cloud_vision_fn=_cv_returns("survivor", 0.8),
+            openai_ocr_fn=_cv_returns("survivor", 0.8),
         )
         assert result.agreement == AGREEMENT_ENGINE_ERROR
-        assert result.primary_engine_used == OcrEngine.CLOUD_VISION
+        assert result.primary_engine_used == OcrEngine.OPENAI
         assert result.primary_text == "survivor"
         # Aggregator returns the surviving engine's confidence.
         assert result.aggregated_confidence == pytest.approx(0.8)
@@ -252,7 +252,7 @@ class TestConsensusBothEngines:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_raises(RuntimeError("g")),
-            cloud_vision_fn=_cv_raises(RuntimeError("v")),
+            openai_ocr_fn=_cv_raises(RuntimeError("v")),
         )
         assert result.agreement == AGREEMENT_ENGINE_ERROR
         assert result.primary_text == ""
@@ -287,7 +287,7 @@ class TestOcrPoEnginesPayload:
 
         engine_breakdown = [
             EngineResult(engine=OcrEngine.GEMINI, text="بسم الله", confidence=None),
-            EngineResult(engine=OcrEngine.CLOUD_VISION, text="بسم الله", confidence=0.92),
+            EngineResult(engine=OcrEngine.OPENAI, text="بسم الله", confidence=0.92),
         ]
 
         job = await start_ocr_job(session=db_session, page=page)
@@ -314,8 +314,8 @@ class TestOcrPoEnginesPayload:
         engines_payload = payload["engines"]
         assert engines_payload is not None
         assert len(engines_payload) == 2
-        assert {e["engine"] for e in engines_payload} == {"gemini", "cloud_vision"}
-        cv_entry = next(e for e in engines_payload if e["engine"] == "cloud_vision")
+        assert {e["engine"] for e in engines_payload} == {"gemini", "openai"}
+        cv_entry = next(e for e in engines_payload if e["engine"] == "openai")
         assert cv_entry["confidence"] == pytest.approx(0.92)
         assert cv_entry["text_chars"] == len("بسم الله")
         assert cv_entry["error_class"] is None

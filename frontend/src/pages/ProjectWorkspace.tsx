@@ -27,10 +27,10 @@ import { OcrAutoRunPanel } from "@/components/OcrAutoRunPanel";
 import { OcrExportDialog } from "@/components/OcrExportDialog";
 import { OcrPane } from "@/components/OcrPane";
 import { OcrReviewBar } from "@/components/OcrReviewBar";
+import { PageTranslationPanel } from "@/components/PageTranslationPanel";
 import { OriginalPane } from "@/components/OriginalPane";
 import { PageList } from "@/components/PageList";
 import { ReleaseGatePanel } from "@/components/ReleaseGatePanel";
-import { SegmentEditor } from "@/components/SegmentEditor";
 import { TocPanel } from "@/components/TocPanel";
 import { TranslationExportDialog } from "@/components/TranslationExportDialog";
 import { TranslationPane } from "@/components/TranslationPane";
@@ -95,12 +95,12 @@ export function ProjectWorkspacePage(): JSX.Element {
     const ocr: PaneConfig = {
       id: "ocr",
       label: "OCR (Arabic)",
-      node: <OcrPane pageUuid={pageUuid} pageIndex={idx} />,
+      node: <OcrPane pageUuid={pageUuid} pageIndex={idx} editable={editMode} />,
     };
     const translation: PaneConfig = {
       id: "translation",
-      label: "Translation (German)",
-      node: <TranslationPane pageUuid={pageUuid} pageIndex={idx} />,
+      label: "Translation",
+      node: <TranslationPane pageUuid={pageUuid} pageIndex={idx} editable={editMode} />,
     };
 
     switch (comparisonMode) {
@@ -121,37 +121,39 @@ export function ProjectWorkspacePage(): JSX.Element {
         return [map[singlePaneSelection]];
       }
     }
-  }, [comparisonMode, singlePaneSelection, pageUuid, pageQ.data]);
+  }, [comparisonMode, editMode, singlePaneSelection, pageUuid, pageQ.data]);
 
   return (
-    <div className="-mx-4 -my-8 grid h-[calc(100vh-3.5rem)] grid-cols-[16rem_1fr]">
-      <aside className="border-r bg-card overflow-y-auto flex flex-col">
-        <div className="px-3 py-3 border-b">
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+    <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-[20rem_minmax(0,1fr)]">
+      <aside className="flex min-h-0 flex-col overflow-hidden rounded-[2rem] border border-border/80 bg-card/95 shadow-sm">
+        <div className="border-b border-border/80 px-4 py-4">
+          <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
             Project
           </div>
-          <div className="font-medium truncate">{projectQ.data?.name ?? "Loading…"}</div>
-          <div className="mt-2">
+          <div className="mt-2 truncate text-lg font-semibold text-[#1d221d]">
+            {projectQ.data?.name ?? "Loading…"}
+          </div>
+          <div className="mt-3">
             <DifficultyBadge scope="project" uuid={projectUuid} />
           </div>
-          <div className="flex flex-wrap gap-2 mt-2">
-            <Button size="sm" variant="outline" onClick={() => setUploadOpen(true)}>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setUploadOpen(true)}>
               Upload book, document, image, or archive
             </Button>
-            <Button size="sm" variant="outline" onClick={() => setExportOpen(true)}>
+            <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setExportOpen(true)}>
               OCR text
             </Button>
-            <Button size="sm" onClick={() => setTranslateExportOpen(true)}>
+            <Button size="sm" className="rounded-xl" onClick={() => setTranslateExportOpen(true)}>
               Translate &amp; export
             </Button>
-            <Button size="sm" variant="outline" asChild>
+            <Button size="sm" variant="outline" className="rounded-xl" asChild>
               <Link to={`/projects/${projectUuid}/audit`}>Audit</Link>
             </Button>
             <Button
               size="sm"
               variant="outline"
+              className="rounded-xl text-destructive border-destructive/40 hover:bg-destructive/10"
               onClick={() => setDeleteOpen(true)}
-              className="text-destructive border-destructive/40 hover:bg-destructive/10"
               title="Hide this project from your projects list. Server-side this is inactivation (H-5); data is preserved."
             >
               Delete
@@ -190,7 +192,7 @@ export function ProjectWorkspacePage(): JSX.Element {
         projectName={projectQ.data?.name ?? "this project"}
       />
 
-      <main className="flex flex-col min-h-0">
+      <main className="flex min-h-0 flex-col overflow-hidden rounded-[2rem] border border-border/80 bg-card/95 shadow-sm">
         {pageUuid === undefined && (
           <div className="flex h-full items-center justify-center text-center p-12">
             <div className="max-w-md space-y-2">
@@ -221,8 +223,7 @@ export function ProjectWorkspacePage(): JSX.Element {
               viewMode={editMode ? "edit" : "compare"}
               onViewModeChange={(m) => setEditMode(m === "edit")}
             />
-            {!editMode && (
-              <div className="px-3 py-2 border-b flex flex-wrap items-center gap-3 bg-muted/30">
+            <div className="flex flex-wrap items-center gap-3 border-b border-border/80 bg-muted/20 px-4 py-3">
                 <ComparisonModeSelector
                   mode={comparisonMode}
                   onModeChange={setComparisonMode}
@@ -255,20 +256,19 @@ export function ProjectWorkspacePage(): JSX.Element {
                     if (dpiCompareOpen) setDpiCompareOpen(false);
                   }}
                   className="text-xs"
-                  title="Show the project's auto-detected TOC (AR | DE)"
+                  title="Show the project's auto-detected table of contents"
                 >
                   {tocOpen ? "Close TOC" : "TOC"}
                 </Button>
                 <DifficultyBadge scope="page" uuid={pageUuid} />
+                <PageTranslationPanel projectUuid={projectUuid} pageUuid={pageUuid} />
                 <span className="text-[10px] text-muted-foreground ml-auto">
+                  {editMode ? "Edit mode" : "Read mode"} ·{" "}
                   {COMPARISON_MODES.find((m) => m.id === comparisonMode)?.label}
                 </span>
               </div>
-            )}
             <div className="flex-1 min-h-0">
-              {editMode ? (
-                <SegmentEditor pageUuid={pageUuid} />
-              ) : dpiCompareOpen ? (
+              {dpiCompareOpen ? (
                 <DpiCompareView pageUuid={pageUuid} />
               ) : tocOpen ? (
                 <TocPanel projectUuid={projectUuid} />
@@ -298,7 +298,7 @@ function SinglePaneSubSelector({
     { id: "translation", label: "Translation" },
   ];
   return (
-    <div className="inline-flex rounded border bg-background overflow-hidden" role="tablist">
+    <div className="inline-flex overflow-hidden rounded-xl border border-border/80 bg-background" role="tablist">
       {opts.map((o, i) => (
         <button
           key={o.id}

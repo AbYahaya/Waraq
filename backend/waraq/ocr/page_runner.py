@@ -9,8 +9,9 @@ Bridges three concerns the lower-level OCR service deliberately doesn't:
    into a target Segment. After upload the project has Pages but no
    Block / Segment rows yet; this helper creates one Block + Segment
    per detected layout block and reuses them on subsequent OCR runs.
-   Sub-batch C extends sub-batch B's first-block-only wiring so each
-   `DetectedBlock` becomes its own `(Block, Segment)` row.
+   In the current default page-wide path, persistence stays at one
+   page-wide `DetectedBlock`; the older multi-block persistence path is
+   still available behind `OCR_PAGE_WIDE_MODE=0`.
 3. **Source PDF lookup** — pulled from the page's SCAN-PO payload, the
    same path the in-browser viewer uses.
 
@@ -20,16 +21,19 @@ service path; no Decision Events, no LINEAGE_EVENT-POs.
 
 §3.4 Stage-2 routing
 --------------------
-Per detected block, `consensus.run_engines` is called with the engine
-set Stage-2 routes for the block's class (QURAN → Gemini-only;
-others → both engines parallel). The chosen primary text + per-engine
-breakdown + agreement label flow through `run_ocr_job` and land on
-each block's OCR-PO payload.
+In the legacy segmented path, `consensus.run_engines` is called with
+the Stage-2 route for the block's class (QURAN → Gemini-only; others
+→ both engines parallel). In the current page-wide default path, the
+whole page is OCR'd once per active engine; we no longer fan out into
+multiple internal per-region OCR calls. The chosen primary text +
+per-engine breakdown + agreement label flow through `run_ocr_job` and
+land on each block's OCR-PO payload.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 import tempfile
@@ -46,16 +50,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from waraq.identity import new_uuid
 from waraq.invariant.enums import LockFlag
 from waraq.ocr import run_ocr_job, start_ocr_job
-from waraq.ocr.cloud_vision import (
-    CloudVisionResult,
+from waraq.ocr.consensus import (
+    ConsensusResult,
+    run_engines,
 )
-from waraq.ocr.cloud_vision import (
-    extract_with_confidence as cloud_vision_extract,
-)
-from waraq.ocr.consensus import ConsensusResult, run_engines
 from waraq.ocr.gemini import extract_text as gemini_extract
 from waraq.ocr.layout import BoundingBox, DetectedBlock, detect_blocks
 from waraq.ocr.layout_opencv import opencv_block_detector
+from waraq.ocr.openai_ocr import OpenAiOcrResult
+from waraq.ocr.openai_ocr import extract_with_confidence as openai_ocr_extract
 from waraq.ocr.preprocessing import preprocess_if_needed
 from waraq.ocr.preprocessing_opencv import opencv_preprocessor
 from waraq.ocr.stage3 import Stage3Result, aggregate_stage3
@@ -66,8 +69,9 @@ from waraq.ocr.stage3_ai_production import (
     make_openai_ocr_validator,
 )
 from waraq.ocr.stage3_rules import DiacritizerFn, MorphologyAnalyzableFn
+from waraq.ocr.routing import OcrEngine
 from waraq.schemas import Block, Page, ProvenanceObject, Segment
-from waraq.schemas.enums import BlockClass, POType, ScopeType
+from waraq.schemas.enums import BlockClass, POType, ReadingDirection, ScopeType
 from waraq.upload.file_type import UploadFormat, is_direct_text_format, is_image_format
 
 # Per-page render DPI (matches the historical default in `_render_page_png`).
@@ -78,9 +82,9 @@ _RENDER_DPI: int = 200
 
 
 # Engine extractor type aliases. Production injects `gemini.extract_text`
-# and `cloud_vision.extract_with_confidence`; tests inject stubs.
+# and `openai_ocr.extract_with_confidence`; tests inject stubs.
 GeminiExtractorFn = Callable[[bytes, str], Awaitable[str]]
-CloudVisionExtractorFn = Callable[[bytes, str], Awaitable[CloudVisionResult]]
+OpenAiOcrExtractorFn = Callable[[bytes, str], Awaitable[OpenAiOcrResult]]
 
 
 # Lazily-built singleton AI validators for the Stage-3 production
@@ -92,6 +96,9 @@ _OPENAI_OCR_VALIDATOR_CACHE: AiValidator | None = None
 _OPENAI_OCR_VALIDATOR_RESOLVED: bool = False
 _GEMINI_OCR_VALIDATOR_CACHE: AiValidator | None = None
 _GEMINI_OCR_VALIDATOR_RESOLVED: bool = False
+_PAGE_WIDE_OCR_MODE: bool = os.environ.get("OCR_PAGE_WIDE_MODE", "1") != "0"
+_PAGE_WIDE_MULTI_ENGINE_MODE: bool = os.environ.get("OCR_PAGE_WIDE_MULTI_ENGINE", "1") != "0"
+_PAGE_WIDE_STAGE3_MODE: bool = os.environ.get("OCR_PAGE_WIDE_STAGE3", "1") != "0"
 
 
 def _resolve_openai_ocr_validator() -> AiValidator | None:
@@ -122,6 +129,37 @@ def _resolve_gemini_ocr_validator() -> AiValidator | None:
         _GEMINI_OCR_VALIDATOR_CACHE = None
     _GEMINI_OCR_VALIDATOR_RESOLVED = True
     return _GEMINI_OCR_VALIDATOR_CACHE
+
+
+async def _run_primary_engine_only(
+    *,
+    image_bytes: bytes,
+    mime_type: str,
+    gemini_fn: GeminiExtractorFn,
+) -> ConsensusResult:
+    """Single-engine fallback path for page-wide OCR.
+
+    The canonical default remains multi-engine OCR plus Stage-3
+    validation. This helper is only used when those paths are explicitly
+    disabled via env flags for debugging or emergency fallback.
+    """
+    text = await gemini_fn(image_bytes, mime_type)
+    from waraq.ocr.consensus import AGREEMENT_SINGLE_ENGINE, EngineResult
+    from waraq.ocr.routing import OcrEngine
+
+    return ConsensusResult(
+        primary_text=text,
+        primary_engine_used=OcrEngine.GEMINI,
+        engines=(
+            EngineResult(
+                engine=OcrEngine.GEMINI,
+                text=text,
+                confidence=None,
+            ),
+        ),
+        agreement=AGREEMENT_SINGLE_ENGINE,
+        aggregated_confidence=None,
+    )
 
 
 class PageOcrError(RuntimeError):
@@ -268,7 +306,7 @@ def _read_image_page_bytes(source: Path, fmt: UploadFormat, page_index: int) -> 
 
     Re-encoding to PNG matches the existing pdftoppm output contract —
     callers downstream (`preprocess_if_needed`, `consensus.run_engines`,
-    Cloud Vision, Gemini) all expect PNG bytes. This keeps the
+    OpenAI OCR, Gemini) all expect PNG bytes. This keeps the
     multi-format path invisible to everything below the rasterizer.
     """
     from io import BytesIO
@@ -522,12 +560,43 @@ def _select_primary_index(detected_blocks: list[DetectedBlock]) -> int:
     return 0
 
 
+def _full_page_detected_block(image_bytes: bytes) -> list[DetectedBlock]:
+    """Treat the complete page as one OCR/translation unit.
+
+    This preserves page context and avoids pathological internal block
+    splitting on difficult pages. The legacy segmented layout path
+    remains available behind `OCR_PAGE_WIDE_MODE=0`.
+    """
+    width = 0
+    height = 0
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(image_bytes)) as img:
+            width, height = img.size
+    except Exception:
+        width = 0
+        height = 0
+
+    return [
+        DetectedBlock(
+            block_class=BlockClass.MAIN_TEXT,
+            reading_direction=ReadingDirection.RTL,
+            bbox=BoundingBox(x0=0, y0=0, x1=width, y1=height),
+            detector_metadata={
+                "detector": "page_wide_mode",
+                "page_wide_mode": "true",
+            },
+        )
+    ]
+
+
 async def run_ocr_for_page(
     *,
     session: AsyncSession,
     page: Page,
     gemini_fn: GeminiExtractorFn | None = None,
-    cloud_vision_fn: CloudVisionExtractorFn | None = None,
+    openai_ocr_fn: OpenAiOcrExtractorFn | None = None,
     run_stage3: bool = True,
     morphology_fn: MorphologyAnalyzableFn | None = None,
     diacritizer_fn: DiacritizerFn | None = None,
@@ -546,7 +615,7 @@ async def run_ocr_for_page(
     can drive the review state machine separately.
 
     Engine callables can be injected for testing; production defaults
-    use `gemini.extract_text` + `cloud_vision.extract_with_confidence`.
+    use `gemini.extract_text` + `openai_ocr.extract_with_confidence`.
     """
     source_file, source_fmt = await _resolve_source_file(session=session, page=page)
 
@@ -562,19 +631,21 @@ async def run_ocr_for_page(
         image_bytes, _RENDER_DPI, preprocessor=opencv_preprocessor
     )
 
-    # §3.4 Stage-1 — OpenCV-backed layout detection (sub-batch H
-    # production adapter). Segments the rasterized page into
-    # reading-order Blocks via adaptive-threshold + morphological-close
-    # + contour analysis. Falls back to the canonical single-`main_text`
-    # block when the detector returns no regions or cv2 isn't usable.
-    detected_blocks = detect_blocks(image_bytes, _RENDER_DPI, detector=opencv_block_detector)
+    # Current product direction: OCR the whole page as one unit by
+    # default. The older segmented layout path is kept only as an
+    # escape hatch while the rest of the stack finishes migrating away
+    # from internal OCR fragmentation.
+    if _PAGE_WIDE_OCR_MODE:
+        detected_blocks = _full_page_detected_block(image_bytes)
+    else:
+        detected_blocks = detect_blocks(image_bytes, _RENDER_DPI, detector=opencv_block_detector)
     paired = await _ensure_blocks_and_segments(
         session=session, page=page, detected_blocks=detected_blocks
     )
     primary_idx = _select_primary_index(detected_blocks)
 
     gemini = gemini_fn if gemini_fn is not None else gemini_extract
-    cloud_vision = cloud_vision_fn if cloud_vision_fn is not None else cloud_vision_extract
+    openai_ocr = openai_ocr_fn if openai_ocr_fn is not None else openai_ocr_extract
 
     # Sub-batch J — wire the production OCR-side AI validators as
     # defaults when callers don't inject stubs. Each resolver returns
@@ -587,18 +658,141 @@ async def run_ocr_for_page(
 
     block_results: list[BlockOcrResult] = []
 
+    run_expensive_pagewide_consensus = (not _PAGE_WIDE_OCR_MODE) or _PAGE_WIDE_MULTI_ENGINE_MODE
+    run_stage3_for_page = run_stage3 and ((not _PAGE_WIDE_OCR_MODE) or _PAGE_WIDE_STAGE3_MODE)
+
+    if _PAGE_WIDE_OCR_MODE:
+        if run_expensive_pagewide_consensus:
+            page_consensus = await run_engines(
+                image_bytes=image_bytes,
+                mime_type="image/png",
+                block_class=BlockClass.MAIN_TEXT,
+                gemini_fn=gemini,
+                openai_ocr_fn=openai_ocr,
+            )
+        else:
+            page_consensus = await _run_primary_engine_only(
+                image_bytes=image_bytes,
+                mime_type="image/png",
+                gemini_fn=gemini,
+            )
+        consensus_text = page_consensus.primary_text
+
+        async def _stub_extractor(_image: bytes, _mime: str, _t: str = consensus_text) -> str:
+            return _t
+
+        stage3: Stage3Result | None = None
+        confidence_for_po: float | None = page_consensus.aggregated_confidence
+        stage3_payload: dict[str, Any] | None = None
+        if run_stage3_for_page:
+            stage3 = await aggregate_stage3(
+                session=session,
+                candidate_text=consensus_text,
+                block_class=BlockClass.MAIN_TEXT,
+                stage2=page_consensus,
+                morphology_fn=morphology_fn,
+                diacritizer_fn=diacritizer_fn,
+                openai_validator=openai_validator,
+                gemini_validator=gemini_validator,
+            )
+            confidence_for_po = stage3.confidence
+            stage3_payload = {
+                "confidence": stage3.confidence,
+                "stage2_score": stage3.stage2_score,
+                "divergence_penalty_applied": stage3.divergence_penalty_applied,
+                "rules": {
+                    "score": stage3.rule_result.score,
+                    "morphology_score": stage3.rule_result.morphology_score,
+                    "morphology_available": stage3.rule_result.morphology_available,
+                    "diacritization_score": stage3.rule_result.diacritization_score,
+                    "diacritization_available": stage3.rule_result.diacritization_available,
+                    "word_count": stage3.rule_result.word_count,
+                },
+                "statistical": {
+                    "score": stage3.statistical_result.score,
+                    "hit_count": stage3.statistical_result.hit_count,
+                    "scoped_to_kutub_as_sitta": stage3.statistical_result.scoped_to_kutub_as_sitta,
+                    "sample_titles": list(stage3.statistical_result.sample_titles),
+                },
+                "ai": {
+                    "score": stage3.ai_result.score,
+                    "agreement": stage3.ai_result.agreement,
+                    "verdicts": [
+                        {
+                            "engine": v.engine,
+                            "confidence": v.confidence,
+                            "correction_note": v.correction_note,
+                            "error_class": v.error_class,
+                        }
+                        for v in stage3.ai_result.verdicts
+                    ],
+                },
+            }
+
+        block, segment, detected = paired[0]
+        job = await start_ocr_job(session=session, page=page)
+        text = await run_ocr_job(
+            session=session,
+            ocr_job=job,
+            image_bytes=image_bytes,
+            mime_type="image/png",
+            extractor=_stub_extractor,
+            target_segment=segment,
+            confidence_score=confidence_for_po,
+            was_preprocessed=was_preprocessed,
+            source_dpi=_RENDER_DPI,
+            engine_breakdown=list(page_consensus.engines),
+            engine_agreement=page_consensus.agreement,
+            stage3_payload=stage3_payload,
+        )
+        job_result = job.result or {}
+        rev_uuid_str = job_result.get("rev_uuid")
+        primary = BlockOcrResult(
+            block_uuid=block.block_uuid,
+            segment_uuid=segment.satz_uuid,
+            block_class=detected.block_class,
+            text=text,
+            text_chars=int(job_result.get("text_chars", len(text))),
+            text_changed=bool(job_result.get("text_changed", False)),
+            rev_uuid=_uuid.UUID(rev_uuid_str) if rev_uuid_str else None,
+            engines_used=tuple(r.engine.value for r in page_consensus.engines),
+            engine_agreement=page_consensus.agreement,
+            stage3_confidence=stage3.confidence if stage3 is not None else None,
+            stage3_divergence_penalty_applied=(
+                stage3.divergence_penalty_applied if stage3 is not None else False
+            ),
+        )
+        return PageOcrResult(
+            page_uuid=page.page_uuid,
+            text=primary.text,
+            text_chars=primary.text_chars,
+            text_changed=primary.text_changed,
+            segment_uuid=primary.segment_uuid,
+            block_uuid=primary.block_uuid,
+            rev_uuid=primary.rev_uuid,
+            additional_blocks=(),
+        )
+
     for block, segment, detected in paired:
         block_image = _crop_block_bytes(image_bytes, detected.bbox)
 
-        # §3.4 Stage-2 — run the engines Stage-2 routes for this
-        # block's class in parallel; pick a primary text + breakdown.
-        consensus: ConsensusResult = await run_engines(
-            image_bytes=block_image,
-            mime_type="image/png",
-            block_class=detected.block_class,
-            gemini_fn=gemini,
-            cloud_vision_fn=cloud_vision,
-        )
+        # Page-wide OCR defaults to the primary engine only for speed.
+        # The older multi-engine route remains available behind an env
+        # flag when deeper OCR diagnostics are worth the extra latency.
+        if run_expensive_pagewide_consensus:
+            consensus = await run_engines(
+                image_bytes=block_image,
+                mime_type="image/png",
+                block_class=detected.block_class,
+                gemini_fn=gemini,
+                openai_ocr_fn=openai_ocr,
+            )
+        else:
+            consensus = await _run_primary_engine_only(
+                image_bytes=block_image,
+                mime_type="image/png",
+                gemini_fn=gemini,
+            )
 
         # The pre-extracted text becomes the input to `run_ocr_job`'s
         # canonical Job lifecycle. We pass it through a stub extractor
@@ -619,7 +813,7 @@ async def run_ocr_for_page(
         stage3: Stage3Result | None = None
         confidence_for_po: float | None = consensus.aggregated_confidence
         stage3_payload: dict[str, Any] | None = None
-        if run_stage3:
+        if run_stage3_for_page:
             stage3 = await aggregate_stage3(
                 session=session,
                 candidate_text=consensus_text,

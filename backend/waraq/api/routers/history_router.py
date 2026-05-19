@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Any
 
 from fastapi import APIRouter
+from sqlalchemy import select
 from sqlalchemy.orm import DeclarativeBase
 
 from waraq.api._ownership import (
@@ -24,6 +25,7 @@ from waraq.api._ownership import (
 )
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.history import get_page_history, get_project_history, get_segment_history
+from waraq.schemas import ProjectQuranPassage
 
 router = APIRouter(tags=["history"])
 
@@ -57,6 +59,25 @@ def _segment_history_to_dict(h: Any) -> dict[str, Any]:
     }
 
 
+async def _latest_quran_passage_for_segment(
+    session: DbSession,
+    *,
+    satz_uuid: _uuid.UUID,
+) -> dict[str, Any] | None:
+    row = (
+        await session.execute(
+            select(ProjectQuranPassage)
+            .where(ProjectQuranPassage.satz_uuid == satz_uuid)
+            .where(ProjectQuranPassage.state != "rejected")
+            .order_by(ProjectQuranPassage.detected_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return _orm_to_dict(row)
+
+
 @router.get("/segments/{satz_uuid}/history")
 async def segment_history(
     satz_uuid: _uuid.UUID,
@@ -65,7 +86,9 @@ async def segment_history(
 ) -> dict[str, Any]:
     await owned_segment_or_404(session, satz_uuid, current.account_uuid)
     h = await get_segment_history(session=session, satz_uuid=satz_uuid)
-    return _segment_history_to_dict(h)
+    payload = _segment_history_to_dict(h)
+    payload["quran_passage"] = await _latest_quran_passage_for_segment(session, satz_uuid=satz_uuid)
+    return payload
 
 
 @router.get("/pages/{page_uuid}/history")

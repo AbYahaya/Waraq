@@ -5,8 +5,8 @@ This module supplies the `on_segment_translated` hook for T-7.1.1's
 gets:
 
 1. A new **Revision** via T-1.4.1 `create_revision` — but **only when
-   the translator output differs** from the Segment's current
-   `text_content`. Identical output produces no Revision (Sprint 2 §2 /
+   the translator output differs** from the Segment's latest resolved
+   target-side text state. Identical output produces no Revision (Sprint 2 §2 /
    TRANSLATION-PO-Identische-Ausgabe-Keine-Revision-Test). H-4 by
    construction: a check pass that emits no translation never reaches
    this hook, so no Revision-UUID is issued for check operations
@@ -43,6 +43,7 @@ from waraq.provenance import create_po
 from waraq.revision import create_revision
 from waraq.schemas import Segment
 from waraq.schemas.enums import ChangeSource, POType, ScopeType
+from waraq.text_state import resolve_segment_source_text, resolve_segment_target_text
 from waraq.translation.service import SegmentTranslatedHook, TranslationContext
 
 
@@ -66,9 +67,13 @@ def make_translation_persistence_hook(
         output_text: str,
         context: TranslationContext,
     ) -> None:
-        # Capture input BEFORE create_revision mutates segment.text_content.
-        before_text = segment.text_content
-        text_changed = output_text != before_text
+        # Translation always records the Arabic/source-side input, not
+        # the mutable current-value cache that may already contain a
+        # previous target-language translation.
+        source_input = await resolve_segment_source_text(session=session, segment=segment)
+        previous_target = await resolve_segment_target_text(session=session, segment=segment)
+        current_target = previous_target or segment.text_content
+        text_changed = output_text != current_target
 
         rev_uuid_str: str | None = None
         if text_changed:
@@ -87,7 +92,7 @@ def make_translation_persistence_hook(
 
         po_payload: dict[str, Any] = {
             "engine": engine_identifier,
-            "input": before_text,
+            "input": source_input,
             "output": output_text,
             "text_changed": text_changed,
             "rev_uuid": rev_uuid_str,
@@ -117,6 +122,9 @@ def make_translation_persistence_hook(
                 "check_output": outcome.check_output,
                 "check_error": outcome.check_error,
             }
+
+        if context.protected_reference is not None:
+            po_payload["protected_reference"] = context.protected_reference
 
         # §2.2 / §4.12.1 — Tier 1 glossary precedence verification. For
         # every glossary hit in the chunk_brief, check that the canonical

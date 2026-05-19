@@ -56,6 +56,7 @@ from waraq.hadith.sunnah import (
     fetch_hadith as sunnah_fetch_hadith,
 )
 from waraq.schemas import Block, Page
+from waraq.text_state import resolve_segment_source_text
 from waraq.shamela import find_by_skeleton, shamela_hits_to_consensus_candidates
 
 logger = logging.getLogger(__name__)
@@ -235,11 +236,9 @@ async def verify_hadith(
     if page is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Segment page missing")
 
-    # Use the Arabic source half of the segment text as the query
-    # (text_content stores AR + DE separated by `\n---\n`; the AR side
-    # is the OCR primary).
-    raw = (segment.text_content or "").split("\n---\n", 1)
-    query_text = raw[0].strip()
+    query_text = (
+        await resolve_segment_source_text(session=session, segment=segment)
+    ).strip()
 
     skips: list[str] = []
     mandatory: list[HadithCandidateHit] = []

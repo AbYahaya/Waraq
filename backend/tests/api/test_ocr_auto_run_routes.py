@@ -404,6 +404,49 @@ class TestStatusEndpointSelfHeals:
         # updated_at is fresh — no reap.
         assert body["state"] == "running"
 
+    async def test_in_flight_endpoint_reaps_fresh_cancel_requested_job(
+        self,
+        auth_client: httpx.AsyncClient,
+    ) -> None:
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from tests.conftest import _test_database_url
+        from waraq.identity import new_uuid
+        from waraq.ocr.auto_run import OCR_AUTO_RUN_JOB_TYPE
+        from waraq.schemas import Job
+
+        r = await auth_client.post("/projects", json={"name": "p"})
+        project_uuid = r.json()["project_uuid"]
+
+        engine = create_async_engine(_test_database_url(), future=True)
+        sm = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        job_uuid = new_uuid()
+        try:
+            async with sm() as session, session.begin():
+                session.add(
+                    Job(
+                        job_uuid=job_uuid,
+                        job_type=OCR_AUTO_RUN_JOB_TYPE,
+                        state="running",
+                        project_uuid=_uuid.UUID(project_uuid),
+                        payload={
+                            "total_pages": 2,
+                            "processed_count": 1,
+                            "cancel_requested": True,
+                        },
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+        r = await auth_client.get(f"/ocr/projects/{project_uuid}/ocr-jobs/in-flight")
+        assert r.status_code == 200, r.text
+        assert r.json() is None
+
 
 @pytest.mark.asyncio
 class TestUniqueActiveIndexes:

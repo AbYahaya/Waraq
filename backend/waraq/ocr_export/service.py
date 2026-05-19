@@ -246,6 +246,10 @@ async def run_ocr_export(
         "sha256": artefact.sha256,
         "size_bytes": artefact.size_bytes,
         "artefact_uuid": str(artefact.artefact_uuid),
+        "page_range": list(config.pflichtfragen.page_range),
+        "mode": config.pflichtfragen.mode.value,
+        "block_types_enabled": list(config.pflichtfragen.block_types_enabled),
+        "markings_enabled": config.pflichtfragen.markings_enabled,
         "ocr_revision_snapshot": snapshot,
         "active_decision_event_uuids": active_de_uuids,
         "gate_mode": (

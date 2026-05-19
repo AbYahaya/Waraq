@@ -490,10 +490,13 @@ async def get_in_flight_ocr_job(
     most-recent non-terminal OCR auto-run Job for the project, or
     null if none."""
     project = await owned_project_or_404(session, project_uuid, current.account_uuid)
+    await reap_orphan_jobs(
+        session=session, threshold_seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS
+    )
+    await session.commit()
     job = await find_in_flight_for_project(
         session=session, project_uuid=project.project_uuid
     )
     if job is None:
         return None
     return _job_to_status(job)
-

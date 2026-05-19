@@ -144,6 +144,8 @@ class SegmentAuditDetailResponse(BaseModel):
     ocr_engines_have_text: bool
     translation_situation: str | None
     translation_target_text: str | None
+    translation_primary_engine: str | None
+    translation_check_engine: str | None
     open_befunde: list[BefundDetailResponse]
     open_conflicts_count: int
 
@@ -312,6 +314,8 @@ async def get_segment_detail(
         ocr_engines_have_text=detail.ocr_engines_have_text,
         translation_situation=detail.translation_situation,
         translation_target_text=detail.translation_target_text,
+        translation_primary_engine=detail.translation_primary_engine,
+        translation_check_engine=detail.translation_check_engine,
         open_befunde=[
             BefundDetailResponse(
                 befund_uuid=b.befund_uuid,

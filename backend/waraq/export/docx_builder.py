@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.identity.service import new_uuid
 from waraq.schemas import Block, Page, Revision, Segment
+from waraq.text_state import resolve_segment_source_text, resolve_segment_text_state
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -65,18 +66,6 @@ def _set_paragraph_rtl(paragraph: Any) -> None:
 
         bidi = OxmlElement("w:bidi")
         p_pr.append(bidi)
-
-
-def _split_source_target(text: str | None) -> tuple[str, str]:
-    """Sprint 3 audit-rule convention: source AR + target DE separated
-    by `\\n---\\n`. Returns (source, target). When no separator, treat
-    the whole text as the target side (translation-only segments)."""
-    if not text:
-        return "", ""
-    if "\n---\n" in text:
-        src, _, tgt = text.partition("\n---\n")
-        return src, tgt
-    return "", text
 
 
 def _add_toc(document: Any) -> None:
@@ -183,7 +172,8 @@ async def build_translation_docx(
                 run.font.size = Pt(14)
             last_page_index = page.page_index
 
-        source, target = _split_source_target(segment.text_content)
+        text_state = await resolve_segment_text_state(session=session, segment=segment)
+        source, target = text_state.source_text, text_state.target_text
 
         style = _BLOCK_TYPE_STYLE.get(block.block_type, "Normal")
 
@@ -288,7 +278,12 @@ async def build_translation_docx_from_snapshot(
             last_page_index = page.page_index
 
         # Use the Revision's after_text — the immutable snapshot text.
-        source, target = _split_source_target(revision.after_text)
+        source = await resolve_segment_source_text(
+            session=session,
+            segment=segment,
+            at_or_before=revision.created_at,
+        )
+        target = revision.after_text
         style = _BLOCK_TYPE_STYLE.get(block.block_type, "Normal")
         if source.strip():
             ar_paragraph = document.add_paragraph(source, style=style)

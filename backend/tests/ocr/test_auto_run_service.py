@@ -15,6 +15,7 @@ sessionmaker factory; the inner `_execute` body is what we exercise.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC
 from typing import Any
 
@@ -26,6 +27,7 @@ from waraq.identity import new_uuid
 from waraq.ocr.auto_run import (
     OCR_AUTO_RUN_JOB_TYPE,
     STALE_HEARTBEAT_THRESHOLD_SECONDS,
+    _LIVE_PAGE_TASKS,
     _execute,
     find_in_flight_for_project,
     reap_orphan_jobs,
@@ -172,6 +174,44 @@ class TestExecuteLoop:
         # First page processed; loop bailed before pages 2 & 3.
         assert (job.error or {})["processed_count"] == 1
 
+    async def test_cancel_flag_aborts_during_long_running_page(
+        self,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = await seed_project(db_session)
+        await _seed_page(db_session, project.project_uuid, page_index=1)
+
+        import waraq.ocr.auto_run as mod
+        from sqlalchemy.orm.attributes import flag_modified
+
+        started = asyncio.Event()
+
+        async def _stub(*, session: AsyncSession, page: Page) -> None:
+            started.set()
+            await asyncio.sleep(30)
+            page.ocr_status = OcrStatus.GO
+            await session.flush()
+
+        monkeypatch.setattr(mod, "run_ocr_for_page", _stub)
+
+        job = await start_ocr_auto_run_job(session=db_session, project=project)
+
+        task = asyncio.create_task(_execute(session=db_session, job=job))
+        await started.wait()
+        job_payload = job.payload or {}
+        job_payload["cancel_requested"] = True
+        flag_modified(job, "payload")
+        await db_session.flush()
+
+        with pytest.raises(OcrAutoRunCancelled):
+            await asyncio.wait_for(task, timeout=5)
+
+        assert job.state == JobState.FAILED.value
+        assert (job.error or {})["phase"] == "user_cancelled"
+        assert (job.error or {})["page_index"] == 1
+        assert (job.error or {})["processed_count"] == 0
+
     async def test_skips_non_ausstehend_pages(
         self,
         db_session: AsyncSession,
@@ -234,6 +274,23 @@ class TestRequestCancel:
         await request_cancel(session=db_session, job=job)
         # Flag NOT flipped because the job is already terminal.
         assert (job.payload or {}).get("cancel_requested") is False
+
+    async def test_cancels_live_page_task_when_present(self, db_session: AsyncSession) -> None:
+        project = await seed_project(db_session)
+        job = await start_ocr_auto_run_job(session=db_session, project=project)
+
+        async def _never() -> None:
+            await asyncio.sleep(30)
+
+        task = asyncio.create_task(_never())
+        _LIVE_PAGE_TASKS[job.job_uuid] = task
+        try:
+            await request_cancel(session=db_session, job=job)
+            assert (job.payload or {})["cancel_requested"] is True
+            await asyncio.sleep(0)
+            assert task.cancelled() or task.done()
+        finally:
+            _LIVE_PAGE_TASKS.pop(job.job_uuid, None)
 
 
 @pytest.mark.asyncio
@@ -355,6 +412,25 @@ class TestReapOrphanJobs:
         assert job.job_uuid not in reaped
         await db_session.refresh(job)
         assert job.state == JobState.RUNNING.value
+
+    async def test_reaps_fresh_cancel_requested_running_job(
+        self, db_session: AsyncSession
+    ) -> None:
+        from waraq.jobs import start_job
+
+        project = await seed_project(db_session)
+        job = await start_ocr_auto_run_job(session=db_session, project=project)
+        await start_job(session=db_session, job=job)
+        payload = job.payload or {}
+        payload["cancel_requested"] = True
+        job.payload = payload
+        await db_session.flush()
+
+        reaped = await reap_orphan_jobs(session=db_session)
+        assert job.job_uuid in reaped
+        await db_session.refresh(job)
+        assert job.state == JobState.FAILED.value
+        assert (job.error or {})["phase"] == "cancel_requested_orphan"
 
     async def test_does_not_reap_terminal_jobs(
         self, db_session: AsyncSession

@@ -4,22 +4,22 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --primary: 222 47% 11%;
-    --primary-foreground: 210 40% 98%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 210 40% 96%;
-    --accent-foreground: 222 47% 11%;
+    --background: 38 35% 96%;
+    --foreground: 154 26% 16%;
+    --card: 36 35% 98%;
+    --card-foreground: 154 26% 16%;
+    --primary: 151 47% 23%;
+    --primary-foreground: 42 42% 96%;
+    --muted: 40 21% 92%;
+    --muted-foreground: 156 10% 38%;
+    --accent: 39 26% 90%;
+    --accent-foreground: 154 26% 16%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 210 40% 98%;
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 222 84% 5%;
-    --radius: 0.5rem;
+    --border: 38 24% 84%;
+    --input: 38 24% 84%;
+    --ring: 151 47% 23%;
+    --radius: 1rem;
   }
 
   .dark {
@@ -46,5 +46,24 @@
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
+    background-image:
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.9), transparent 30%),
+      linear-gradient(180deg, rgba(247, 242, 233, 0.9), rgba(243, 238, 229, 1));
+    font-family: "Manrope", "Avenir Next", "Segoe UI", sans-serif;
+    min-height: 100vh;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    letter-spacing: -0.025em;
+  }
+
+  #root {
+    min-height: 100vh;
   }
 }

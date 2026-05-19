@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.audit._helpers import seed_project, seed_segment
-from waraq.ocr.cloud_vision import CloudVisionResult
+from waraq.ocr.openai_ocr import OpenAiOcrResult
 from waraq.ocr.consensus import (
     AGREEMENT_DIVERGENT,
     AGREEMENT_EXACT_MATCH,
@@ -40,8 +40,8 @@ def _gemini_returns(text: str):
 
 
 def _cv_returns(text: str, confidence: float | None):
-    async def _fn(_image: bytes, _mime: str) -> CloudVisionResult:
-        return CloudVisionResult(text=text, confidence=confidence)
+    async def _fn(_image: bytes, _mime: str) -> OpenAiOcrResult:
+        return OpenAiOcrResult(text=text, confidence=confidence)
 
     return _fn
 
@@ -81,7 +81,7 @@ class TestAggregateStage3:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله"),
-            cloud_vision_fn=_cv_returns("بسم الله", 0.92),
+            openai_ocr_fn=_cv_returns("بسم الله", 0.92),
         )
         assert consensus.agreement == AGREEMENT_EXACT_MATCH
 
@@ -109,7 +109,7 @@ class TestAggregateStage3:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله الرحمن"),
-            cloud_vision_fn=_cv_returns("سمع غير لذلك", 0.5),
+            openai_ocr_fn=_cv_returns("سمع غير لذلك", 0.5),
         )
         assert consensus.agreement == AGREEMENT_DIVERGENT
 
@@ -143,7 +143,7 @@ class TestAggregateStage3:
             mime_type="image/png",
             block_class=BlockClass.MAIN_TEXT,
             gemini_fn=_gemini_returns("بسم الله الرحمن"),
-            cloud_vision_fn=_cv_returns("سمع غير لذلك", 0.85),
+            openai_ocr_fn=_cv_returns("سمع غير لذلك", 0.85),
         )
         assert consensus.agreement == AGREEMENT_DIVERGENT
         result = await aggregate_stage3(
@@ -164,7 +164,7 @@ class TestAggregateStage3:
             mime_type="image/png",
             block_class=BlockClass.QURAN,
             gemini_fn=_gemini_returns("بسم الله"),
-            cloud_vision_fn=_cv_returns("never-runs", 0.99),
+            openai_ocr_fn=_cv_returns("never-runs", 0.99),
         )
         assert consensus.agreement == AGREEMENT_SINGLE_ENGINE
 
@@ -213,7 +213,7 @@ class TestPageRunnerStage3Wiring:
 
         engine_breakdown = [
             _EngineResult(engine=OcrEngine.GEMINI, text="بسم الله", confidence=None),
-            _EngineResult(engine=OcrEngine.CLOUD_VISION, text="بسم الله", confidence=0.92),
+            _EngineResult(engine=OcrEngine.OPENAI, text="بسم الله", confidence=0.92),
         ]
         stage3_payload = {
             "confidence": 0.91,

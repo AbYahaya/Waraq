@@ -53,6 +53,11 @@ flyctl secrets set JWT_SECRET="$(openssl rand -hex 32)"
 # Admin email allowlist (M4 admin-panel access). Comma-separated emails.
 flyctl secrets set ADMIN_EMAILS="user@example.com"
 
+# Browser origins allowed to call the API from a separately hosted
+# frontend. Add the final Cloudflare Pages / preview URL after frontend
+# deploy, comma-separated if there is more than one.
+flyctl secrets set CORS_ORIGINS="https://<frontend>.pages.dev"
+
 # Optional Hadith / Qurʾān API keys (for §4.16 / §4.15 enrichment;
 # inert if missing).
 flyctl secrets set SUNNAH_COM_API_KEY="…" \
@@ -96,11 +101,11 @@ Two viable paths — pick one when ready:
 cd frontend
 npm run build                                  # produces dist/
 # Configure Cloudflare Pages to build from frontend/ on push.
-# Set VITE_API_URL=https://waraq-backend.fly.dev as an env var.
+# Set VITE_API_URL=https://<backend>.fly.dev as an env var.
 ```
 
 Pros: free, global CDN, instant rollback.
-Cons: separate deploy; CORS config needed on the backend.
+Cons: separate deploy; backend `CORS_ORIGINS` must include the Pages URL.
 
 ### Option B — Static-on-Fly (single domain)
 
@@ -108,8 +113,9 @@ Build the frontend, copy `dist/` into the backend image's static dir,
 serve via FastAPI's `StaticFiles`. Single domain (no CORS) but ties
 frontend deploys to backend deploys.
 
-Recommendation: **A**. The current backend has no CORS layer; adding
-it for Cloudflare Pages is a 5-line addition.
+Recommendation: **A**. The backend now reads `CORS_ORIGINS`, and the
+frontend build reads `VITE_API_URL`. Local dev still uses the Vite `/api`
+proxy when `VITE_API_URL` is empty.
 
 ## What's NOT yet wired
 

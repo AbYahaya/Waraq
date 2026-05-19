@@ -4,9 +4,9 @@ Per the canonical Stage-2 mandate, OCR engine selection is BLOCK-level,
 not page-level. Different block classes have different reading-line
 characteristics:
 
-  - QURAN: Cloud Vision systematically misreads Qurʾān script
+  - QURAN: the second OCR engine is still excluded for v1.0
     (vocalization-heavy lines and the small Quranic marks confound
-    its general-purpose model). Gemini-only for v1.0.
+    non-specialized general-purpose OCR). Gemini-only for v1.0.
   - MAIN_TEXT, HEADING, FOOTNOTE, HADITH, MARGINALIA: both engines
     run in parallel; the §3.6-symmetric agreement signal feeds §4.4
     confidence aggregation in `consensus.run_engines`.
@@ -48,7 +48,7 @@ class OcrEngine(StrEnum):
     canon-shaped change."""
 
     GEMINI = "gemini"
-    CLOUD_VISION = "cloud_vision"
+    OPENAI = "openai"
     KRAKEN = "kraken"
 
 
@@ -56,11 +56,11 @@ class OcrEngine(StrEnum):
 # engines eligible to run for blocks of that class. `frozenset`
 # (immutable, hashable) so the table itself is safe to expose.
 _ROUTING: dict[BlockClass, frozenset[OcrEngine]] = {
-    BlockClass.MAIN_TEXT: frozenset({OcrEngine.GEMINI, OcrEngine.CLOUD_VISION}),
-    BlockClass.HEADING: frozenset({OcrEngine.GEMINI, OcrEngine.CLOUD_VISION}),
-    BlockClass.FOOTNOTE: frozenset({OcrEngine.GEMINI, OcrEngine.CLOUD_VISION}),
-    BlockClass.HADITH: frozenset({OcrEngine.GEMINI, OcrEngine.CLOUD_VISION}),
-    BlockClass.MARGINALIA: frozenset({OcrEngine.GEMINI, OcrEngine.CLOUD_VISION}),
+    BlockClass.MAIN_TEXT: frozenset({OcrEngine.GEMINI, OcrEngine.OPENAI}),
+    BlockClass.HEADING: frozenset({OcrEngine.GEMINI, OcrEngine.OPENAI}),
+    BlockClass.FOOTNOTE: frozenset({OcrEngine.GEMINI, OcrEngine.OPENAI}),
+    BlockClass.HADITH: frozenset({OcrEngine.GEMINI, OcrEngine.OPENAI}),
+    BlockClass.MARGINALIA: frozenset({OcrEngine.GEMINI, OcrEngine.OPENAI}),
     BlockClass.QURAN: frozenset({OcrEngine.GEMINI}),
 }
 

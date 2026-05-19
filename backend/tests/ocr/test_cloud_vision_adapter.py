@@ -34,10 +34,51 @@ class _FakePage:
     confidence: float | None
 
 
+class _FakeDetectedBreak:
+    def __init__(self, type_: str) -> None:
+        self.type_ = type_
+
+
+class _FakeTextProperty:
+    def __init__(self, detected_break: _FakeDetectedBreak | None = None) -> None:
+        self.detected_break = detected_break
+
+
+class _FakeSymbol:
+    def __init__(self, text: str, break_type: str | None = None) -> None:
+        self.text = text
+        self.property = _FakeTextProperty(
+            _FakeDetectedBreak(break_type) if break_type is not None else None
+        )
+
+
+class _FakeWord:
+    def __init__(self, symbols: list[_FakeSymbol]) -> None:
+        self.symbols = symbols
+
+
+class _FakeParagraph:
+    def __init__(self, words: list[_FakeWord]) -> None:
+        self.words = words
+
+
+class _FakeBlock:
+    def __init__(self, paragraphs: list[_FakeParagraph]) -> None:
+        self.paragraphs = paragraphs
+
+
 class _FakeFullText:
-    def __init__(self, text: str, pages: list[_FakePage]) -> None:
+    def __init__(
+        self,
+        text: str,
+        pages: list[_FakePage],
+        blocks: list[_FakeBlock] | None = None,
+    ) -> None:
         self.text = text
         self.pages = pages
+        if blocks is not None:
+            for page in self.pages:
+                page.blocks = blocks
 
 
 class _FakeError:
@@ -162,6 +203,78 @@ class TestExtractWithConfidence:
         result = await extract_with_confidence(b"image", "image/png")
         assert result.text == ""
         assert result.confidence is None
+
+    async def test_reconstructs_paragraphs_and_page_numbers_from_structure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        blocks = [
+            _FakeBlock(
+                [
+                    _FakeParagraph(
+                        [
+                            _FakeWord(
+                                [
+                                    _FakeSymbol("١", "SPACE"),
+                                    _FakeSymbol("٢", "LINE_BREAK"),
+                                ]
+                            )
+                        ]
+                    ),
+                    _FakeParagraph(
+                        [
+                            _FakeWord(
+                                [
+                                    _FakeSymbol("ا"),
+                                    _FakeSymbol("ل"),
+                                    _FakeSymbol("ح"),
+                                    _FakeSymbol("م"),
+                                    _FakeSymbol("د", "SPACE"),
+                                ]
+                            ),
+                            _FakeWord(
+                                [
+                                    _FakeSymbol("ل"),
+                                    _FakeSymbol("ل"),
+                                    _FakeSymbol("ه", "LINE_BREAK"),
+                                ]
+                            ),
+                        ]
+                    ),
+                    _FakeParagraph(
+                        [
+                            _FakeWord(
+                                [
+                                    _FakeSymbol("ر"),
+                                    _FakeSymbol("ب", "SPACE"),
+                                ]
+                            ),
+                            _FakeWord(
+                                [
+                                    _FakeSymbol("ا"),
+                                    _FakeSymbol("ل"),
+                                    _FakeSymbol("ع"),
+                                    _FakeSymbol("ا"),
+                                    _FakeSymbol("ل"),
+                                    _FakeSymbol("م"),
+                                    _FakeSymbol("ي"),
+                                    _FakeSymbol("ن", "LINE_BREAK"),
+                                ]
+                            ),
+                        ]
+                    ),
+                ]
+            )
+        ]
+        full = _FakeFullText(
+            text="flattened fallback",
+            pages=[_FakePage(confidence=0.9)],
+            blocks=blocks,
+        )
+        _install_fake_vision_sdk(monkeypatch, response=_FakeResponse(full_text=full))
+
+        result = await extract_with_confidence(b"image", "image/png")
+
+        assert result.text == "١٢\n\nالحمد لله\n\nرب العالمين"
 
     async def test_response_error_message_raises_api_error(
         self, monkeypatch: pytest.MonkeyPatch

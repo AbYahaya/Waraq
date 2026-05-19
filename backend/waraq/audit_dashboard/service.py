@@ -640,6 +640,8 @@ class SegmentAuditDetail:
     # Translation side
     translation_situation: str | None
     translation_target_text: str | None
+    translation_primary_engine: str | None
+    translation_check_engine: str | None
     # Open findings
     open_befunde: tuple[BefundDetail, ...]
     open_conflicts_count: int
@@ -707,6 +709,16 @@ async def segment_audit_detail(
         if isinstance(cross_check.get("situation"), str)
         else None
     )
+    primary_engine = (
+        cross_check.get("primary_engine")
+        if isinstance(cross_check.get("primary_engine"), str)
+        else None
+    )
+    check_engine = (
+        cross_check.get("check_engine")
+        if isinstance(cross_check.get("check_engine"), str)
+        else None
+    )
     target_text = (
         trans_payload.get("translation_text")
         if isinstance(trans_payload.get("translation_text"), str)
@@ -759,6 +771,8 @@ async def segment_audit_detail(
         ocr_engines_have_text=have_text,
         translation_situation=situation,
         translation_target_text=target_text,
+        translation_primary_engine=primary_engine,
+        translation_check_engine=check_engine,
         open_befunde=befunde,
         open_conflicts_count=open_conflicts_count,
     )

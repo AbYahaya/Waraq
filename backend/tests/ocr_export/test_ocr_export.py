@@ -57,6 +57,7 @@ from waraq.ocr_export import (
     confirm_pflichtfragen,
     run_ocr_export,
 )
+from waraq.revision import create_revision
 from waraq.schemas import (
     Block,
     DecisionEvent,
@@ -68,6 +69,8 @@ from waraq.schemas import (
     Segment,
 )
 from waraq.schemas.enums import DecisionSource, OcrStatus, POType, ScopeType
+from waraq.invariant.enums import OperationMode
+from waraq.schemas.enums import ChangeSource
 
 
 async def _seed_project(
@@ -509,6 +512,47 @@ class TestDocxBuilder:
         )
         after = (await db_session.execute(select(func.count()).select_from(Revision))).scalar_one()
         assert after == before
+
+    async def test_translation_revision_does_not_replace_ocr_text_in_export(
+        self, db_session: AsyncSession
+    ) -> None:
+        """OCR export must continue to use the latest non-translation
+        revision as its source text, even after a translation pass has
+        updated `segments.text_content`."""
+        project, _, _, segments = await _seed_project(
+            db_session,
+            n_segments=1,
+            initial_text="RAW_SEED",
+        )
+        segment = segments[0]
+
+        await create_revision(
+            session=db_session,
+            segment=segment,
+            after_text="نص عربي مصحح",
+            change_source=ChangeSource.OCR,
+            operation_mode=OperationMode.AUTOMATIC,
+        )
+        await create_revision(
+            session=db_session,
+            segment=segment,
+            after_text="German translated output",
+            change_source=ChangeSource.RE_TRANSLATE,
+            operation_mode=OperationMode.AUTOMATIC,
+        )
+
+        artefact = await build_ocr_docx(
+            session=db_session,
+            project_uuid=project.project_uuid,
+            page_range=[1],
+            block_types_enabled=["MT"],
+            markings_enabled=True,
+            mode="arbeitsstand",
+        )
+        doc = Document(io.BytesIO(artefact.bytes_))
+        all_text = " ".join(p.text for p in doc.paragraphs)
+        assert "نص عربي مصحح" in all_text
+        assert "German translated output" not in all_text
 
 
 # --- T-OCR-EX-3: OCR_EXPORT_EVENT atomicity --------------------

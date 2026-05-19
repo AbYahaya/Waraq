@@ -54,6 +54,7 @@ from waraq.glossary.service import NoEntrySentinel
 from waraq.provenance import create_po
 from waraq.schemas import ConflictInstance, ProvenanceObject, Segment
 from waraq.schemas.enums import POType, ScopeType
+from waraq.text_state import resolve_segment_source_text
 from waraq.translation.persistence import make_translation_persistence_hook
 from waraq.translation.service import (
     LockedSegmentSkipHook,
@@ -127,7 +128,9 @@ async def find_glossary_matches_in_segment(
     if candidate_surface_forms is None:
         return []
 
-    haystack = (segment.text_content or "").casefold()
+    haystack = (
+        await resolve_segment_source_text(session=session, segment=segment)
+    ).casefold()
     matches: list[GlossaryMatch] = []
     seen: set[_uuid.UUID] = set()
     for surface in candidate_surface_forms:

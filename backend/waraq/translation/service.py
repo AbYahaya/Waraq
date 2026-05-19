@@ -60,12 +60,15 @@ from waraq.jobs import (
 )
 from waraq.schemas import DecisionEvent, Job, Segment
 from waraq.schemas.enums import JobState, ScopeType
+from waraq.text_state import resolve_segment_source_text
 from waraq.translation.chunk_context import ChunkContextResolver
 from waraq.translation.exceptions import (
     TranslationJobCancelled,
     TranslationJobNotPending,
     TranslationJobUebersetzungsstartMissing,
 )
+from waraq.translation.line_protocol import is_pagination_or_marker_text
+from waraq.translation.protected_passages import resolve_protected_translation
 
 JOB_TYPE = "translation"
 
@@ -92,6 +95,10 @@ class TranslationContext:
             entity tables; **transient** — excluded from
             `to_dict`/`from_dict` so checkpoints stay small and the brief
             re-resolves on resume against current registry state.
+        protected_reference: transient protected-passage metadata
+            (verified hadith stack / Qur'an reference source lines)
+            carried only for the current chunk so the persistence hook
+            can attach it to the translation provenance payload.
     """
 
     upstream_window: list[str] = field(default_factory=list)
@@ -100,6 +107,9 @@ class TranslationContext:
     # Transient — see docstring. Default-None type-hinted as Any to avoid
     # a forward import cycle (chunk_context imports translation schemas).
     chunk_brief: Any = None
+    # Transient page-level context so translators can see the full OCR
+    # flow of the current page rather than only the isolated segment.
+    page_context: Any = None
     # Transient §3.6 cross-check outcome. Set by the cross-check
     # orchestrator before the persistence hook reads it; never
     # checkpointed. The cross-check translator uses
@@ -108,6 +118,8 @@ class TranslationContext:
     # the alternative refactor would change the public Translator
     # signature).
     cross_check: Any = None
+    # Transient protected reference metadata for the current chunk.
+    protected_reference: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         """Deterministic JSON-serializable representation. Excludes
@@ -153,7 +165,43 @@ class TranslationContext:
             terminology_bindings=dict(self.terminology_bindings),
             style_anchors=list(self.style_anchors),
             chunk_brief=brief,
+            page_context=self.page_context,
             cross_check=self.cross_check,
+            protected_reference=self.protected_reference,
+        )
+
+    def with_page_context(self, page_context: Any) -> TranslationContext:
+        """Return a new context with page-level OCR context attached.
+
+        The page context is transient and is intentionally excluded from
+        checkpoint serialization; it is recomputed on each chunk from the
+        current page state so OCR/source edits are seen immediately.
+        """
+        return TranslationContext(
+            upstream_window=list(self.upstream_window),
+            terminology_bindings=dict(self.terminology_bindings),
+            style_anchors=list(self.style_anchors),
+            chunk_brief=self.chunk_brief,
+            page_context=page_context,
+            cross_check=self.cross_check,
+            protected_reference=self.protected_reference,
+        )
+
+    def with_protected_reference(self, protected_reference: Any) -> TranslationContext:
+        """Return a new context with protected-passage metadata attached.
+
+        This remains transient so checkpoints stay slim; the data is
+        recomputed when the chunk is resumed and is only meant for the
+        downstream translation provenance payload.
+        """
+        return TranslationContext(
+            upstream_window=list(self.upstream_window),
+            terminology_bindings=dict(self.terminology_bindings),
+            style_anchors=list(self.style_anchors),
+            chunk_brief=self.chunk_brief,
+            page_context=self.page_context,
+            cross_check=self.cross_check,
+            protected_reference=protected_reference,
         )
 
 
@@ -234,6 +282,61 @@ async def _live_get_segment(session: AsyncSession, *, satz_uuid: _uuid.UUID) -> 
     not from a job-start batch fetch."""
     result = await session.execute(select(Segment).where(Segment.satz_uuid == satz_uuid))
     return result.scalar_one_or_none()
+
+
+async def _resolve_page_source_context(
+    session: AsyncSession,
+    *,
+    segment: Segment,
+) -> dict[str, Any] | None:
+    """Build a transient page-level OCR context for the segment's page.
+
+    This gives the translator the full OCR flow of the page, preserving
+    surrounding context even though persistence and review still happen
+    at the segment level.
+    """
+    from waraq.schemas import Block, Page
+
+    row = (
+        await session.execute(
+            select(Block.page_uuid, Block.block_type, Segment.satz_index)
+            .select_from(Segment)
+            .join(Block, Block.block_uuid == Segment.block_uuid)
+            .where(Segment.satz_uuid == segment.satz_uuid)
+        )
+    ).first()
+    if row is None:
+        return None
+
+    page_uuid, block_type, satz_index = row
+    page_rows = (
+        await session.execute(
+            select(Segment, Block.block_type, Page.page_index)
+            .select_from(Segment)
+            .join(Block, Block.block_uuid == Segment.block_uuid)
+            .join(Page, Page.page_uuid == Block.page_uuid)
+            .where(Page.page_uuid == page_uuid)
+            .where(Segment.active.is_(True))
+            .order_by(Block.block_index.asc(), Segment.satz_index.asc())
+        )
+    ).all()
+
+    ordered_source_lines: list[str] = []
+    current_index = 0
+    for idx, (page_segment, _block_type, _page_index) in enumerate(page_rows):
+        source_text = await resolve_segment_source_text(session=session, segment=page_segment)
+        ordered_source_lines.append(source_text)
+        if page_segment.satz_uuid == segment.satz_uuid:
+            current_index = idx
+
+    return {
+        "page_uuid": str(page_uuid),
+        "page_index": page_rows[0][2] if page_rows else None,
+        "full_source_text": "\n".join(line for line in ordered_source_lines if line.strip()),
+        "current_segment_index": current_index,
+        "current_block_type": block_type,
+        "current_satz_index": satz_index,
+    }
 
 
 # --- public API -----------------------------------------------------------
@@ -472,7 +575,10 @@ async def _execute(
                 chunks.append(
                     TranslatedChunk(
                         satz_uuid=satz_uuid,
-                        input_text=segment.text_content or "",
+                        input_text=await resolve_segment_source_text(
+                            session=session,
+                            segment=segment,
+                        ),
                         output_text=None,
                         skipped=True,
                         skip_reason=reason,
@@ -497,16 +603,65 @@ async def _execute(
                     await session.commit()
                 continue
 
-            input_text = segment.text_content or ""
+            input_text = await resolve_segment_source_text(
+                session=session,
+                segment=segment,
+            )
+            page_context = await _resolve_page_source_context(session, segment=segment)
             # §3.6 — attach per-chunk glossary + entity brief before
             # calling the translator. Transient on context (not
             # checkpointed); resolved freshly each chunk.
+            chunk_context = context.with_page_context(page_context)
             chunk_context = (
-                context.with_chunk_brief(chunk_resolver.resolve(input_text))
+                chunk_context.with_chunk_brief(chunk_resolver.resolve(input_text))
                 if chunk_resolver is not None
-                else context
+                else chunk_context
             )
-            output_text = await translator(input_text, chunk_context)
+            protected = await resolve_protected_translation(
+                session=session,
+                project_uuid=job.project_uuid,
+                segment=segment,
+                source_text=input_text,
+            )
+            if protected is not None and protected.reference_payload is not None:
+                chunk_context = chunk_context.with_protected_reference(
+                    protected.reference_payload
+                )
+            if protected is not None and protected.skip_reason is not None:
+                reason = protected.skip_reason
+                chunks.append(
+                    TranslatedChunk(
+                        satz_uuid=satz_uuid,
+                        input_text=input_text,
+                        output_text=None,
+                        skipped=True,
+                        skip_reason=reason,
+                    )
+                )
+                skipped.append(SkippedSegment(satz_uuid=satz_uuid, reason=reason))
+                await _persist_chunk_checkpoint(
+                    session=session,
+                    job=job,
+                    chunk_index=idx + 1,
+                    context=context,
+                    skipped_so_far=skipped,
+                )
+                _write_progress(
+                    job,
+                    total=len(segment_uuids),
+                    translated=sum(1 for c in chunks if not c.skipped),
+                    processed=idx + 1,
+                )
+                await session.flush()
+                if commit_per_chunk:
+                    await session.commit()
+                continue
+            if protected is not None and protected.output_text is not None:
+                output_text = protected.output_text
+            elif is_pagination_or_marker_text(input_text):
+                output_text = input_text
+            else:
+                output_text = await translator(input_text, chunk_context)
 
             # T-7.1.2 / T-7.2.1 plug their writers in here. The hook runs
             # in the same transaction as the checkpoint; partial-failure

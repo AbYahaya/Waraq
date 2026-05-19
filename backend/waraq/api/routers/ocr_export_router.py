@@ -172,13 +172,19 @@ async def download_artefact(
     from waraq.ocr_export import build_ocr_docx
 
     payload = po.payload or {}
+    page_range = list(payload.get("page_range", []))
+    block_types_enabled = list(
+        payload.get("block_types_enabled", payload.get("block_types_present", []))
+    )
+    markings_enabled = bool(payload.get("markings_enabled", False))
+    mode = str(payload.get("mode", "arbeitsstand"))
     artefact = await build_ocr_docx(
         session=session,
         project_uuid=po.scope_uuid,
-        page_range=list(payload.get("page_range", [])),
-        block_types_enabled=list(payload.get("block_types_present", [])),
-        markings_enabled=False,
-        mode=str(payload.get("gate_mode", "endgueltig")),
+        page_range=page_range,
+        block_types_enabled=block_types_enabled,
+        markings_enabled=markings_enabled,
+        mode=mode,
         warnings=list(payload.get("export_warnings", [])),
     )
     filename = str(payload.get("filename") or f"ocr_export_{po_uuid}.docx")

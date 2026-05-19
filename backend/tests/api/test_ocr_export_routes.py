@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import io
+
 import httpx
 import pytest
+from docx import Document
 
 from tests.api._m4_fixtures import make_page_block_segment
 
@@ -80,3 +83,50 @@ class TestOcrExport:
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
         assert len(r.content) > 0
+
+    async def test_download_rebuild_uses_saved_export_config(
+        self, auth_client: httpx.AsyncClient
+    ) -> None:
+        r = await auth_client.post("/projects", json={"name": "p"})
+        project_uuid = r.json()["project_uuid"]
+        await make_page_block_segment(
+            project_uuid,
+            text="بسم الله",
+            block_type="UE",
+            page_index=3,
+        )
+
+        pflichtfragen = {
+            "page_range": [3],
+            "block_types_enabled": ["UE"],
+            "markings_enabled": True,
+            "mode": "arbeitsstand",
+        }
+        r = await auth_client.post(
+            f"/projects/{project_uuid}/ocr-export/confirm",
+            json={
+                "pflichtfragen": pflichtfragen,
+                "export_attempt_id": "attempt-download-config",
+            },
+        )
+        assert r.status_code == 201
+
+        r = await auth_client.post(
+            f"/projects/{project_uuid}/ocr-export/run",
+            json={
+                "pflichtfragen": pflichtfragen,
+                "export_attempt_id": "attempt-download-config",
+            },
+        )
+        assert r.status_code == 201, r.text
+        po_uuid = r.json()["ocr_export_event_po_uuid"]
+
+        r = await auth_client.get(f"/ocr-export/artefacts/{po_uuid}")
+        assert r.status_code == 200
+
+        doc = Document(io.BytesIO(r.content))
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "page_range: [3]" in text
+        assert "mode: arbeitsstand" in text
+        assert "block_types_enabled: ['UE']" in text
+        assert "markings_enabled: True" in text

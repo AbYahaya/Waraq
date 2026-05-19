@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests.api._m4_fixtures import make_page_block_segment
 from waraq.identity import new_uuid
 
 
@@ -45,6 +46,128 @@ class TestProjectsCrud:
         assert resp.status_code == 401
         resp = await http_client.get("/projects")
         assert resp.status_code == 401
+
+    async def test_translation_availability_is_false_without_translation(
+        self, auth_client: httpx.AsyncClient
+    ) -> None:
+        resp = await auth_client.post("/projects", json={"name": "No translation yet"})
+        project_uuid = resp.json()["project_uuid"]
+        await make_page_block_segment(project_uuid, text="بسم الله")
+
+        resp = await auth_client.get(f"/projects/{project_uuid}/translation-availability")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["project_uuid"] == project_uuid
+        assert data["total_segments"] == 1
+        assert data["translated_segments"] == 0
+        assert data["fresh_translated_segments"] == 0
+        assert data["stale_translated_segments"] == 0
+        assert data["untranslated_segments"] == 1
+        assert data["has_translation"] is False
+        assert data["has_full_translation"] is False
+        assert data["has_fresh_translation"] is False
+        assert data["has_full_fresh_translation"] is False
+
+    async def test_translation_availability_detects_persisted_translation(
+        self, auth_client: httpx.AsyncClient
+    ) -> None:
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from tests.conftest import _test_database_url
+        from waraq.revision import create_revision
+        from waraq.schemas import Segment
+        from waraq.schemas.enums import ChangeSource
+
+        resp = await auth_client.post("/projects", json={"name": "Translated project"})
+        project_uuid = resp.json()["project_uuid"]
+        fixture = await make_page_block_segment(project_uuid, text="بسم الله")
+
+        engine = create_async_engine(_test_database_url(), future=True)
+        sm = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with sm() as session, session.begin():
+                segment = await session.get(Segment, fixture.satz_uuid)
+                assert segment is not None
+                await create_revision(
+                    session=session,
+                    segment=segment,
+                    after_text="Im Namen Allahs",
+                    change_source=ChangeSource.RE_TRANSLATE,
+                )
+        finally:
+            await engine.dispose()
+
+        resp = await auth_client.get(f"/projects/{project_uuid}/translation-availability")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_segments"] == 1
+        assert data["translated_segments"] == 1
+        assert data["fresh_translated_segments"] == 1
+        assert data["stale_translated_segments"] == 0
+        assert data["untranslated_segments"] == 0
+        assert data["has_translation"] is True
+        assert data["has_full_translation"] is True
+        assert data["has_fresh_translation"] is True
+        assert data["has_full_fresh_translation"] is True
+
+    async def test_translation_availability_marks_translation_stale_after_source_edit(
+        self, auth_client: httpx.AsyncClient
+    ) -> None:
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+
+        from tests.conftest import _test_database_url
+        from waraq.invariant.enums import OperationMode
+        from waraq.revision import create_revision
+        from waraq.schemas import Segment
+        from waraq.schemas.enums import ChangeSource
+
+        resp = await auth_client.post("/projects", json={"name": "Stale translation project"})
+        project_uuid = resp.json()["project_uuid"]
+        fixture = await make_page_block_segment(project_uuid, text="اصل")
+
+        engine = create_async_engine(_test_database_url(), future=True)
+        sm = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with sm() as session, session.begin():
+                segment = await session.get(Segment, fixture.satz_uuid)
+                assert segment is not None
+                await create_revision(
+                    session=session,
+                    segment=segment,
+                    after_text="Translated text",
+                    change_source=ChangeSource.RE_TRANSLATE,
+                    operation_mode=OperationMode.MANUAL_WITH_CONFIRMATION,
+                )
+                await create_revision(
+                    session=session,
+                    segment=segment,
+                    after_text="اصل محدث",
+                    change_source=ChangeSource.MANUAL,
+                    operation_mode=OperationMode.MANUAL_WITH_CONFIRMATION,
+                )
+        finally:
+            await engine.dispose()
+
+        resp = await auth_client.get(f"/projects/{project_uuid}/translation-availability")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_segments"] == 1
+        assert data["translated_segments"] == 1
+        assert data["fresh_translated_segments"] == 0
+        assert data["stale_translated_segments"] == 1
+        assert data["untranslated_segments"] == 0
+        assert data["has_translation"] is True
+        assert data["has_full_translation"] is True
+        assert data["has_fresh_translation"] is False
+        assert data["has_full_fresh_translation"] is False
 
 
 # ---------------------------------------------------------------------

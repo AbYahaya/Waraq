@@ -30,7 +30,7 @@ Confidence aggregation (the v1.0 rule; sub-batch D refines):
   - engine_error → confidence of the surviving engine (or None).
 
 The driver is engine-injectable: tests pass stub callables, production
-uses `gemini.extract_text` and `cloud_vision.extract_with_confidence`.
+uses `gemini.extract_text` and `openai_ocr.extract_with_confidence`.
 """
 
 from __future__ import annotations
@@ -46,16 +46,16 @@ from waraq.ocr.routing import OcrEngine, engines_for, primary_engine
 from waraq.schemas.enums import BlockClass
 
 # Engine callable types matching the existing `gemini.extract_text` and
-# `cloud_vision.extract_with_confidence` signatures.
+# `openai_ocr.extract_with_confidence` signatures.
 GeminiExtractor = Callable[[bytes, str], Awaitable[str]]
-# Cloud-Vision returns a `CloudVisionResult` with text + confidence;
+# OpenAI OCR returns an `OpenAiOcrResult` with text + confidence;
 # we accept the broader Awaitable[Any] in test injection so a fake can
 # return a small dataclass-shaped namespace without importing the real
-# CloudVisionResult.
-from waraq.ocr.cloud_vision import CloudVisionResult  # noqa: E402
+# OpenAiOcrResult.
+from waraq.ocr.openai_ocr import OpenAiOcrResult  # noqa: E402
 from waraq.ocr.kraken import KrakenResult  # noqa: E402
 
-CloudVisionExtractor = Callable[[bytes, str], Awaitable[CloudVisionResult]]
+OpenAiOcrExtractor = Callable[[bytes, str], Awaitable[OpenAiOcrResult]]
 KrakenExtractor = Callable[[bytes, str], Awaitable[KrakenResult]]
 
 
@@ -116,19 +116,19 @@ async def _run_one_gemini(fn: GeminiExtractor, image_bytes: bytes, mime_type: st
         )
 
 
-async def _run_one_cloud_vision(
-    fn: CloudVisionExtractor, image_bytes: bytes, mime_type: str
+async def _run_one_openai(
+    fn: OpenAiOcrExtractor, image_bytes: bytes, mime_type: str
 ) -> EngineResult:
     try:
         result = await fn(image_bytes, mime_type)
         return EngineResult(
-            engine=OcrEngine.CLOUD_VISION,
+            engine=OcrEngine.OPENAI,
             text=result.text,
             confidence=result.confidence,
         )
     except Exception as exc:
         return EngineResult(
-            engine=OcrEngine.CLOUD_VISION,
+            engine=OcrEngine.OPENAI,
             text="",
             confidence=None,
             error_class=type(exc).__name__,
@@ -220,7 +220,7 @@ async def run_engines(
     mime_type: str,
     block_class: BlockClass,
     gemini_fn: GeminiExtractor,
-    cloud_vision_fn: CloudVisionExtractor,
+    openai_ocr_fn: OpenAiOcrExtractor,
     kraken_fn: KrakenExtractor | None = None,
     use_kraken: bool = False,
 ) -> ConsensusResult:
@@ -230,7 +230,7 @@ async def run_engines(
     Engine callables are required (no implicit defaults) — the
     page-runner injects production extractors, tests inject stubs.
     Forcing explicit injection keeps this module decoupled from the
-    Gemini / Cloud Vision import surface and makes the test boundary
+    Gemini / OpenAI OCR import surface and makes the test boundary
     obvious.
 
     When `use_kraken=True`, the routing layer adds kraken to the
@@ -245,8 +245,8 @@ async def run_engines(
     awaitables: list[Awaitable[EngineResult]] = []
     if OcrEngine.GEMINI in eligible:
         awaitables.append(_run_one_gemini(gemini_fn, image_bytes, mime_type))
-    if OcrEngine.CLOUD_VISION in eligible:
-        awaitables.append(_run_one_cloud_vision(cloud_vision_fn, image_bytes, mime_type))
+    if OcrEngine.OPENAI in eligible:
+        awaitables.append(_run_one_openai(openai_ocr_fn, image_bytes, mime_type))
     if OcrEngine.KRAKEN in eligible and kraken_fn is not None:
         awaitables.append(_run_one_kraken(kraken_fn, image_bytes, mime_type))
 

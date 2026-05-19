@@ -12,8 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.invariant.enums import OperationMode
 from waraq.revision.service import create_revision
-from waraq.schemas import Block, Page, Revision, Segment
-from waraq.schemas.enums import ChangeSource
+from waraq.schemas import Block, Page, Segment
+from waraq.text_state import (
+    join_source_target_text,
+    resolve_segment_text_state,
+)
 
 # Per `waraq.ocr_export.docx_builder._BLOCK_TYPE_STYLE`:
 #   UE → Heading 1, HD → Heading 2.
@@ -70,27 +73,6 @@ class TocResult:
     page_count: int = 0
 
 
-_SEPARATOR = "\n---\n"
-
-
-def _split_source_target(text: str | None) -> tuple[str, str]:
-    """Split a segment's combined `source\\n---\\ntarget` into halves.
-    Returns `("", "")` for None / empty. When the separator is absent,
-    treats the entire content as the AR source side (no translation
-    yet)."""
-    if not text:
-        return "", ""
-    if _SEPARATOR in text:
-        ar, de = text.split(_SEPARATOR, 1)
-        return ar, de
-    return text, ""
-
-
-def _join_source_target(ar: str, de: str) -> str:
-    """Re-join two halves into the combined-text format."""
-    return f"{ar}{_SEPARATOR}{de}"
-
-
 async def detect_toc(
     *,
     session: AsyncSession,
@@ -123,14 +105,14 @@ async def detect_toc(
     if rows:
         entries: list[TocEntry] = []
         for page, block, segment in rows:
-            ar, de = _split_source_target(segment.text_content)
+            text_state = await resolve_segment_text_state(session=session, segment=segment)
             entries.append(
                 TocEntry(
                     page_index=page.page_index,
                     page_uuid=page.page_uuid,
                     level=HEADING_BLOCK_TYPES[block.block_type],
-                    ar_text=ar,
-                    de_text=de,
+                    ar_text=text_state.source_text,
+                    de_text=text_state.target_text,
                     satz_uuid=segment.satz_uuid,
                     block_uuid=block.block_uuid,
                 )
@@ -189,10 +171,11 @@ async def edit_toc_entry_heading(
     if segment is None:
         raise LookupError(f"segment {satz_uuid!r} not found")
 
-    current_ar, current_de = _split_source_target(segment.text_content)
+    text_state = await resolve_segment_text_state(session=session, segment=segment)
+    current_ar, current_de = text_state.source_text, text_state.target_text
     final_ar = new_ar_text if new_ar_text is not None else current_ar
     final_de = new_de_text if new_de_text is not None else current_de
-    final_text = _join_source_target(final_ar, final_de)
+    final_text = join_source_target_text(final_ar, final_de)
 
     revision = await create_revision(
         session=session,

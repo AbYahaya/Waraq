@@ -22,6 +22,11 @@ from collections.abc import Awaitable, Callable
 
 from waraq.canon_rules import apply_all as apply_canon_rules
 from waraq.db.session import get_settings
+from waraq.translation.line_protocol import (
+    build_tagged_translation_input,
+    parse_tagged_translation_output,
+    split_tagged_translation_input,
+)
 from waraq.translation.service import TranslationContext
 
 Translator = Callable[[str, TranslationContext], Awaitable[str]]
@@ -41,6 +46,12 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- EI2 transliteration with Q (instead of Ḳ) and J (instead of Dj).\n"
     "- Religious formulas as Unicode glyphs ﷺ ﷻ when applicable.\n"
     "- Preserve Qurʾān citations and Hadith Isnād structure.\n"
+    "- Standalone page numbers, folio markers, and pagination artifacts must be kept as-is.\n"
+    "- Running headers and page titles should be treated as headers, not as prose.\n"
+    "- Never answer with commentary such as 'cannot translate'; always return only the best text output for the input span.\n"
+    "- Input lines may be prefixed with tags like [[L0001]]. You must return every tag exactly once and in order.\n"
+    "- For lines that are only page numbers or pagination markers, copy the tagged line's text exactly instead of translating it.\n"
+    "- If a source line is blank, return the same tag with no translated prose for that line.\n"
     "Return ONLY the translated text — no commentary."
 )
 
@@ -70,6 +81,9 @@ def make_gemini_translator(
     # doesn't expose a per-call timeout cleanly, so we wrap the sync
     # call in `asyncio.wait_for` below.
     timeout_s = float(os.environ.get("GEMINI_HTTP_TIMEOUT", "60"))
+    protocol_attempts = max(1, int(os.environ.get("TRANSLATION_LINE_PROTOCOL_MAX_ATTEMPTS", "2")))
+    batch_max_lines = max(1, int(os.environ.get("TRANSLATION_BATCH_MAX_LINES", "20")))
+    batch_max_chars = max(200, int(os.environ.get("TRANSLATION_BATCH_MAX_CHARS", "2500")))
 
     async def _translate(source_text: str, context: TranslationContext) -> str:
         # Build the system prompt with the §3.6 chunk brief and upstream
@@ -133,6 +147,21 @@ def make_gemini_translator(
                 "RECENT TRANSLATION CONTEXT (last 3 segments, for stylistic continuity):\n" + recent
             )
 
+        if context.page_context is not None:
+            page_context = context.page_context
+            full_source = page_context.get("full_source_text")
+            block_type = page_context.get("current_block_type")
+            page_index = page_context.get("page_index")
+            current_idx = page_context.get("current_segment_index")
+            prompt_blocks.append(
+                "PAGE-LEVEL SOURCE CONTEXT (the current input is only one span from this page; "
+                "use the surrounding page flow to preserve context, but translate ONLY the current input):\n"
+                f"- Page index: {page_index}\n"
+                f"- Current span position on page: {current_idx}\n"
+                f"- Current block type: {block_type}\n"
+                f"- Full page OCR text:\n{full_source}"
+            )
+
         full_system_prompt = "\n\n".join(prompt_blocks)
 
         # Gemini's Generate Content API takes a single combined input;
@@ -141,19 +170,48 @@ def make_gemini_translator(
         from google import genai
 
         client = genai.Client(api_key=api_key)
-        combined = f"{full_system_prompt}\n\n---\n\nSOURCE:\n{source_text}"
+        tagged = build_tagged_translation_input(source_text)
+        batches = split_tagged_translation_input(
+            tagged,
+            max_lines=batch_max_lines,
+            max_chars=batch_max_chars,
+        )
 
-        def _call_sync() -> str:
+        def _call_sync(payload: str) -> str:
             response = client.models.generate_content(
                 model=chosen_model,
-                contents=combined,
+                contents=payload,
             )
             return (response.text or "").strip()
 
-        raw_output = await asyncio.wait_for(asyncio.to_thread(_call_sync), timeout=timeout_s)
-        # Same deterministic post-translation canonization as the OpenAI
-        # path — both engines converge on canonical output.
-        return apply_canon_rules(raw_output)
+        normalized_output_lines: list[str] = []
+        last_exc: Exception | None = None
+        for batch in batches:
+            combined = f"{full_system_prompt}\n\n---\n\nSOURCE:\n{batch.prompt_text}"
+            for _attempt in range(1, protocol_attempts + 1):
+                try:
+                    raw_output = await asyncio.wait_for(
+                        asyncio.to_thread(_call_sync, combined),
+                        timeout=timeout_s,
+                    )
+                    translated_lines = parse_tagged_translation_output(raw_output, batch)
+                    normalized_output_lines.extend(
+                        [
+                            apply_canon_rules(line)
+                            if line != source_line.source_text or source_line.kind == "text"
+                            else line
+                            for line, source_line in zip(translated_lines, batch.lines, strict=True)
+                        ]
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+
+            if last_exc is not None:
+                raise last_exc
+
+        return "\n".join(normalized_output_lines)
 
     return _translate
 

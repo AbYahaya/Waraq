@@ -451,7 +451,7 @@ class TestSegmentAuditDetail:
                         "error_class": None,
                     },
                     {
-                        "engine": "cloud_vision",
+                        "engine": "openai",
                         "text": "سمع غير",
                         "text_chars": 7,
                         "confidence": 0.55,
@@ -472,7 +472,7 @@ class TestSegmentAuditDetail:
         assert detail.ocr_engines_have_text is True
         assert len(detail.ocr_engines) == 2
         gem = next(e for e in detail.ocr_engines if e.engine == "gemini")
-        cv = next(e for e in detail.ocr_engines if e.engine == "cloud_vision")
+        cv = next(e for e in detail.ocr_engines if e.engine == "openai")
         assert gem.text == "بسم الله"
         assert cv.text == "سمع غير"
 

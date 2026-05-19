@@ -11,11 +11,11 @@ import type { Page } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_LABEL: Record<Page["ocr_status"], string> = {
-  ausstehend: "ausstehend",
+  ausstehend: "pending",
   in_review: "in review",
-  go: "go",
-  go_with_warning: "go (warning)",
-  no_go: "no-go",
+  go: "approved",
+  go_with_warning: "approved with warning",
+  no_go: "blocked",
 };
 
 const STATUS_TONE: Record<Page["ocr_status"], string> = {
@@ -49,7 +49,7 @@ export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.El
   }
 
   return (
-    <ul className="divide-y">
+    <ul className="space-y-2 px-3 pb-3">
       {q.data.map((p) => {
         const isActive = p.page_uuid === activePageUuid;
         return (
@@ -57,13 +57,13 @@ export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.El
             <Link
               to={`/projects/${projectUuid}/pages/${p.page_uuid}`}
               className={cn(
-                "block px-3 py-2 text-sm hover:bg-accent",
-                isActive && "bg-accent",
+                "block rounded-2xl border border-transparent px-3 py-3 text-sm transition hover:border-border/70 hover:bg-accent/40",
+                isActive && "border-border/80 bg-accent/50 shadow-sm",
               )}
             >
               <div className="flex items-center justify-between">
                 <span className="font-medium">Page {p.page_index}</span>
-                <span className={cn("text-xs", STATUS_TONE[p.ocr_status])}>
+                <span className={cn("text-[11px] font-medium", STATUS_TONE[p.ocr_status])}>
                   {STATUS_LABEL[p.ocr_status]}
                 </span>
               </div>

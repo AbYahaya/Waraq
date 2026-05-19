@@ -34,6 +34,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from waraq.api.routers import (
     admin_router,
@@ -140,6 +141,22 @@ def create_app() -> FastAPI:
         version="0.2.0",
         lifespan=lifespan,
     )
+
+    from waraq.db.session import get_settings
+
+    cors_origins = [
+        origin.strip()
+        for origin in get_settings().cors_origins.split(",")
+        if origin.strip()
+    ]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     # M1 layer
     app.include_router(health_router.router)

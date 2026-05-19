@@ -25,7 +25,11 @@ from sqlalchemy import select
 
 from waraq.api._ownership import owned_page_or_404, owned_segment_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
-from waraq.api.schemas import SegmentEditRequest, SegmentResponse
+from waraq.api.schemas import (
+    SegmentEditRequest,
+    SegmentResponse,
+    SegmentTranslationEditRequest,
+)
 from waraq.canon_rules import apply_all as apply_canon_rules
 from waraq.invariant.enums import OperationMode
 from waraq.invariant.exceptions import H1H2Violation
@@ -80,6 +84,37 @@ async def edit_segment_text(
             segment=segment,
             after_text=normalized,
             change_source=ChangeSource.MANUAL,
+            operation_mode=OperationMode.MANUAL_WITH_CONFIRMATION,
+            author_uuid=current.account_uuid,
+        )
+    except H1H2Violation as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Segment is locked ({exc!s})",
+        ) from exc
+    return SegmentResponse.model_validate(segment)
+
+
+@router.put("/segments/{satz_uuid}/translation-text", response_model=SegmentResponse)
+async def edit_segment_translation_text(
+    satz_uuid: _uuid.UUID,
+    req: SegmentTranslationEditRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> SegmentResponse:
+    """Manually edit a segment's translation text.
+
+    Writes a Revision with `change_source=re_translate`, allowing the
+    target-side text to be corrected independently of the OCR/source
+    revision stream.
+    """
+    segment = await owned_segment_or_404(session, satz_uuid, current.account_uuid)
+    try:
+        await create_revision(
+            session=session,
+            segment=segment,
+            after_text=req.after_text,
+            change_source=ChangeSource.RE_TRANSLATE,
             operation_mode=OperationMode.MANUAL_WITH_CONFIRMATION,
             author_uuid=current.account_uuid,
         )

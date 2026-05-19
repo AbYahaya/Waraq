@@ -64,24 +64,7 @@ from waraq.schemas import (
     TransliterationsMusterEintrag,
 )
 from waraq.schemas.enums import POType
-
-# --- helpers -------------------------------------------------------------
-
-
-def _split_source_target(text: str | None) -> tuple[str, str]:
-    """Mirror Sprint 3 audit-rule convention: source ar + target de
-    separated by `\\n---\\n`. Returns (source, target). When no separator
-    is present, the whole text is treated as both — sufficient for the
-    structural divergence checks below.
-    """
-    if not text:
-        return "", ""
-    if "\n---\n" in text:
-        src, _, tgt = text.partition("\n---\n")
-        return src, tgt
-    return text, text
-
-
+from waraq.text_state import resolve_segment_text_state
 async def _select_rule_binding_pos_for_project(
     *, session: AsyncSession, project_uuid: _uuid.UUID
 ) -> list[ProvenanceObject]:
@@ -330,7 +313,8 @@ async def _scan_identity_table(
         any_match = False
         any_divergence = False
         for seg in segments:
-            src, tgt = _split_source_target(seg.text_content)
+            text_state = await resolve_segment_text_state(session=session, segment=seg)
+            src, tgt = text_state.source_text, text_state.target_text
             if ident.source_pattern not in src:
                 continue
             any_match = True

@@ -36,6 +36,19 @@ export interface Project {
   active: boolean;
 }
 
+export interface ProjectTranslationAvailability {
+  project_uuid: string;
+  total_segments: number;
+  translated_segments: number;
+  fresh_translated_segments: number;
+  stale_translated_segments: number;
+  untranslated_segments: number;
+  has_translation: boolean;
+  has_full_translation: boolean;
+  has_fresh_translation: boolean;
+  has_full_fresh_translation: boolean;
+}
+
 export interface Page {
   page_uuid: string;
   project_uuid: string;

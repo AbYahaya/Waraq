@@ -118,6 +118,8 @@ interface SegmentAuditDetail {
   ocr_engines_have_text: boolean;
   translation_situation: string | null;
   translation_target_text: string | null;
+  translation_primary_engine: string | null;
+  translation_check_engine: string | null;
   open_befunde: BefundDetailResponse[];
   open_conflicts_count: number;
 }
@@ -617,6 +619,12 @@ function SegmentDetailPanel({
           <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
             Translation — cross-check: {detail.translation_situation}
           </div>
+          {(detail.translation_primary_engine || detail.translation_check_engine) && (
+            <div className="mb-2 text-xs text-muted-foreground">
+              Primary: {detail.translation_primary_engine ?? "unknown"} · Check:{" "}
+              {detail.translation_check_engine ?? "unknown"}
+            </div>
+          )}
           {detail.translation_target_text && (
             <div className="border rounded p-2 bg-muted/40 whitespace-pre-wrap leading-relaxed">
               {detail.translation_target_text}

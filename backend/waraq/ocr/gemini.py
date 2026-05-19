@@ -18,16 +18,30 @@ tests don't burn quota.
 from __future__ import annotations
 
 import asyncio
+import os
 
 from waraq.db.session import get_settings
 from waraq.ocr.exceptions import GeminiApiError, MissingGeminiApiKey
+from waraq.ocr.postprocess import sanitize_ocr_output
 
 _OCR_PROMPT = (
     "You are an OCR engine for classical Arabic Islamic texts. "
-    "Extract every visible character of the main text from this page image, "
-    "preserving line breaks. "
+    "Extract every visible character from this page image exactly as laid out on the page. "
+    "Preserve the visible reading structure: keep each printed line on its own output line, "
+    "preserve paragraph breaks, preserve intentionally blank separator lines, "
+    "and keep page numbers and running headers exactly as they appear instead of explaining them. "
+    "Preserve the numeral glyph system exactly as printed: never convert Western digits to Arabic-Indic digits or vice versa. "
+    "Do not reflow, justify, summarize, normalize, or complete lines to the page width. "
     "Return only the extracted text — no descriptions, no commentary, no markdown."
 )
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    haystack = f"{exc!s} {exc!r} {type(exc).__name__}".lower()
+    return any(
+        token in haystack
+        for token in ("429", "rate limit", "resourceexhausted", "resource_exhausted", "quota")
+    )
 
 
 async def extract_text(image_bytes: bytes, mime_type: str = "image/png") -> str:
@@ -58,19 +72,26 @@ async def extract_text(image_bytes: bytes, mime_type: str = "image/png") -> str:
     client = genai.Client(api_key=settings.google_ai_api_key)
 
     def _call_sync() -> str:
-        try:
-            response = client.models.generate_content(
-                model=settings.gemini_ocr_model,
-                contents=[  # type: ignore[arg-type]
-                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                    _OCR_PROMPT,
-                ],
-            )
-        except Exception as exc:
-            raise GeminiApiError(model=settings.gemini_ocr_model, cause=exc) from exc
-        return (response.text or "").strip()
+        response = client.models.generate_content(
+            model=settings.gemini_ocr_model,
+            contents=[  # type: ignore[arg-type]
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                _OCR_PROMPT,
+            ],
+        )
+        return sanitize_ocr_output((response.text or "").strip())
 
-    # google-genai's sync client; offload to a worker thread so we don't
-    # block the event loop. The SDK has an async client too; if rate-limit
-    # backoff or streaming becomes a concern, swap to client.aio later.
-    return await asyncio.to_thread(_call_sync)
+    max_attempts = max(1, int(os.environ.get("GEMINI_OCR_MAX_ATTEMPTS", "3")))
+    backoff_s = float(os.environ.get("GEMINI_OCR_RETRY_BACKOFF_SECONDS", "2"))
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await asyncio.to_thread(_call_sync)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= max_attempts or not _is_rate_limit_error(exc):
+                raise GeminiApiError(model=settings.gemini_ocr_model, cause=exc) from exc
+            await asyncio.sleep(backoff_s * attempt)
+
+    assert last_exc is not None
+    raise GeminiApiError(model=settings.gemini_ocr_model, cause=last_exc)

@@ -17,6 +17,11 @@ from collections.abc import Awaitable, Callable
 
 from waraq.canon_rules import apply_all as apply_canon_rules
 from waraq.translation.service import TranslationContext
+from waraq.translation.line_protocol import (
+    build_tagged_translation_input,
+    parse_tagged_translation_output,
+    split_tagged_translation_input,
+)
 
 Translator = Callable[[str, TranslationContext], Awaitable[str]]
 
@@ -40,6 +45,12 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- EI2 transliteration with Q (instead of Ḳ) and J (instead of Dj).\n"
     "- Religious formulas as Unicode glyphs ﷺ ﷻ when applicable.\n"
     "- Preserve Qurʾān citations and Hadith Isnād structure.\n"
+    "- Standalone page numbers, folio markers, and pagination artifacts must be kept as-is.\n"
+    "- Running headers and page titles should be treated as headers, not as prose.\n"
+    "- Never answer with commentary such as 'cannot translate'; always return only the best text output for the input span.\n"
+    "- Input lines may be prefixed with tags like [[L0001]]. You must return every tag exactly once and in order.\n"
+    "- For lines that are only page numbers or pagination markers, copy the tagged line's text exactly instead of translating it.\n"
+    "- If a source line is blank, return the same tag with no translated prose for that line.\n"
     "Return ONLY the translated text — no commentary."
 )
 
@@ -76,6 +87,9 @@ def make_openai_translator(
     # call here blocks every subsequent segment.
     timeout_s = float(os.environ.get("OPENAI_HTTP_TIMEOUT", "30"))
     max_retries = int(os.environ.get("OPENAI_MAX_RETRIES", "1"))
+    protocol_attempts = max(1, int(os.environ.get("TRANSLATION_LINE_PROTOCOL_MAX_ATTEMPTS", "2")))
+    batch_max_lines = max(1, int(os.environ.get("TRANSLATION_BATCH_MAX_LINES", "20")))
+    batch_max_chars = max(200, int(os.environ.get("TRANSLATION_BATCH_MAX_CHARS", "2500")))
     client = AsyncOpenAI(api_key=api_key, timeout=timeout_s, max_retries=max_retries)
 
     async def _translate(source_text: str, context: TranslationContext) -> str:
@@ -143,19 +157,59 @@ def make_openai_translator(
                 "RECENT TRANSLATION CONTEXT (last 3 segments, for stylistic continuity):\n" + recent
             )
 
+        if context.page_context is not None:
+            page_context = context.page_context
+            full_source = page_context.get("full_source_text")
+            block_type = page_context.get("current_block_type")
+            page_index = page_context.get("page_index")
+            current_idx = page_context.get("current_segment_index")
+            prompt_blocks.append(
+                "PAGE-LEVEL SOURCE CONTEXT (the current input is only one span from this page; "
+                "use the surrounding page flow to preserve context, but translate ONLY the current input):\n"
+                f"- Page index: {page_index}\n"
+                f"- Current span position on page: {current_idx}\n"
+                f"- Current block type: {block_type}\n"
+                f"- Full page OCR text:\n{full_source}"
+            )
+
         full_system_prompt = "\n\n".join(prompt_blocks)
 
-        resp = await client.chat.completions.create(
-            model=chosen_model,
-            messages=[
-                {"role": "system", "content": full_system_prompt},
-                {"role": "user", "content": source_text},
-            ],
-            temperature=0,
+        tagged = build_tagged_translation_input(source_text)
+        batches = split_tagged_translation_input(
+            tagged,
+            max_lines=batch_max_lines,
+            max_chars=batch_max_chars,
         )
-        raw_output = (resp.choices[0].message.content or "").strip()
-        # Deterministic post-translation canonization per Dokument 1 §2.2.
-        return apply_canon_rules(raw_output)
+        normalized_output_lines: list[str] = []
+        last_exc: Exception | None = None
+        for batch in batches:
+            for _attempt in range(1, protocol_attempts + 1):
+                try:
+                    resp = await client.chat.completions.create(
+                        model=chosen_model,
+                        messages=[
+                            {"role": "system", "content": full_system_prompt},
+                            {"role": "user", "content": batch.prompt_text},
+                        ],
+                        temperature=0,
+                    )
+                    raw_output = (resp.choices[0].message.content or "").strip()
+                    translated_lines = parse_tagged_translation_output(raw_output, batch)
+                    normalized_output_lines.extend(
+                        [
+                            apply_canon_rules(line)
+                            if line != source_line.source_text or source_line.kind == "text"
+                            else line
+                            for line, source_line in zip(translated_lines, batch.lines, strict=True)
+                        ]
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+            if last_exc is not None:
+                raise last_exc
+        return "\n".join(normalized_output_lines)
 
     return _translate
 

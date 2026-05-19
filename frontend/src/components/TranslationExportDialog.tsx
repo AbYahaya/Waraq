@@ -30,9 +30,14 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, apiPath } from "@/lib/api";
 import { queries } from "@/lib/queries";
-import type { Job, Page, Segment } from "@/lib/types";
+import type {
+  Job,
+  Page,
+  ProjectTranslationAvailability,
+  Segment,
+} from "@/lib/types";
 import { useAuthStore } from "@/store/auth";
 import { cn } from "@/lib/utils";
 
@@ -164,6 +169,16 @@ export function TranslationExportDialog({
     enabled: open,
   });
 
+  const translationAvailabilityQ = useQuery<ProjectTranslationAvailability>({
+    queryKey: ["projects", projectUuid, "translation-availability"],
+    enabled: open,
+    queryFn: () =>
+      api.get<ProjectTranslationAvailability>(
+        `/projects/${projectUuid}/translation-availability`,
+      ),
+  });
+  const { refetch: refetchTranslationAvailability } = translationAvailabilityQ;
+
   // Collect every segment UUID across all pages — translation runs
   // project-wide.
   const allSegmentsQuery = useQuery<Segment[]>({
@@ -214,6 +229,12 @@ export function TranslationExportDialog({
     if (jobPollQuery.data) setTranslationJob(jobPollQuery.data);
   }, [jobPollQuery.data]);
 
+  useEffect(() => {
+    if (translationJob?.state === "completed") {
+      void refetchTranslationAvailability();
+    }
+  }, [translationJob?.state, refetchTranslationAvailability]);
+
   const cancelMutation = useMutation({
     mutationFn: () => {
       if (!translationJob) throw new Error("no job to cancel");
@@ -231,6 +252,10 @@ export function TranslationExportDialog({
   const progressPct = chunksTotal > 0 ? Math.min(100, (chunksProcessed / chunksTotal) * 100) : 0;
   const cancelRequested = jobPayload.cancel_requested === true;
   const jobError = translationJob?.error as { phase?: string; repr?: string } | null | undefined;
+  const persistedTranslation = translationAvailabilityQ.data;
+  const translationReady =
+    translationJob?.state === "completed" ||
+    persistedTranslation?.has_full_fresh_translation === true;
 
   const openPreflightMutation = useMutation({
     mutationFn: () =>
@@ -312,12 +337,22 @@ export function TranslationExportDialog({
     const token = useAuthStore.getState().token;
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
-    const url = pdf
-      ? `/exports/artefacts/${poUuid}/pdf`
-      : `/exports/artefacts/${poUuid}`;
+    const url = apiPath(
+      pdf
+        ? `/exports/artefacts/${poUuid}/pdf`
+        : `/exports/artefacts/${poUuid}`,
+    );
     const resp = await fetch(url, { headers });
     if (!resp.ok) {
       setError(`Download failed: HTTP ${resp.status}`);
+      return;
+    }
+    const contentType = resp.headers.get("content-type") ?? "";
+    const expectedType = pdf
+      ? "application/pdf"
+      : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (!contentType.includes(expectedType)) {
+      setError(`Download failed: unexpected content type (${contentType || "unknown"})`);
       return;
     }
     const blob = await resp.blob();
@@ -358,18 +393,56 @@ export function TranslationExportDialog({
               while in progress.
             </p>
             {!translationJob && (
-              <Button
-                size="sm"
-                disabled={
-                  translateMutation.isPending || segmentUuids.length === 0
-                }
-                onClick={() => {
-                  setError(null);
-                  translateMutation.mutate();
-                }}
-              >
-                {translateMutation.isPending ? "Starting…" : "Run translation"}
-              </Button>
+              <>
+                {persistedTranslation?.has_translation && (
+                  <p
+                    className={cn(
+                      "text-xs",
+                      persistedTranslation.has_full_fresh_translation
+                        ? "text-emerald-700"
+                        : "text-amber-700",
+                    )}
+                  >
+                    {persistedTranslation.has_full_fresh_translation
+                      ? `Fresh stored translation available for all ${persistedTranslation.total_segments} segment(s).`
+                      : persistedTranslation.has_full_translation
+                        ? `Translation exists for all ${persistedTranslation.total_segments} segment(s), but ${persistedTranslation.stale_translated_segments} segment(s) are outdated.`
+                        : `Translation exists for ${persistedTranslation.translated_segments} of ${persistedTranslation.total_segments} segment(s); ${persistedTranslation.untranslated_segments} segment(s) still need translation.`}
+                    {" "}
+                    {persistedTranslation.has_full_fresh_translation
+                      ? "You can continue to preflight or rerun translation."
+                      : "Rerun translation before preflight/export."}
+                  </p>
+                )}
+                {persistedTranslation &&
+                  persistedTranslation.stale_translated_segments > 0 && (
+                    <p className="text-xs text-amber-700">
+                      OCR/source edits were made after translation on{" "}
+                      {persistedTranslation.stale_translated_segments} segment(s).
+                    </p>
+                  )}
+                {translationAvailabilityQ.isLoading && (
+                  <p className="text-xs text-muted-foreground">
+                    Checking existing translation state…
+                  </p>
+                )}
+                <Button
+                  size="sm"
+                  disabled={
+                    translateMutation.isPending || segmentUuids.length === 0
+                  }
+                  onClick={() => {
+                    setError(null);
+                    translateMutation.mutate();
+                  }}
+                >
+                  {translateMutation.isPending
+                    ? "Starting…"
+                    : persistedTranslation?.has_translation
+                      ? "Run translation again"
+                      : "Run translation"}
+                </Button>
+              </>
             )}
             {translationJob && (
               <div className="space-y-2">
@@ -454,15 +527,20 @@ export function TranslationExportDialog({
           <section
             className={cn(
               "rounded border p-3 space-y-2",
-              translationJob?.state === "completed" ? "" : "opacity-50",
+              translationReady ? "" : "opacity-50",
             )}
           >
             <header className="text-sm font-medium">2. Preflight</header>
+            {!translationReady && persistedTranslation && (
+              <p className="text-xs text-muted-foreground">
+                Preflight unlocks when the whole project has a fresh translation state.
+              </p>
+            )}
             {!preflightRunUuid && (
               <Button
                 size="sm"
                 disabled={
-                  translationJob?.state !== "completed" ||
+                  !translationReady ||
                   openPreflightMutation.isPending
                 }
                 onClick={() => {

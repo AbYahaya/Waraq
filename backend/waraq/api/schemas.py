@@ -67,6 +67,19 @@ class ProjectResponse(BaseModel):
     active: bool
 
 
+class ProjectTranslationAvailabilityResponse(BaseModel):
+    project_uuid: _uuid.UUID
+    total_segments: int
+    translated_segments: int
+    fresh_translated_segments: int
+    stale_translated_segments: int
+    untranslated_segments: int
+    has_translation: bool
+    has_full_translation: bool
+    has_fresh_translation: bool
+    has_full_fresh_translation: bool
+
+
 # --- Uploads ------------------------------------------------------------
 
 
@@ -188,6 +201,17 @@ class SegmentEditRequest(BaseModel):
     """Manual edit of segment text. Writes a Revision via the canonical
     revision service (change_source='manual'). Refused on locked segments
     by the INVARIANT-Guard."""
+
+    after_text: str = Field(min_length=0, max_length=8192)
+
+
+class SegmentTranslationEditRequest(BaseModel):
+    """Manual edit of a segment's translation text.
+
+    Writes a Revision via the canonical revision service with
+    `change_source='re_translate'`, preserving the source-side revision
+    history while advancing the target-side text state.
+    """
 
     after_text: str = Field(min_length=0, max_length=8192)
 

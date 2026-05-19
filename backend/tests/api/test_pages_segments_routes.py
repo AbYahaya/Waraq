@@ -57,6 +57,18 @@ class TestPagesAndSegments:
         assert body["text_content"] == "new"
         assert body["current_rev_uuid"] is not None
 
+    async def test_edit_segment_translation_text(self, auth_client: httpx.AsyncClient) -> None:
+        project_uuid = await self._project(auth_client)
+        f = await make_page_block_segment(project_uuid, text="اصل")
+        r = await auth_client.put(
+            f"/segments/{f.satz_uuid}/translation-text",
+            json={"after_text": "Translated text"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["text_content"] == "Translated text"
+        assert body["current_rev_uuid"] is not None
+
     async def test_cross_account_returns_404(self, auth_client: httpx.AsyncClient) -> None:
         # Random uuid → 404
         r = await auth_client.get(f"/segments/{new_uuid()}")

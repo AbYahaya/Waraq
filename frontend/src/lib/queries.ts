@@ -159,4 +159,5 @@ export interface SegmentHistoryDto {
   provenance_objects: Array<Record<string, unknown>>;
   log_entries: Array<Record<string, unknown>>;
   conflict_instances: Array<Record<string, unknown>>;
+  quran_passage?: Record<string, unknown> | null;
 }

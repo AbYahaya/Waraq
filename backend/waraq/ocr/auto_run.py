@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid as _uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -44,15 +45,18 @@ from waraq.schemas.enums import JobState, OcrStatus
 logger = logging.getLogger(__name__)
 
 OCR_AUTO_RUN_JOB_TYPE = "ocr_auto_run"
+_LIVE_PAGE_TASKS: dict[_uuid.UUID, asyncio.Task[Any]] = {}
 
 # Hard cap per page so a hung upstream OCR call can't stall the whole
-# project loop. Sub-batch O follow-up (2026-05-12): bumped 120 → 240
-# after real-traffic measurement showed Stage-2 + Stage-3 per typical
-# Arabic A4 page totals ~100s (2 blocks × ~50s each, post-kernel-fix).
-# 240s gives 2× safety margin while still bounding a genuinely stuck
-# call. The PER_PAGE_TIMEOUT_SECONDS knob is the right place to relax
-# this; the orphan reaper uses 2.5× this value so it stays consistent.
-PER_PAGE_TIMEOUT_SECONDS: float = 240.0
+# project loop. The earlier 240s assumption no longer holds reliably
+# once layout detection + multi-block OCR + Stage-3 validation all run
+# on larger real pages, so this is now configurable and defaults to a
+# more forgiving 600s.
+#
+# This does NOT fix the deeper "page OCR still segments internally"
+# architecture, but it removes the immediate false-timeout failure mode
+# while that restructuring is in progress.
+PER_PAGE_TIMEOUT_SECONDS: float = float(os.environ.get("OCR_PER_PAGE_TIMEOUT_SECONDS", "600"))
 
 # Heartbeat staleness threshold for orphan reaping (sub-batch O follow-up,
 # 2026-05-12). FastAPI BackgroundTasks die when the uvicorn worker dies
@@ -65,6 +69,7 @@ PER_PAGE_TIMEOUT_SECONDS: float = 240.0
 # of headroom (even a worst-case 120s page leaves 180s of slack) without
 # letting a dead worker's row sit stuck for long.
 STALE_HEARTBEAT_THRESHOLD_SECONDS: int = int(PER_PAGE_TIMEOUT_SECONDS * 2.5)
+_CANCEL_POLL_INTERVAL_SECONDS: float = 1.0
 
 
 class OcrAutoRunCancelled(Exception):
@@ -72,6 +77,46 @@ class OcrAutoRunCancelled(Exception):
     `payload.cancel_requested=True`. The runner checks between pages
     and raises this; the BackgroundTask body swallows it after
     `fail_job` records the failure."""
+
+
+async def _run_page_with_cancel_monitor(
+    *,
+    session: AsyncSession,
+    job: Job,
+    page: Page,
+) -> None:
+    """Run one page OCR while polling the cancel flag.
+
+    This lets project-wide OCR cancel promptly even when a single page is
+    taking a long time. The underlying provider call may still continue
+    briefly in its own thread/network stack, but the job itself will stop
+    waiting on it and terminate visibly on the server/UI side.
+    """
+    task = asyncio.create_task(run_ocr_for_page(session=session, page=page))
+    _LIVE_PAGE_TASKS[job.job_uuid] = task
+    try:
+        while True:
+            done, _pending = await asyncio.wait(
+                {task},
+                timeout=_CANCEL_POLL_INTERVAL_SECONDS,
+            )
+            if task in done:
+                await task
+                return
+
+            await session.refresh(job)
+            payload: dict[str, Any] = job.payload or {}
+            if bool(payload.get("cancel_requested")):
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise OcrAutoRunCancelled
+    finally:
+        _LIVE_PAGE_TASKS.pop(job.job_uuid, None)
+        if not task.done():
+            task.cancel()
 
 
 async def start_ocr_auto_run_job(
@@ -222,12 +267,37 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
 
         try:
             await asyncio.wait_for(
-                run_ocr_for_page(session=session, page=page),
+                _run_page_with_cancel_monitor(
+                    session=session,
+                    job=job,
+                    page=page,
+                ),
                 timeout=PER_PAGE_TIMEOUT_SECONDS,
             )
             # Persist this page's OCR-PO + revision before the next
             # iteration so progress is durable across crashes.
             await session.commit()
+        except OcrAutoRunCancelled:
+            logger.info(
+                "ocr_auto_run.page.cancelled",
+                extra={
+                    "job_uuid": str(job.job_uuid),
+                    "page_index": page.page_index,
+                    "processed_count": processed,
+                },
+            )
+            await session.rollback()
+            await fail_job(
+                session=session,
+                job=job,
+                error={
+                    "phase": "user_cancelled",
+                    "page_index": page.page_index,
+                    "processed_count": processed,
+                },
+            )
+            await session.commit()
+            raise
         except TimeoutError:
             logger.exception(
                 "ocr_auto_run.page.timeout",
@@ -250,7 +320,7 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
             )
             await session.commit()
             return
-        except (PageOcrError, OcrError, SQLAlchemyError) as exc:
+        except (PageOcrError, OcrError, SQLAlchemyError, Exception) as exc:
             logger.exception(
                 "ocr_auto_run.page.error",
                 extra={
@@ -343,6 +413,9 @@ async def request_cancel(*, session: AsyncSession, job: Job) -> Job:
     payload: dict[str, Any] = job.payload or {}
     payload["cancel_requested"] = True
     flag_modified(job, "payload")
+    live_task = _LIVE_PAGE_TASKS.get(job.job_uuid)
+    if live_task is not None and not live_task.done():
+        live_task.cancel()
     await session.flush()
     return job
 
@@ -375,22 +448,29 @@ async def reap_orphan_jobs(
         select(Job)
         .where(Job.job_type == OCR_AUTO_RUN_JOB_TYPE)
         .where(Job.state.in_([JobState.RUNNING.value, JobState.PENDING.value]))
-        .where(Job.updated_at < threshold)
     )
-    orphans = list(result.scalars())
+    candidates = list(result.scalars())
     reaped: list[_uuid.UUID] = []
-    for job in orphans:
+    for job in candidates:
+        payload: dict[str, Any] = job.payload or {}
+        cancel_requested = bool(payload.get("cancel_requested"))
+        stale = job.updated_at < threshold
+        if not cancel_requested and not stale:
+            continue
         previous_state = job.state
+        phase = "cancel_requested_orphan" if cancel_requested else "server_restart_orphan"
         await fail_job(
             session=session,
             job=job,
             error={
-                "phase": "server_restart_orphan",
+                "phase": phase,
                 "previous_state": previous_state,
                 "reaped_at": datetime.now(UTC).isoformat(),
                 "threshold_seconds": threshold_seconds,
                 "note": (
-                    "No heartbeat for >threshold — worker process died. "
+                    "Job marked FAILED during orphan reap so the UI stops polling."
+                    if cancel_requested
+                    else "No heartbeat for >threshold — worker process died. "
                     "Job marked FAILED so the UI stops polling."
                 ),
             },

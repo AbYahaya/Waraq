@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from waraq.invariant.enums import LockFlag
 from waraq.ocr_export.exceptions import DocxArtefactFailed
 from waraq.schemas import Block, Page, Segment
+from waraq.text_state import resolve_segment_source_text
 
 # Canonical block-type → heading-style mapping. The OCR spec names six
 # block types; the DOCX layout pragmatically maps them to Word heading
@@ -178,7 +179,7 @@ async def build_ocr_docx(
 
         for seg, block, _page in rows:
             block_types_present.add(block.block_type)
-            text = seg.text_content or ""
+            text = await resolve_segment_source_text(session=session, segment=seg)
             if seg.lock_flag != LockFlag.NONE:
                 n_locked_segments += 1
             # Crude vocalization heuristic: any Arabic harakāt char in text.

@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # Sender address surfaced to recipients on email notifications.
     # When unset OR the API key is unset, email send is disabled.
     resend_from_email: str = "Waraq <noreply@waraq.local>"
+    # Comma-separated browser origins allowed to call the API from a
+    # separately hosted frontend, e.g. https://waraq.pages.dev.
+    cors_origins: str = ""
 
 
 @lru_cache(maxsize=1)
