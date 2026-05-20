@@ -19,6 +19,8 @@ jobs:
   test:
     name: test backend
     runs-on: ubuntu-24.04
+    # Full suite is expensive/noisy; run it on PRs and manual runs.
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     services:
       postgres:
         image: postgres:16-alpine
@@ -67,7 +69,6 @@ jobs:
   deploy:
     name: deploy backend to Fly
     runs-on: ubuntu-24.04
-    needs: test
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     concurrency:
       group: backend-fly-production

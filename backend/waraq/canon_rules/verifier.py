@@ -112,7 +112,10 @@ async def verify_canon_rules_for_export(
                     kind=CanonRuleViolationKind.EI2_TRANSLITERATION,
                 )
             )
-        if has_religious_formula_violations(text_to_check):
+        # Religious-formula glyph canonicalization applies to spelled-out
+        # honorifics wherever they appear in stored segment text. Check the
+        # full payload to avoid missing source-side forms in "src---tgt" rows.
+        if has_religious_formula_violations(text):
             violations.append(
                 CanonRuleViolation(
                     satz_uuid=satz_uuid,
