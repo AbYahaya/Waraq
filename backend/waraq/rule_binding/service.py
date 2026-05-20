@@ -128,9 +128,7 @@ async def find_glossary_matches_in_segment(
     if candidate_surface_forms is None:
         return []
 
-    haystack = (
-        await resolve_segment_source_text(session=session, segment=segment)
-    ).casefold()
+    haystack = (await resolve_segment_source_text(session=session, segment=segment)).casefold()
     matches: list[GlossaryMatch] = []
     seen: set[_uuid.UUID] = set()
     for surface in candidate_surface_forms:

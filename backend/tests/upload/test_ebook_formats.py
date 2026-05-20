@@ -124,16 +124,10 @@ def _empty_epub_bytes() -> bytes:
 class TestDetectFormatEbooks:
     def test_epub_by_suffix(self) -> None:
         # EPUB shares ZIP magic with DOCX/ODT; suffix-authoritative.
-        assert (
-            detect_format(filename="x.epub", head_bytes=b"PK\x03\x04stuff")
-            == UploadFormat.EPUB
-        )
+        assert detect_format(filename="x.epub", head_bytes=b"PK\x03\x04stuff") == UploadFormat.EPUB
 
     def test_mobi_by_suffix(self) -> None:
-        assert (
-            detect_format(filename="x.mobi", head_bytes=b"BOOKMOBI")
-            == UploadFormat.MOBI
-        )
+        assert detect_format(filename="x.mobi", head_bytes=b"BOOKMOBI") == UploadFormat.MOBI
 
     def test_azw_by_suffix(self) -> None:
         assert detect_format(filename="x.azw", head_bytes=b"") == UploadFormat.AZW
@@ -195,7 +189,10 @@ class TestExtractEpub:
             _epub_bytes(
                 [
                     ("Chapter 1", ["First chapter paragraph."]),
-                    ("Chapter 2", ["Second chapter paragraph one.", "Second chapter paragraph two."]),
+                    (
+                        "Chapter 2",
+                        ["Second chapter paragraph one.", "Second chapter paragraph two."],
+                    ),
                 ]
             )
         )
@@ -213,9 +210,7 @@ class TestExtractEpub:
 
     def test_arabic_text_preserved(self, tmp_path: Path) -> None:
         p = tmp_path / "x.epub"
-        p.write_bytes(
-            _epub_bytes([("Sura", ["بسم الله الرحمن الرحيم", "الحمد لله رب العالمين"])])
-        )
+        p.write_bytes(_epub_bytes([("Sura", ["بسم الله الرحمن الرحيم", "الحمد لله رب العالمين"])]))
         out = extract_paragraphs(path=p, fmt=UploadFormat.EPUB)
         assert "بسم الله الرحمن الرحيم" in out
         assert "الحمد لله رب العالمين" in out
@@ -351,9 +346,7 @@ class TestFinalizeEpub:
         assert po.payload["format"] == "epub"
         assert po.payload["skip_ocr"] is True
 
-    async def test_empty_epub_raises_empty_document(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_empty_epub_raises_empty_document(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         with pytest.raises(EmptyDocument):
             await _upload_one_chunk(

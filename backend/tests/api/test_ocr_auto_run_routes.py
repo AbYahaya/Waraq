@@ -344,13 +344,9 @@ class TestStatusEndpointSelfHeals:
                     )
                 )
                 await session.flush()
-                past = datetime.now(UTC) - timedelta(
-                    seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 60
-                )
+                past = datetime.now(UTC) - timedelta(seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 60)
                 await session.execute(
-                    sql_text(
-                        "UPDATE jobs SET updated_at = :ts WHERE job_uuid = :u"
-                    ),
+                    sql_text("UPDATE jobs SET updated_at = :ts WHERE job_uuid = :u"),
                     {"ts": past, "u": job_uuid},
                 )
         finally:

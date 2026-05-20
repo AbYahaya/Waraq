@@ -6,10 +6,9 @@ protects pagination/header marker lines from being translated or dropped.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Literal
-
 
 LineKind = Literal["text", "marker", "blank"]
 _TAG_RE = re.compile(r"\[\[(L\d{4})\]\]")
@@ -37,9 +36,7 @@ def is_pagination_or_marker_text(text: str) -> bool:
         return True
     if normalized.startswith("[") and normalized.endswith("]") and normalized[1:-1].isdigit():
         return True
-    if normalized.startswith("(") and normalized.endswith(")") and normalized[1:-1].isdigit():
-        return True
-    return False
+    return normalized.startswith("(") and normalized.endswith(")") and normalized[1:-1].isdigit()
 
 
 def build_tagged_translation_input(source_text: str) -> TaggedTranslationInput:
@@ -77,7 +74,11 @@ def split_tagged_translation_input(
     current_chars = 0
 
     for line in tagged.lines:
-        rendered = f"[[{line.tag}]] <BLANK_LINE>" if line.kind == "blank" else f"[[{line.tag}]] {line.source_text}"
+        rendered = (
+            f"[[{line.tag}]] <BLANK_LINE>"
+            if line.kind == "blank"
+            else f"[[{line.tag}]] {line.source_text}"
+        )
         projected_chars = current_chars + len(rendered) + (1 if current_rendered else 0)
         if current_lines and (len(current_lines) >= max_lines or projected_chars > max_chars):
             batches.append(

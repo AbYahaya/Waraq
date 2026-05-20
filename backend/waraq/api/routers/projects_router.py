@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid as _uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Response, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from waraq.api._ownership import owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
@@ -102,9 +103,8 @@ async def get_project_translation_availability(
             )
         ).all()
 
-        revision_summary: dict[_uuid.UUID, dict[str, object | None]] = {
-            satz_uuid: {"source_at": None, "target_at": None}
-            for satz_uuid in segment_uuids
+        revision_summary: dict[_uuid.UUID, dict[str, datetime | None]] = {
+            satz_uuid: {"source_at": None, "target_at": None} for satz_uuid in segment_uuids
         }
         for satz_uuid, change_source, created_at in revision_rows:
             summary = revision_summary[satz_uuid]

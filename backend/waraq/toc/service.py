@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.invariant.enums import OperationMode
 from waraq.revision.service import create_revision
-from waraq.schemas import Block, Page, Segment
+from waraq.schemas import Block, Page, Revision, Segment
+from waraq.schemas.enums import ChangeSource
 from waraq.text_state import (
     join_source_target_text,
     resolve_segment_text_state,

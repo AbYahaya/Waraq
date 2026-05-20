@@ -1,13 +1,42 @@
-name: backend tests
+name: backend CI and deploy
 
 on:
   push:
     branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/test.yml"
   pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
+    name: test backend
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: waraq
+          POSTGRES_PASSWORD: waraq
+          POSTGRES_DB: waraq_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U waraq -d waraq_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      WARAQ_TEST_DATABASE_URL: postgresql+asyncpg://waraq:waraq@localhost:5432/waraq_test
+      DATABASE_URL: postgresql+asyncpg://waraq:waraq@localhost:5432/waraq_test
+      JWT_SECRET: ci-only-jwt-secret
     defaults:
       run:
         working-directory: backend
@@ -27,8 +56,29 @@ jobs:
         run: ruff format --check waraq tests
       - name: Typecheck (mypy strict)
         run: mypy waraq
+      - name: Apply database migrations
+        run: alembic upgrade head
       - name: Tests
         run: pytest -v
       # HG-S0-1: H-test family must be green before any sprint-0 ticket merges.
       - name: Hard Gate — H-test family green
         run: pytest -v -m "h1 or h2 or h4 or h5 or h6 or h7"
+
+  deploy:
+    name: deploy backend to Fly
+    runs-on: ubuntu-24.04
+    needs: test
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    concurrency:
+      group: backend-fly-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy
+        run: flyctl deploy --remote-only --wait-timeout 15m --release-command-timeout 10m -a waraq-backend-yabdulrauf
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -27,9 +27,7 @@ from waraq.schemas import Account
 def _admin_env(monkeypatch: pytest.MonkeyPatch, email: str) -> None:
     """Add `email` to ADMIN_EMAILS env so register auto-approves it."""
     existing = os.environ.get("ADMIN_EMAILS", "")
-    monkeypatch.setenv(
-        "ADMIN_EMAILS", f"{existing},{email}".lstrip(",")
-    )
+    monkeypatch.setenv("ADMIN_EMAILS", f"{existing},{email}".lstrip(","))
     from waraq.db.session import get_settings
 
     get_settings.cache_clear()
@@ -122,9 +120,7 @@ class TestLoginGate:
 
 @pytest.mark.asyncio
 class TestAdminAdmissionsEndpoints:
-    async def test_pending_endpoint_requires_admin(
-        self, auth_client: httpx.AsyncClient
-    ) -> None:
+    async def test_pending_endpoint_requires_admin(self, auth_client: httpx.AsyncClient) -> None:
         # The auth_client fixture's email is an admin (added to
         # ADMIN_EMAILS at fixture time), so this should succeed.
         # First check that the endpoint exists + returns a list shape.
@@ -164,9 +160,7 @@ class TestAdminAdmissionsEndpoints:
         try:
             async with sm() as s:
                 applicant = (
-                    await s.execute(
-                        select(Account).where(Account.email == non_admin_email)
-                    )
+                    await s.execute(select(Account).where(Account.email == non_admin_email))
                 ).scalar_one()
         finally:
             await engine.dispose()
@@ -222,9 +216,7 @@ class TestAdminAdmissionsEndpoints:
         try:
             async with sm() as s:
                 applicant = (
-                    await s.execute(
-                        select(Account).where(Account.email == pending_email)
-                    )
+                    await s.execute(select(Account).where(Account.email == pending_email))
                 ).scalar_one()
         finally:
             await engine.dispose()
@@ -277,9 +269,7 @@ class TestAdminAdmissionsEndpoints:
         try:
             async with sm() as s:
                 applicant = (
-                    await s.execute(
-                        select(Account).where(Account.email == applicant_email)
-                    )
+                    await s.execute(select(Account).where(Account.email == applicant_email))
                 ).scalar_one()
         finally:
             await engine.dispose()
@@ -313,9 +303,7 @@ class TestAdminAdmissionsEndpoints:
         # approve it again — should 409.
         me = await auth_client.get("/auth/me")
         account_uuid = me.json()["account_uuid"]
-        resp = await auth_client.post(
-            f"/admin/admissions/{account_uuid}/approve"
-        )
+        resp = await auth_client.post(f"/admin/admissions/{account_uuid}/approve")
         assert resp.status_code == 409
 
 

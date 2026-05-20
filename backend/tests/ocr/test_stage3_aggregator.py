@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.audit._helpers import seed_project, seed_segment
-from waraq.ocr.openai_ocr import OpenAiOcrResult
 from waraq.ocr.consensus import (
     AGREEMENT_DIVERGENT,
     AGREEMENT_EXACT_MATCH,
@@ -18,6 +17,7 @@ from waraq.ocr.consensus import (
     EngineResult,
     run_engines,
 )
+from waraq.ocr.openai_ocr import OpenAiOcrResult
 from waraq.ocr.routing import OcrEngine
 from waraq.ocr.stage3 import (
     DIVERGENCE_COLLAPSE,

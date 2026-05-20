@@ -27,6 +27,7 @@ import logging
 import os
 import uuid as _uuid
 from collections.abc import Sequence
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -108,10 +109,8 @@ async def _run_page_with_cancel_monitor(
             payload: dict[str, Any] = job.payload or {}
             if bool(payload.get("cancel_requested")):
                 task.cancel()
-                try:
+                with suppress(asyncio.CancelledError):
                     await task
-                except asyncio.CancelledError:
-                    pass
                 raise OcrAutoRunCancelled
     finally:
         _LIVE_PAGE_TASKS.pop(job.job_uuid, None)
@@ -389,9 +388,7 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
     )
 
 
-async def _ausstehend_pages(
-    session: AsyncSession, project_uuid: _uuid.UUID
-) -> Sequence[Page]:
+async def _ausstehend_pages(session: AsyncSession, project_uuid: _uuid.UUID) -> Sequence[Page]:
     result = await session.execute(
         select(Page)
         .where(Page.project_uuid == project_uuid)

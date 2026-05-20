@@ -166,6 +166,16 @@ Read order:
   - Fly's normal release creation timed out after pushing the final image, so the existing machine was updated directly to the final image tag and started; the machine is healthy even though older Fly release rows may still show `pending`
   - added `poppler-utils` to the runtime image after deployed OCR reported `pdftoppm` missing; production now resolves `/usr/bin/pdftoppm` (`pdftoppm version 22.12.0`)
   - ran the app's OCR auto-run orphan reaper against production after the poppler rollout; there were no remaining pending/running `ocr_auto_run` jobs
+  - hardened Fly deploy behavior so release timeouts should not become normal:
+    - `auto_stop_machines = 'off'`
+    - `min_machines_running = 1`
+    - health-check grace period increased to 60s
+    - Alembic migrations moved to Fly `[deploy].release_command`
+    - Docker web `CMD` now starts only Uvicorn
+  - deployed the hardened Fly config successfully:
+    - release command machine ran `alembic upgrade head` and exited successfully
+    - Fly release `v8` completed
+    - app machine `e82e2e5f24e348` was started with 1/1 health checks passing
 - Deployment docs updated:
   - [infra/DEPLOY.md](./infra/DEPLOY.md)
   - [backend/fly.toml](./backend/fly.toml)
@@ -180,6 +190,28 @@ Read order:
   - transient status errors give a `Retry` button
 - File changed for that UI hardening:
   - [frontend/src/components/OcrAutoRunPanel.tsx](./frontend/src/components/OcrAutoRunPanel.tsx)
+
+- Wired backend auto-deploy through GitHub Actions:
+  - existing backend CI workflow now has a `deploy backend to Fly` job
+  - backend CI now starts a disposable Postgres service, sets
+    `WARAQ_TEST_DATABASE_URL`, and runs `alembic upgrade head` before pytest
+  - deploy runs only after backend tests pass
+  - deploy triggers on pushes to `main` that touch `backend/**` or `.github/workflows/test.yml`
+  - PRs still run tests only
+  - manual deploy is available through `workflow_dispatch`
+  - GitHub must have repository secret `FLY_API_TOKEN`
+- File changed for backend auto-deploy:
+  - [.github/workflows/test.yml](./.github/workflows/test.yml)
+
+- Fixed the backend CI lint/typecheck failures reported by GitHub Actions:
+  - ran Ruff safe fixes and Ruff format over backend source/tests
+  - added missing imports uncovered by lint/typecheck
+  - clarified optional project UUID handling in translation protected-passage resolution
+  - renamed OCR page-wide Stage-3 locals to avoid mypy redefinition errors
+  - local checks now pass:
+    - `ruff check waraq tests`
+    - `ruff format --check waraq tests`
+    - `mypy waraq`
 
 ## Key Diagnosis
 
@@ -232,6 +264,12 @@ After the latest patch:
 - backend `CORS_ORIGINS` is set to `https://waraq-mauve.vercel.app`; public preflight returned 200 with the expected `access-control-allow-origin`
 - the deployed backend image includes `poppler-utils`, so PDF-to-image rasterization for OCR is available on Fly
 - once the frontend change is deployed, Auto-OCR status errors should surface clearly instead of appearing as an endless running state
+- Fly deploys are now configured as a paid always-warm tester backend, not scale-to-zero:
+  migrations run as a release command and the web process starts directly
+- once `.github/workflows/test.yml` is pushed and `FLY_API_TOKEN` is added
+  in GitHub Actions secrets, backend pushes to `main` will auto-deploy to Fly
+- backend CI should no longer fail at Ruff lint; CI also has its own Postgres
+  test service so the test job is not dependent on a developer machine
 
 But:
 

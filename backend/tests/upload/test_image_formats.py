@@ -94,14 +94,10 @@ class TestDetectFormat:
         assert detect_format(filename="x.bin", head_bytes=b"%PDF-1.7\n") == UploadFormat.PDF
 
     def test_jpeg_by_magic(self) -> None:
-        assert (
-            detect_format(filename="x.bin", head_bytes=_jpeg_bytes()[:16]) == UploadFormat.JPEG
-        )
+        assert detect_format(filename="x.bin", head_bytes=_jpeg_bytes()[:16]) == UploadFormat.JPEG
 
     def test_png_by_magic(self) -> None:
-        assert (
-            detect_format(filename="x.bin", head_bytes=_png_bytes()[:16]) == UploadFormat.PNG
-        )
+        assert detect_format(filename="x.bin", head_bytes=_png_bytes()[:16]) == UploadFormat.PNG
 
     def test_tiff_by_magic_little_endian(self) -> None:
         assert (
@@ -149,8 +145,7 @@ class TestDetectFormat:
     def test_magic_wins_over_misnamed_suffix(self) -> None:
         # `book.pdf` whose body is actually a JPEG — magic must win.
         assert (
-            detect_format(filename="book.pdf", head_bytes=_jpeg_bytes()[:16])
-            == UploadFormat.JPEG
+            detect_format(filename="book.pdf", head_bytes=_jpeg_bytes()[:16]) == UploadFormat.JPEG
         )
 
     def test_jpeg_jpg_extensions_alias(self) -> None:
@@ -280,9 +275,7 @@ class TestFinalizeImageUpload:
         )
         assert len(pages) == 1
 
-    async def test_multi_page_tiff_materializes_n_pages(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_multi_page_tiff_materializes_n_pages(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         _, pages = await _upload_one_chunk(
             db_session,

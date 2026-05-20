@@ -25,9 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tests.audit._helpers import seed_project
 from waraq.identity import new_uuid
 from waraq.ocr.auto_run import (
+    _LIVE_PAGE_TASKS,
     OCR_AUTO_RUN_JOB_TYPE,
     STALE_HEARTBEAT_THRESHOLD_SECONDS,
-    _LIVE_PAGE_TASKS,
+    OcrAutoRunCancelled,
     _execute,
     find_in_flight_for_project,
     reap_orphan_jobs,
@@ -58,9 +59,7 @@ async def _seed_page(
 
 @pytest.mark.asyncio
 class TestStartOcrAutoRunJob:
-    async def test_creates_pending_job_with_snapshot_total(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_creates_pending_job_with_snapshot_total(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         await _seed_page(db_session, project.project_uuid, page_index=1)
         await _seed_page(db_session, project.project_uuid, page_index=2)
@@ -81,9 +80,7 @@ class TestStartOcrAutoRunJob:
         assert payload["processed_count"] == 0
         assert payload["cancel_requested"] is False
 
-    async def test_empty_project_returns_total_zero(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_empty_project_returns_total_zero(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         job = await start_ocr_auto_run_job(session=db_session, project=project)
         assert (job.payload or {})["total_pages"] == 0
@@ -164,7 +161,6 @@ class TestExecuteLoop:
         monkeypatch.setattr(mod, "run_ocr_for_page", _stub)
 
         job = await start_ocr_auto_run_job(session=db_session, project=project)
-        from waraq.ocr.auto_run import OcrAutoRunCancelled
 
         with pytest.raises(OcrAutoRunCancelled):
             await _execute(session=db_session, job=job)
@@ -182,8 +178,9 @@ class TestExecuteLoop:
         project = await seed_project(db_session)
         await _seed_page(db_session, project.project_uuid, page_index=1)
 
-        import waraq.ocr.auto_run as mod
         from sqlalchemy.orm.attributes import flag_modified
+
+        import waraq.ocr.auto_run as mod
 
         started = asyncio.Event()
 
@@ -362,9 +359,7 @@ class TestReapOrphanJobs:
         await start_job(session=db_session, job=job)
         await db_session.flush()
         # Backdate updated_at past the threshold so the row looks stale.
-        past = datetime.now(UTC) - timedelta(
-            seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 60
-        )
+        past = datetime.now(UTC) - timedelta(seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 60)
         await db_session.execute(
             sql_text("UPDATE jobs SET updated_at = :ts WHERE job_uuid = :u"),
             {"ts": past, "u": job.job_uuid},
@@ -384,9 +379,7 @@ class TestReapOrphanJobs:
         project = await seed_project(db_session)
         job = await start_ocr_auto_run_job(session=db_session, project=project)
         # Still PENDING. Backdate it.
-        past = datetime.now(UTC) - timedelta(
-            seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 60
-        )
+        past = datetime.now(UTC) - timedelta(seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 60)
         await db_session.flush()
         await db_session.execute(
             sql_text("UPDATE jobs SET updated_at = :ts WHERE job_uuid = :u"),
@@ -398,9 +391,7 @@ class TestReapOrphanJobs:
         assert job.state == JobState.FAILED.value
         assert (job.error or {})["previous_state"] == JobState.PENDING.value
 
-    async def test_does_not_reap_fresh_running_job(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_does_not_reap_fresh_running_job(self, db_session: AsyncSession) -> None:
         from waraq.jobs import start_job
 
         project = await seed_project(db_session)
@@ -413,9 +404,7 @@ class TestReapOrphanJobs:
         await db_session.refresh(job)
         assert job.state == JobState.RUNNING.value
 
-    async def test_reaps_fresh_cancel_requested_running_job(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_reaps_fresh_cancel_requested_running_job(self, db_session: AsyncSession) -> None:
         from waraq.jobs import start_job
 
         project = await seed_project(db_session)
@@ -432,9 +421,7 @@ class TestReapOrphanJobs:
         assert job.state == JobState.FAILED.value
         assert (job.error or {})["phase"] == "cancel_requested_orphan"
 
-    async def test_does_not_reap_terminal_jobs(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_does_not_reap_terminal_jobs(self, db_session: AsyncSession) -> None:
         from datetime import datetime, timedelta
 
         from sqlalchemy import text as sql_text
@@ -447,9 +434,7 @@ class TestReapOrphanJobs:
         await complete_job(session=db_session, job=job, result={})
         await db_session.flush()
         # Even if very old, COMPLETED is untouchable.
-        past = datetime.now(UTC) - timedelta(
-            seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 600
-        )
+        past = datetime.now(UTC) - timedelta(seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS + 600)
         await db_session.execute(
             sql_text("UPDATE jobs SET updated_at = :ts WHERE job_uuid = :u"),
             {"ts": past, "u": job.job_uuid},
@@ -459,9 +444,7 @@ class TestReapOrphanJobs:
         await db_session.refresh(job)
         assert job.state == JobState.COMPLETED.value
 
-    async def test_does_not_reap_unseeded_fresh_jobs(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_does_not_reap_unseeded_fresh_jobs(self, db_session: AsyncSession) -> None:
         """Sanity check: a freshly-seeded job is NOT reaped by a call
         whose threshold matches our heartbeat policy. (We can't assert
         the full reap list is empty — the test suite shares a DB and

@@ -22,7 +22,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.audit._helpers import seed_project, seed_segment
-from waraq.ocr.openai_ocr import OpenAiOcrResult
 from waraq.ocr.consensus import (
     AGREEMENT_DIVERGENT,
     AGREEMENT_ENGINE_ERROR,
@@ -32,6 +31,7 @@ from waraq.ocr.consensus import (
     EngineResult,
     run_engines,
 )
+from waraq.ocr.openai_ocr import OpenAiOcrResult
 from waraq.ocr.routing import OcrEngine, engines_for, primary_engine
 from waraq.ocr.service import run_ocr_job, start_ocr_job
 from waraq.schemas import ProvenanceObject

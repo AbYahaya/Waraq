@@ -16,12 +16,12 @@ import os
 from collections.abc import Awaitable, Callable
 
 from waraq.canon_rules import apply_all as apply_canon_rules
-from waraq.translation.service import TranslationContext
 from waraq.translation.line_protocol import (
     build_tagged_translation_input,
     parse_tagged_translation_output,
     split_tagged_translation_input,
 )
+from waraq.translation.service import TranslationContext
 
 Translator = Callable[[str, TranslationContext], Awaitable[str]]
 

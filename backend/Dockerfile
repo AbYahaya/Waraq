@@ -82,7 +82,6 @@ USER waraq
 
 EXPOSE 8080
 
-# On boot: run pending Alembic migrations, then start uvicorn. Fly
-# handles process lifecycle; `--proxy-headers` lets FastAPI honor the
-# X-Forwarded-* headers Fly's edge sets.
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn waraq.api.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips '*'"]
+# Fly runs Alembic as a release command before switching traffic to the
+# new image, so the web process only has to start the ASGI server.
+CMD ["uvicorn", "waraq.api.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*"]

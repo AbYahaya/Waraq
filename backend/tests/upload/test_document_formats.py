@@ -98,16 +98,10 @@ def _html_bytes(paragraphs: list[str]) -> bytes:
 class TestDetectFormatDocs:
     def test_docx_by_suffix(self) -> None:
         # DOCX shares ZIP magic with ODT/EPUB; suffix is authoritative.
-        assert (
-            detect_format(filename="x.docx", head_bytes=b"PK\x03\x04stuff")
-            == UploadFormat.DOCX
-        )
+        assert detect_format(filename="x.docx", head_bytes=b"PK\x03\x04stuff") == UploadFormat.DOCX
 
     def test_odt_by_suffix(self) -> None:
-        assert (
-            detect_format(filename="x.odt", head_bytes=b"PK\x03\x04stuff")
-            == UploadFormat.ODT
-        )
+        assert detect_format(filename="x.odt", head_bytes=b"PK\x03\x04stuff") == UploadFormat.ODT
 
     def test_txt_by_suffix(self) -> None:
         assert detect_format(filename="x.txt", head_bytes=b"hello") == UploadFormat.TXT
@@ -119,9 +113,7 @@ class TestDetectFormatDocs:
         )
 
     def test_html_by_suffix(self) -> None:
-        assert (
-            detect_format(filename="x.html", head_bytes=b"<!DOCTYPE html>") == UploadFormat.HTML
-        )
+        assert detect_format(filename="x.html", head_bytes=b"<!DOCTYPE html>") == UploadFormat.HTML
 
     def test_htm_alias(self) -> None:
         assert detect_format(filename="x.htm", head_bytes=b"") == UploadFormat.HTML
@@ -132,10 +124,7 @@ class TestDetectFormatDocs:
         # direct-text group means we trust the suffix; the file would
         # then fail at extraction time (python-docx raises), which is
         # the correct behaviour.
-        assert (
-            detect_format(filename="book.docx", head_bytes=b"%PDF-1.7\n")
-            == UploadFormat.DOCX
-        )
+        assert detect_format(filename="book.docx", head_bytes=b"%PDF-1.7\n") == UploadFormat.DOCX
 
 
 class TestIsDirectTextFormat:
@@ -350,9 +339,7 @@ async def _upload_one_chunk(
 
 @pytest.mark.asyncio
 class TestFinalizeDirectText:
-    async def test_txt_materializes_page_block_and_segments(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_txt_materializes_page_block_and_segments(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         _, pages = await _upload_one_chunk(
             db_session,
@@ -368,9 +355,7 @@ class TestFinalizeDirectText:
         assert page.ocr_status == OcrStatus.GO
 
         # One Block, MAIN_TEXT.
-        block_q = await db_session.execute(
-            select(Block).where(Block.page_uuid == page.page_uuid)
-        )
+        block_q = await db_session.execute(select(Block).where(Block.page_uuid == page.page_uuid))
         blocks = list(block_q.scalars())
         assert len(blocks) == 1
         assert blocks[0].block_type == BlockClass.MAIN_TEXT.value

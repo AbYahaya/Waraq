@@ -113,13 +113,9 @@ class TestAuthenticateRefusesNonApproved:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("ADMIN_EMAILS", raising=False)
-        await register_account(
-            session=db_session, email="wait@example.com", password="hunter2"
-        )
+        await register_account(session=db_session, email="wait@example.com", password="hunter2")
         with pytest.raises(AccountPendingApproval):
-            await authenticate(
-                session=db_session, email="wait@example.com", password="hunter2"
-            )
+            await authenticate(session=db_session, email="wait@example.com", password="hunter2")
 
     async def test_rejected_account_raises_rejected_with_reason(
         self,
@@ -139,9 +135,7 @@ class TestAuthenticateRefusesNonApproved:
             reason="Spam application",
         )
         with pytest.raises(AccountRejected) as exc:
-            await authenticate(
-                session=db_session, email="no@example.com", password="hunter2"
-            )
+            await authenticate(session=db_session, email="no@example.com", password="hunter2")
         assert exc.value.reason == "Spam application"
 
 
@@ -162,15 +156,9 @@ class TestListPending:
         # the microsecond when three INSERTs land in the same call —
         # we assert membership rather than order.
         monkeypatch.delenv("ADMIN_EMAILS", raising=False)
-        a = await register_account(
-            session=db_session, email="a@x.com", password="x"
-        )
-        b = await register_account(
-            session=db_session, email="b@x.com", password="x"
-        )
-        c = await register_account(
-            session=db_session, email="c@x.com", password="x"
-        )
+        a = await register_account(session=db_session, email="a@x.com", password="x")
+        b = await register_account(session=db_session, email="b@x.com", password="x")
+        c = await register_account(session=db_session, email="c@x.com", password="x")
         pending = await list_pending_accounts(session=db_session)
         uuids = {acc.account_uuid for acc in pending}
         assert a.account_uuid in uuids
@@ -203,13 +191,9 @@ class TestApproveReject:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("ADMIN_EMAILS", "admin@x.com")
-        admin = await register_account(
-            session=db_session, email="admin@x.com", password="x"
-        )
+        admin = await register_account(session=db_session, email="admin@x.com", password="x")
         monkeypatch.delenv("ADMIN_EMAILS", raising=False)
-        applicant = await register_account(
-            session=db_session, email="new@x.com", password="x"
-        )
+        applicant = await register_account(session=db_session, email="new@x.com", password="x")
         assert applicant.approval_status == ApprovalStatus.PENDING
 
         await approve_account(session=db_session, account=applicant, approver=admin)
@@ -224,13 +208,9 @@ class TestApproveReject:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("ADMIN_EMAILS", "admin@x.com")
-        admin = await register_account(
-            session=db_session, email="admin@x.com", password="x"
-        )
+        admin = await register_account(session=db_session, email="admin@x.com", password="x")
         monkeypatch.delenv("ADMIN_EMAILS", raising=False)
-        applicant = await register_account(
-            session=db_session, email="overturn@x.com", password="x"
-        )
+        applicant = await register_account(session=db_session, email="overturn@x.com", password="x")
         await reject_account(
             session=db_session,
             account=applicant,
@@ -249,13 +229,9 @@ class TestApproveReject:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("ADMIN_EMAILS", "admin@x.com")
-        admin = await register_account(
-            session=db_session, email="admin@x.com", password="x"
-        )
+        admin = await register_account(session=db_session, email="admin@x.com", password="x")
         monkeypatch.delenv("ADMIN_EMAILS", raising=False)
-        applicant = await register_account(
-            session=db_session, email="reject@x.com", password="x"
-        )
+        applicant = await register_account(session=db_session, email="reject@x.com", password="x")
         await reject_account(
             session=db_session,
             account=applicant,
@@ -272,16 +248,10 @@ class TestApproveReject:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("ADMIN_EMAILS", "admin@x.com")
-        admin = await register_account(
-            session=db_session, email="admin@x.com", password="x"
-        )
+        admin = await register_account(session=db_session, email="admin@x.com", password="x")
         monkeypatch.delenv("ADMIN_EMAILS", raising=False)
-        applicant = await register_account(
-            session=db_session, email="r2@x.com", password="x"
-        )
-        await reject_account(
-            session=db_session, account=applicant, approver=admin, reason="   "
-        )
+        applicant = await register_account(session=db_session, email="r2@x.com", password="x")
+        await reject_account(session=db_session, account=applicant, approver=admin, reason="   ")
         assert applicant.rejection_reason is None
 
     async def test_approve_already_approved_raises_already_decided(
@@ -290,9 +260,7 @@ class TestApproveReject:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("ADMIN_EMAILS", "admin@x.com")
-        admin = await register_account(
-            session=db_session, email="admin@x.com", password="x"
-        )
+        admin = await register_account(session=db_session, email="admin@x.com", password="x")
         # admin is already approved.
         with pytest.raises(AlreadyDecided) as exc:
             await approve_account(session=db_session, account=admin, approver=admin)
@@ -304,16 +272,10 @@ class TestApproveReject:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("ADMIN_EMAILS", "admin@x.com")
-        admin = await register_account(
-            session=db_session, email="admin@x.com", password="x"
-        )
+        admin = await register_account(session=db_session, email="admin@x.com", password="x")
         monkeypatch.delenv("ADMIN_EMAILS", raising=False)
-        applicant = await register_account(
-            session=db_session, email="twice@x.com", password="x"
-        )
-        await reject_account(
-            session=db_session, account=applicant, approver=admin, reason="first"
-        )
+        applicant = await register_account(session=db_session, email="twice@x.com", password="x")
+        await reject_account(session=db_session, account=applicant, approver=admin, reason="first")
         with pytest.raises(AlreadyDecided):
             await reject_account(
                 session=db_session, account=applicant, approver=admin, reason="second"

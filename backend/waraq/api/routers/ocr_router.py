@@ -374,9 +374,7 @@ async def auto_run_project(
 
     from waraq.db.session import _sessionmaker
 
-    background_tasks.add_task(
-        run_ocr_auto_run_job_in_background, job.job_uuid, _sessionmaker
-    )
+    background_tasks.add_task(run_ocr_auto_run_job_in_background, job.job_uuid, _sessionmaker)
     logger.info(
         "ocr_auto_run.queued",
         extra={
@@ -412,19 +410,11 @@ async def get_ocr_job_status(
     deaths that happen after boot.
     """
     job: Job | None = await session.get(Job, job_uuid)
-    if (
-        job is None
-        or job.job_type != OCR_AUTO_RUN_JOB_TYPE
-        or job.project_uuid is None
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found"
-        )
+    if job is None or job.job_type != OCR_AUTO_RUN_JOB_TYPE or job.project_uuid is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found")
     project: Project | None = await session.get(Project, job.project_uuid)
     if project is None or project.account_uuid != current.account_uuid:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found")
     if job.state in ("running", "pending"):
         reaped = await reap_orphan_jobs(
             session=session, threshold_seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS
@@ -458,19 +448,11 @@ async def cancel_ocr_job(
     Idempotent — calling cancel on a terminal job is a no-op.
     """
     job: Job | None = await session.get(Job, job_uuid)
-    if (
-        job is None
-        or job.job_type != OCR_AUTO_RUN_JOB_TYPE
-        or job.project_uuid is None
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found"
-        )
+    if job is None or job.job_type != OCR_AUTO_RUN_JOB_TYPE or job.project_uuid is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found")
     project: Project | None = await session.get(Project, job.project_uuid)
     if project is None or project.account_uuid != current.account_uuid:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OCR job not found")
     job = await request_cancel(session=session, job=job)
     await session.commit()
     return _job_to_status(job)
@@ -490,13 +472,9 @@ async def get_in_flight_ocr_job(
     most-recent non-terminal OCR auto-run Job for the project, or
     null if none."""
     project = await owned_project_or_404(session, project_uuid, current.account_uuid)
-    await reap_orphan_jobs(
-        session=session, threshold_seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS
-    )
+    await reap_orphan_jobs(session=session, threshold_seconds=STALE_HEARTBEAT_THRESHOLD_SECONDS)
     await session.commit()
-    job = await find_in_flight_for_project(
-        session=session, project_uuid=project.project_uuid
-    )
+    job = await find_in_flight_for_project(session=session, project_uuid=project.project_uuid)
     if job is None:
         return None
     return _job_to_status(job)

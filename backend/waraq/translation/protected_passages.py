@@ -10,6 +10,7 @@ attached to the translation provenance.
 from __future__ import annotations
 
 import uuid as _uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.db.session import get_settings
 from waraq.hadith import HadithCandidateHit, Quellenrolle, run_full_hadith_verification
-from waraq.hadith.dorar import DorarHadith, search_via_api as dorar_search_via_api
+from waraq.hadith.dorar import DorarHadith
+from waraq.hadith.dorar import search_via_api as dorar_search_via_api
 from waraq.preflight.enums import HadithStellenTyp
 from waraq.preflight.hadith import record_hadith_status
 from waraq.quran import (
@@ -202,11 +204,16 @@ async def _resolve_hadith_translation(
 
     aggregate = await session.get(HadithAggregateResult, outcome.run.aggregate_uuid)
     hadith_rows = (
-        await session.execute(
-            select(HadithSingleSourceResult)
-            .where(HadithSingleSourceResult.aggregate_uuid == outcome.run.aggregate_uuid)
+        (
+            await session.execute(
+                select(HadithSingleSourceResult).where(
+                    HadithSingleSourceResult.aggregate_uuid == outcome.run.aggregate_uuid
+                )
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if aggregate is None:
         return None
     return ProtectedTranslationResult(
@@ -258,7 +265,9 @@ def _build_quran_reference_payload_from_passage(
     return {
         "kind": "quran",
         "title": "Qur'an reference",
-        "subtitle": _format_quran_range(passage.sura_index, passage.aya_index_start, passage.aya_index_end),
+        "subtitle": _format_quran_range(
+            passage.sura_index, passage.aya_index_start, passage.aya_index_end
+        ),
         "sources": [
             _format_quran_source_line(
                 label="Arabic source",
@@ -334,7 +343,7 @@ def _format_quran_source_line(
 def _build_hadith_reference_payload(
     *,
     aggregate: HadithAggregateResult,
-    rows: list[HadithSingleSourceResult],
+    rows: Sequence[HadithSingleSourceResult],
 ) -> dict[str, Any]:
     source_count = len(rows)
     source_label = "source" if source_count == 1 else "sources"

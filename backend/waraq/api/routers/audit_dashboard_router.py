@@ -165,9 +165,7 @@ async def get_audit_summary(
     current: CurrentAccount,
 ) -> ProjectAuditSummaryResponse:
     project = await owned_project_or_404(session, project_uuid, current.account_uuid)
-    summary = await summarize_project(
-        session=session, project_uuid=project.project_uuid
-    )
+    summary = await summarize_project(session=session, project_uuid=project.project_uuid)
     return ProjectAuditSummaryResponse(
         project_uuid=summary.project_uuid,
         total_pages=summary.total_pages,

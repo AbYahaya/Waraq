@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.decisions import create_decision_event
 from waraq.identity import new_uuid
-from waraq.invariant.enums import LockFlag
+from waraq.invariant.enums import LockFlag, OperationMode
 from waraq.ocr.error_classes import OcrErrorClass
 from waraq.ocr.review import record_ocr_error_instance
 from waraq.ocr_export import (
@@ -68,9 +68,7 @@ from waraq.schemas import (
     Revision,
     Segment,
 )
-from waraq.schemas.enums import DecisionSource, OcrStatus, POType, ScopeType
-from waraq.invariant.enums import OperationMode
-from waraq.schemas.enums import ChangeSource
+from waraq.schemas.enums import ChangeSource, DecisionSource, OcrStatus, POType, ScopeType
 
 
 async def _seed_project(

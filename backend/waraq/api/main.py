@@ -145,9 +145,7 @@ def create_app() -> FastAPI:
     from waraq.db.session import get_settings
 
     cors_origins = [
-        origin.strip()
-        for origin in get_settings().cors_origins.split(",")
-        if origin.strip()
+        origin.strip() for origin in get_settings().cors_origins.split(",") if origin.strip()
     ]
     if cors_origins:
         app.add_middleware(

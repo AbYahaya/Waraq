@@ -1,5 +1,5 @@
-from uuid import uuid4
 from types import SimpleNamespace
+from uuid import uuid4
 
 from waraq.translation.protected_passages import (
     _build_hadith_reference_payload,

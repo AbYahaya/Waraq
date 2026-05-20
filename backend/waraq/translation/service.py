@@ -500,10 +500,11 @@ async def _execute(
     # happen for translation jobs, but the pattern keeps tests with
     # bare-bones job rows working).
     chunk_resolver: ChunkContextResolver | None = None
-    if job.project_uuid is not None:
+    project_uuid = job.project_uuid
+    if project_uuid is not None:
         from waraq.schemas import Project
 
-        project: Project | None = await session.get(Project, job.project_uuid)
+        project: Project | None = await session.get(Project, project_uuid)
         if project is not None:
             chunk_resolver = await ChunkContextResolver.for_project(
                 session,
@@ -617,16 +618,18 @@ async def _execute(
                 if chunk_resolver is not None
                 else chunk_context
             )
-            protected = await resolve_protected_translation(
-                session=session,
-                project_uuid=job.project_uuid,
-                segment=segment,
-                source_text=input_text,
+            protected = (
+                await resolve_protected_translation(
+                    session=session,
+                    project_uuid=project_uuid,
+                    segment=segment,
+                    source_text=input_text,
+                )
+                if project_uuid is not None
+                else None
             )
             if protected is not None and protected.reference_payload is not None:
-                chunk_context = chunk_context.with_protected_reference(
-                    protected.reference_payload
-                )
+                chunk_context = chunk_context.with_protected_reference(protected.reference_payload)
             if protected is not None and protected.skip_reason is not None:
                 reason = protected.skip_reason
                 chunks.append(

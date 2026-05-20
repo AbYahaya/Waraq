@@ -86,18 +86,13 @@ def _make_zip(entries: list[tuple[str, bytes]]) -> bytes:
 class TestDetectFormatArchives:
     def test_zip_by_suffix(self) -> None:
         # ZIP shares magic with DOCX/ODT/EPUB; suffix is authoritative.
-        assert (
-            detect_format(filename="x.zip", head_bytes=b"PK\x03\x04stuff")
-            == UploadFormat.ZIP
-        )
+        assert detect_format(filename="x.zip", head_bytes=b"PK\x03\x04stuff") == UploadFormat.ZIP
 
     def test_rar_by_suffix(self) -> None:
         assert detect_format(filename="x.rar", head_bytes=b"Rar!") == UploadFormat.RAR
 
     def test_cbz_by_suffix(self) -> None:
-        assert (
-            detect_format(filename="x.cbz", head_bytes=b"PK\x03\x04") == UploadFormat.CBZ
-        )
+        assert detect_format(filename="x.cbz", head_bytes=b"PK\x03\x04") == UploadFormat.CBZ
 
     def test_cbr_by_suffix(self) -> None:
         assert detect_format(filename="x.cbr", head_bytes=b"Rar!") == UploadFormat.CBR
@@ -383,9 +378,7 @@ async def _upload_one_chunk(
 
 @pytest.mark.asyncio
 class TestFinalizeArchive:
-    async def test_cbz_three_images_yields_three_pages(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_cbz_three_images_yields_three_pages(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         _, pages = await _upload_one_chunk(
             db_session,
@@ -479,9 +472,7 @@ class TestFinalizeArchive:
                 data=_make_zip([]),
             )
 
-    async def test_corrupted_archive_at_finalize_raises(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_corrupted_archive_at_finalize_raises(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         with pytest.raises(ArchiveCorrupted):
             await _upload_one_chunk(

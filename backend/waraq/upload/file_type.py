@@ -233,8 +233,7 @@ def detect_format(*, filename: str, head_bytes: bytes) -> UploadFormat:
     if by_suffix is not None:
         return by_suffix
     raise UnsupportedFormat(
-        f"Unsupported upload format: suffix={suffix!r}, "
-        f"head_bytes_prefix={head_bytes[:16]!r}"
+        f"Unsupported upload format: suffix={suffix!r}, head_bytes_prefix={head_bytes[:16]!r}"
     )
 
 
@@ -388,9 +387,7 @@ def _count_djvu_pages(path: Path) -> int:
     try:
         return int(raw)
     except ValueError as exc:
-        raise DjvuToolsMissing(
-            f"djvused returned non-integer page count: {raw!r}"
-        ) from exc
+        raise DjvuToolsMissing(f"djvused returned non-integer page count: {raw!r}") from exc
 
 
 __all__ = [

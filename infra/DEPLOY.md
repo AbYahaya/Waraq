@@ -8,7 +8,7 @@ separately at the bottom (Vercel through GitHub or static-on-Fly).
 - Backend app: `waraq-backend-yabdulrauf`
 - Public URL: `https://waraq-backend-yabdulrauf.fly.dev`
 - Region: `fra`
-- Machine: `shared-cpu-1x`, `1gb`, autostop enabled
+- Machine: `shared-cpu-1x`, `1gb`, kept warm (`min_machines_running=1`)
 - Upload volume: `waraq_data`, 3 GB, mounted at `/data`
 - Database app: `waraq-db-yabdulrauf` (Fly Postgres, unmanaged)
 - Frontend URL: `https://waraq-mauve.vercel.app`
@@ -19,6 +19,8 @@ separately at the bottom (Vercel through GitHub or static-on-Fly).
   - CORS preflight from `https://waraq-mauve.vercel.app` returned 200
   - runtime OCR dependency check returned `/usr/bin/pdftoppm`
     (`pdftoppm version 22.12.0`)
+  - release-command deploy completed cleanly; latest release was `complete`
+    and the app machine had 1 passing health check
 
 ## Prerequisites
 
@@ -40,12 +42,24 @@ For local/manual deploys, use:
 flyctl auth login
 ```
 
+If `flyctl` is installed but your shell says `command not found`, use the
+direct path or add it to your shell PATH:
+
+```bash
+/home/abyahaya/.fly/bin/flyctl version
+echo 'export PATH="$HOME/.fly/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
 For GitHub Actions deploys, create a scoped deploy token after the Fly app
 exists, then save it as a GitHub repository secret named `FLY_API_TOKEN`:
 
 ```bash
-flyctl tokens create deploy -a <backend-app-name> --name github-deploy
+/home/abyahaya/.fly/bin/flyctl tokens create deploy -a waraq-backend-yabdulrauf --name github-actions
 ```
+
+In GitHub: repository **Settings → Secrets and variables → Actions → New
+repository secret**.
 
 ## Region
 
@@ -115,14 +129,53 @@ or commit the actual secret values.
 
 ## Deploy
 
+### Automatic GitHub deploy
+
+Backend auto-deploy is wired in `.github/workflows/test.yml`.
+
+It runs on:
+
+- pull requests that touch `backend/**` or the backend workflow file: tests only
+- pushes to `main` that touch `backend/**` or the backend workflow file:
+  tests first, then Fly deploy if tests pass
+- manual runs from the GitHub Actions tab via `workflow_dispatch`
+
+The test job starts a disposable Postgres service, sets
+`WARAQ_TEST_DATABASE_URL`, runs `alembic upgrade head`, and then runs the
+backend test suite. This keeps CI independent from any local `.env` or
+developer database.
+
+The deploy job uses:
+
 ```bash
-cd backend
-flyctl deploy -a waraq-backend-yabdulrauf
+flyctl deploy --remote-only --wait-timeout 15m --release-command-timeout 10m -a waraq-backend-yabdulrauf
 ```
 
-The Dockerfile runs `alembic upgrade head` on startup, so migrations
-apply automatically on first boot. Subsequent deploys re-apply any
-new revisions.
+Required GitHub secret:
+
+```text
+FLY_API_TOKEN
+```
+
+Generate it with the command in the **Access token note** section above.
+
+### Manual deploy
+
+```bash
+cd backend
+flyctl deploy -a waraq-backend-yabdulrauf --wait-timeout 15m
+```
+
+Fly runs `alembic upgrade head` as the app's release command before
+switching the web machine to the new image. This is deliberate:
+
+- failed migrations block the new release while the old image keeps serving
+- normal app boot only starts Uvicorn, so health checks do not wait on DB migrations
+- the single web machine is kept warm (`auto_stop_machines = 'off'`,
+  `min_machines_running = 1`) to avoid stopped-machine deploy/cold-start races
+
+This is a small paid tester backend now, not a scale-to-zero free-style
+deployment. That is the correct tradeoff for external testing.
 
 ## Smoke checks post-deploy
 
@@ -135,9 +188,16 @@ flyctl ssh console -a waraq-backend-yabdulrauf -C "which pdftoppm"
 ```
 
 If Fly reports `createRelease.release Timeout` after successfully pushing
-an image, check `flyctl releases -a waraq-backend-yabdulrauf`. During the
-initial deploy this happened twice while the image was already available.
-The safe fallback used was:
+an image, first check current status and releases:
+
+```bash
+flyctl status -a waraq-backend-yabdulrauf
+flyctl releases -a waraq-backend-yabdulrauf
+```
+
+With the current config this should be rare because the machine stays warm
+and migrations run in the release phase. If Fly's release API itself times
+out while the pushed image is clearly available, the emergency fallback is:
 
 ```bash
 flyctl machine update <machine-id> \
@@ -148,7 +208,10 @@ flyctl machine start <machine-id> -a waraq-backend-yabdulrauf
 ```
 
 Only use this fallback after confirming the pushed image is the one you
-want and the normal app release has not updated the machine.
+want and the normal app release has not updated the machine. If this
+fallback becomes routine again, treat Fly as unsuitable for this workload
+and move the backend to Render, Railway, DigitalOcean App Platform, or a
+small VPS.
 
 ## Frontend
 

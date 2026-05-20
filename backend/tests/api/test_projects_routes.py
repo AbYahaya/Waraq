@@ -201,9 +201,7 @@ class TestProjectDelete:
         resp = await auth_client.get(f"/projects/{project_uuid}")
         assert resp.status_code == 404
 
-    async def test_delete_unknown_project_returns_404(
-        self, auth_client: httpx.AsyncClient
-    ) -> None:
+    async def test_delete_unknown_project_returns_404(self, auth_client: httpx.AsyncClient) -> None:
         resp = await auth_client.delete(f"/projects/{new_uuid()}")
         assert resp.status_code == 404
 

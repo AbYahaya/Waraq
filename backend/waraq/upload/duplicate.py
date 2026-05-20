@@ -79,9 +79,7 @@ async def precheck_for_project(
     # Filename match: find upload Jobs in this project whose payload
     # has `original_filename` equal to the new filename.
     job_q = await session.execute(
-        select(Job)
-        .where(Job.project_uuid == project_uuid)
-        .where(Job.job_type == "upload")
+        select(Job).where(Job.project_uuid == project_uuid).where(Job.job_type == "upload")
     )
     filename_matches: list[DuplicateMatch] = []
     matching_job_uuids: set[_uuid.UUID] = set()
@@ -119,9 +117,7 @@ async def precheck_for_project(
                 )
 
     # Project-has-pages: any active Page in this project.
-    page_q = await session.execute(
-        select(Page).where(Page.project_uuid == project_uuid).limit(1)
-    )
+    page_q = await session.execute(select(Page).where(Page.project_uuid == project_uuid).limit(1))
     project_has_existing_pages = page_q.scalar_one_or_none() is not None
 
     return PrecheckResult(

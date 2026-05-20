@@ -65,6 +65,8 @@ from waraq.schemas import (
 )
 from waraq.schemas.enums import POType
 from waraq.text_state import resolve_segment_text_state
+
+
 async def _select_rule_binding_pos_for_project(
     *, session: AsyncSession, project_uuid: _uuid.UUID
 ) -> list[ProvenanceObject]:

@@ -61,6 +61,7 @@ from waraq.ocr.openai_ocr import OpenAiOcrResult
 from waraq.ocr.openai_ocr import extract_with_confidence as openai_ocr_extract
 from waraq.ocr.preprocessing import preprocess_if_needed
 from waraq.ocr.preprocessing_opencv import opencv_preprocessor
+from waraq.ocr.routing import OcrEngine
 from waraq.ocr.stage3 import Stage3Result, aggregate_stage3
 from waraq.ocr.stage3_ai import AiValidator
 from waraq.ocr.stage3_ai_production import (
@@ -69,7 +70,6 @@ from waraq.ocr.stage3_ai_production import (
     make_openai_ocr_validator,
 )
 from waraq.ocr.stage3_rules import DiacritizerFn, MorphologyAnalyzableFn
-from waraq.ocr.routing import OcrEngine
 from waraq.schemas import Block, Page, ProvenanceObject, Segment
 from waraq.schemas.enums import BlockClass, POType, ReadingDirection, ScopeType
 from waraq.upload.file_type import UploadFormat, is_direct_text_format, is_image_format
@@ -145,7 +145,6 @@ async def _run_primary_engine_only(
     """
     text = await gemini_fn(image_bytes, mime_type)
     from waraq.ocr.consensus import AGREEMENT_SINGLE_ENGINE, EngineResult
-    from waraq.ocr.routing import OcrEngine
 
     return ConsensusResult(
         primary_text=text,
@@ -208,9 +207,7 @@ class PageOcrResult:
     additional_blocks: tuple[BlockOcrResult, ...] = field(default_factory=tuple)
 
 
-async def _resolve_source_file(
-    *, session: AsyncSession, page: Page
-) -> tuple[Path, UploadFormat]:
+async def _resolve_source_file(*, session: AsyncSession, page: Page) -> tuple[Path, UploadFormat]:
     """Find the SCAN-PO for this page and pull `(source_file_path, format)`
     out of its payload. The format determines how the page is
     rasterized at OCR time (PDF → pdftoppm; image → direct read /
@@ -322,9 +319,7 @@ def _read_image_page_bytes(source: Path, fmt: UploadFormat, page_index: int) -> 
         if fmt == UploadFormat.TIFF:
             n_frames = int(getattr(img, "n_frames", 1))
             if page_index < 1 or page_index > n_frames:
-                raise PageOcrError(
-                    f"TIFF page_index {page_index} out of range (1..{n_frames})"
-                )
+                raise PageOcrError(f"TIFF page_index {page_index} out of range (1..{n_frames})")
             img.seek(page_index - 1)
         else:
             if page_index != 1:
@@ -349,8 +344,7 @@ def _render_djvu_page_png(source_djvu: Path, page_index: int, out_dir: Path, dpi
     when missing or render fails."""
     if shutil.which("ddjvu") is None:
         raise PageOcrError(
-            "ddjvu not found on PATH; install `djvulibre-bin` "
-            "(apt) to enable DjVu OCR."
+            "ddjvu not found on PATH; install `djvulibre-bin` (apt) to enable DjVu OCR."
         )
     out_dir.mkdir(parents=True, exist_ok=True)
     png_path = out_dir / "page.png"
@@ -681,11 +675,11 @@ async def run_ocr_for_page(
         async def _stub_extractor(_image: bytes, _mime: str, _t: str = consensus_text) -> str:
             return _t
 
-        stage3: Stage3Result | None = None
-        confidence_for_po: float | None = page_consensus.aggregated_confidence
-        stage3_payload: dict[str, Any] | None = None
+        page_stage3: Stage3Result | None = None
+        page_confidence_for_po: float | None = page_consensus.aggregated_confidence
+        page_stage3_payload: dict[str, Any] | None = None
         if run_stage3_for_page:
-            stage3 = await aggregate_stage3(
+            page_stage3 = await aggregate_stage3(
                 session=session,
                 candidate_text=consensus_text,
                 block_class=BlockClass.MAIN_TEXT,
@@ -695,28 +689,30 @@ async def run_ocr_for_page(
                 openai_validator=openai_validator,
                 gemini_validator=gemini_validator,
             )
-            confidence_for_po = stage3.confidence
-            stage3_payload = {
-                "confidence": stage3.confidence,
-                "stage2_score": stage3.stage2_score,
-                "divergence_penalty_applied": stage3.divergence_penalty_applied,
+            page_confidence_for_po = page_stage3.confidence
+            page_stage3_payload = {
+                "confidence": page_stage3.confidence,
+                "stage2_score": page_stage3.stage2_score,
+                "divergence_penalty_applied": page_stage3.divergence_penalty_applied,
                 "rules": {
-                    "score": stage3.rule_result.score,
-                    "morphology_score": stage3.rule_result.morphology_score,
-                    "morphology_available": stage3.rule_result.morphology_available,
-                    "diacritization_score": stage3.rule_result.diacritization_score,
-                    "diacritization_available": stage3.rule_result.diacritization_available,
-                    "word_count": stage3.rule_result.word_count,
+                    "score": page_stage3.rule_result.score,
+                    "morphology_score": page_stage3.rule_result.morphology_score,
+                    "morphology_available": page_stage3.rule_result.morphology_available,
+                    "diacritization_score": page_stage3.rule_result.diacritization_score,
+                    "diacritization_available": page_stage3.rule_result.diacritization_available,
+                    "word_count": page_stage3.rule_result.word_count,
                 },
                 "statistical": {
-                    "score": stage3.statistical_result.score,
-                    "hit_count": stage3.statistical_result.hit_count,
-                    "scoped_to_kutub_as_sitta": stage3.statistical_result.scoped_to_kutub_as_sitta,
-                    "sample_titles": list(stage3.statistical_result.sample_titles),
+                    "score": page_stage3.statistical_result.score,
+                    "hit_count": page_stage3.statistical_result.hit_count,
+                    "scoped_to_kutub_as_sitta": (
+                        page_stage3.statistical_result.scoped_to_kutub_as_sitta
+                    ),
+                    "sample_titles": list(page_stage3.statistical_result.sample_titles),
                 },
                 "ai": {
-                    "score": stage3.ai_result.score,
-                    "agreement": stage3.ai_result.agreement,
+                    "score": page_stage3.ai_result.score,
+                    "agreement": page_stage3.ai_result.agreement,
                     "verdicts": [
                         {
                             "engine": v.engine,
@@ -724,7 +720,7 @@ async def run_ocr_for_page(
                             "correction_note": v.correction_note,
                             "error_class": v.error_class,
                         }
-                        for v in stage3.ai_result.verdicts
+                        for v in page_stage3.ai_result.verdicts
                     ],
                 },
             }
@@ -738,12 +734,12 @@ async def run_ocr_for_page(
             mime_type="image/png",
             extractor=_stub_extractor,
             target_segment=segment,
-            confidence_score=confidence_for_po,
+            confidence_score=page_confidence_for_po,
             was_preprocessed=was_preprocessed,
             source_dpi=_RENDER_DPI,
             engine_breakdown=list(page_consensus.engines),
             engine_agreement=page_consensus.agreement,
-            stage3_payload=stage3_payload,
+            stage3_payload=page_stage3_payload,
         )
         job_result = job.result or {}
         rev_uuid_str = job_result.get("rev_uuid")
@@ -757,9 +753,9 @@ async def run_ocr_for_page(
             rev_uuid=_uuid.UUID(rev_uuid_str) if rev_uuid_str else None,
             engines_used=tuple(r.engine.value for r in page_consensus.engines),
             engine_agreement=page_consensus.agreement,
-            stage3_confidence=stage3.confidence if stage3 is not None else None,
+            stage3_confidence=page_stage3.confidence if page_stage3 is not None else None,
             stage3_divergence_penalty_applied=(
-                stage3.divergence_penalty_applied if stage3 is not None else False
+                page_stage3.divergence_penalty_applied if page_stage3 is not None else False
             ),
         )
         return PageOcrResult(

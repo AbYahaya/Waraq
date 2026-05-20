@@ -99,27 +99,19 @@ async def list_pending(
     )
 
 
-async def _admission_account_or_404(
-    session: DbSession, account_uuid: _uuid.UUID
-) -> Account:
+async def _admission_account_or_404(session: DbSession, account_uuid: _uuid.UUID) -> Account:
     """Lookup helper. 404 when the account doesn't exist OR is inactive —
     admin can't act on a deactivated account through this surface."""
     result = await session.execute(
-        select(Account)
-        .where(Account.account_uuid == account_uuid)
-        .where(Account.active.is_(True))
+        select(Account).where(Account.account_uuid == account_uuid).where(Account.active.is_(True))
     )
     account: Account | None = result.scalar_one_or_none()
     if account is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Account not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
     return account
 
 
-@router.post(
-    "/{account_uuid}/approve", response_model=AdmissionAccountResponse
-)
+@router.post("/{account_uuid}/approve", response_model=AdmissionAccountResponse)
 async def approve(
     account_uuid: _uuid.UUID,
     session: DbSession,
@@ -131,15 +123,11 @@ async def approve(
     try:
         await approve_account(session=session, account=account, approver=admin)
     except AlreadyDecided as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return AdmissionAccountResponse.from_account(account)
 
 
-@router.post(
-    "/{account_uuid}/reject", response_model=AdmissionAccountResponse
-)
+@router.post("/{account_uuid}/reject", response_model=AdmissionAccountResponse)
 async def reject(
     account_uuid: _uuid.UUID,
     req: RejectRequest,
@@ -158,9 +146,7 @@ async def reject(
             reason=req.reason,
         )
     except AlreadyDecided as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return AdmissionAccountResponse.from_account(account)
 
 

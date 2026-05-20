@@ -92,9 +92,7 @@ def extract_paragraphs(*, path: Path, fmt: UploadFormat) -> list[str]:
 
     cleaned = [p.strip() for p in paragraphs if not _WHITESPACE_ONLY.match(p or "")]
     if not cleaned:
-        raise EmptyDocument(
-            f"Document at {path} contains no non-whitespace paragraphs"
-        )
+        raise EmptyDocument(f"Document at {path} contains no non-whitespace paragraphs")
     return cleaned
 
 

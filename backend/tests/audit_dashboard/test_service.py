@@ -33,6 +33,7 @@ async def _seed_audit_job(session: AsyncSession) -> Job:
     await session.flush()
     return job
 
+
 # ---------------------------------------------------------------------
 # summarize_project
 # ---------------------------------------------------------------------
@@ -42,9 +43,7 @@ async def _seed_audit_job(session: AsyncSession) -> Job:
 class TestSummarizeProject:
     async def test_empty_project_zero_counts(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
-        summary = await summarize_project(
-            session=db_session, project_uuid=project.project_uuid
-        )
+        summary = await summarize_project(session=db_session, project_uuid=project.project_uuid)
         assert summary.total_pages == 0
         assert summary.total_segments == 0
         # All distribution buckets default to 0.
@@ -55,23 +54,17 @@ class TestSummarizeProject:
         assert summary.open_konsistenz_befunde == 0
         assert summary.open_conflicts == 0
 
-    async def test_segments_without_ocr_po_count_as_no_ocr(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_segments_without_ocr_po_count_as_no_ocr(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         seg1 = await seed_segment(db_session, project=project, text="a", page_index=1)
         seg2 = await seed_segment(db_session, project=project, text="b", page_index=2)
-        summary = await summarize_project(
-            session=db_session, project_uuid=project.project_uuid
-        )
+        summary = await summarize_project(session=db_session, project_uuid=project.project_uuid)
         assert summary.total_segments == 2
         assert summary.ocr_confidence.no_ocr == 2
         assert summary.ocr_confidence.accepted == 0
         _ = seg1, seg2
 
-    async def test_confidence_class_distribution(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_confidence_class_distribution(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         seg_a = await seed_segment(db_session, project=project, text="a", page_index=1)
         seg_b = await seed_segment(db_session, project=project, text="b", page_index=2)
@@ -89,17 +82,13 @@ class TestSummarizeProject:
                 scope_uuid=seg.satz_uuid,
                 payload={"confidence_class": klass, "confidence_score": 0.5},
             )
-        summary = await summarize_project(
-            session=db_session, project_uuid=project.project_uuid
-        )
+        summary = await summarize_project(session=db_session, project_uuid=project.project_uuid)
         assert summary.ocr_confidence.accepted == 1
         assert summary.ocr_confidence.deficient == 1
         assert summary.ocr_confidence.critical == 1
         assert summary.ocr_confidence.no_ocr == 0
 
-    async def test_engine_agreement_distribution(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_engine_agreement_distribution(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         a = await seed_segment(db_session, project=project, text="a", page_index=1)
         b = await seed_segment(db_session, project=project, text="b", page_index=2)
@@ -111,9 +100,7 @@ class TestSummarizeProject:
                 scope_uuid=seg.satz_uuid,
                 payload={"engine_agreement": agreement},
             )
-        summary = await summarize_project(
-            session=db_session, project_uuid=project.project_uuid
-        )
+        summary = await summarize_project(session=db_session, project_uuid=project.project_uuid)
         assert summary.engine_agreement.exact_match == 1
         assert summary.engine_agreement.divergent == 1
 
@@ -132,9 +119,7 @@ class TestSummarizeProject:
                 scope_uuid=seg.satz_uuid,
                 payload={"cross_check": {"situation": situation}},
             )
-        summary = await summarize_project(
-            session=db_session, project_uuid=project.project_uuid
-        )
+        summary = await summarize_project(session=db_session, project_uuid=project.project_uuid)
         assert summary.cross_check.agreement == 1
         assert summary.cross_check.substantive_deviation == 1
         assert summary.cross_check.not_translated == 0
@@ -155,9 +140,7 @@ class TestSummarizeProject:
         )
         db_session.add(befund)
         await db_session.flush()
-        summary = await summarize_project(
-            session=db_session, project_uuid=project.project_uuid
-        )
+        summary = await summarize_project(session=db_session, project_uuid=project.project_uuid)
         assert summary.open_befunde.kritisch == 1
         assert summary.open_befunde.hoch == 0
 
@@ -166,9 +149,7 @@ class TestSummarizeProject:
         project_b = await seed_project(db_session)
         # Seed activity in project_a only.
         await seed_segment(db_session, project=project_a, text="a", page_index=1)
-        summary_b = await summarize_project(
-            session=db_session, project_uuid=project_b.project_uuid
-        )
+        summary_b = await summarize_project(session=db_session, project_uuid=project_b.project_uuid)
         assert summary_b.total_segments == 0
         assert summary_b.total_pages == 0
 
@@ -182,22 +163,14 @@ class TestSummarizeProject:
 class TestAttentionList:
     async def test_empty_project_empty_list(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
-        items = await list_attention_segments(
-            session=db_session, project_uuid=project.project_uuid
-        )
+        items = await list_attention_segments(session=db_session, project_uuid=project.project_uuid)
         assert items == []
 
     async def test_low_confidence_filter(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
-        accepted = await seed_segment(
-            db_session, project=project, text="a", page_index=1
-        )
-        deficient = await seed_segment(
-            db_session, project=project, text="b", page_index=2
-        )
-        critical = await seed_segment(
-            db_session, project=project, text="c", page_index=3
-        )
+        accepted = await seed_segment(db_session, project=project, text="a", page_index=1)
+        deficient = await seed_segment(db_session, project=project, text="b", page_index=2)
+        critical = await seed_segment(db_session, project=project, text="c", page_index=3)
         for seg, klass in [
             (accepted, "accepted"),
             (deficient, "deficient"),
@@ -226,12 +199,8 @@ class TestAttentionList:
 
     async def test_divergent_ocr_filter(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
-        agree = await seed_segment(
-            db_session, project=project, text="a", page_index=1
-        )
-        diverge = await seed_segment(
-            db_session, project=project, text="b", page_index=2
-        )
+        agree = await seed_segment(db_session, project=project, text="a", page_index=1)
+        diverge = await seed_segment(db_session, project=project, text="b", page_index=2)
         await create_po(
             session=db_session,
             po_type=POType.OCR,
@@ -254,16 +223,10 @@ class TestAttentionList:
         assert len(items) == 1
         assert items[0].satz_uuid == diverge.satz_uuid
 
-    async def test_cross_check_substantive_filter(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_cross_check_substantive_filter(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
-        agree = await seed_segment(
-            db_session, project=project, text="a", page_index=1
-        )
-        flagged = await seed_segment(
-            db_session, project=project, text="b", page_index=2
-        )
+        agree = await seed_segment(db_session, project=project, text="a", page_index=1)
+        flagged = await seed_segment(db_session, project=project, text="b", page_index=2)
         for seg, situation in [
             (agree, "agreement"),
             (flagged, "substantive_deviation"),
@@ -310,16 +273,10 @@ class TestAttentionList:
         assert items[0].detail["regelkennung"] == "A-02"
         assert items[0].detail["schweregrad"] == "hoch"
 
-    async def test_no_filters_returns_union_of_all_filters(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_no_filters_returns_union_of_all_filters(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
-        critical_seg = await seed_segment(
-            db_session, project=project, text="a", page_index=1
-        )
-        divergent_seg = await seed_segment(
-            db_session, project=project, text="b", page_index=2
-        )
+        critical_seg = await seed_segment(db_session, project=project, text="a", page_index=1)
+        divergent_seg = await seed_segment(db_session, project=project, text="b", page_index=2)
         # Critical confidence on seg_a; divergent on seg_b.
         await create_po(
             session=db_session,
@@ -347,9 +304,7 @@ class TestAttentionList:
     async def test_limit_caps_results(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         for i in range(5):
-            seg = await seed_segment(
-                db_session, project=project, text=str(i), page_index=i + 1
-            )
+            seg = await seed_segment(db_session, project=project, text=str(i), page_index=i + 1)
             await create_po(
                 session=db_session,
                 po_type=POType.OCR,
@@ -373,9 +328,7 @@ class TestAttentionList:
 
 @pytest.mark.asyncio
 class TestAttentionItemBlockIndex:
-    async def test_block_index_populated_from_block_row(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_block_index_populated_from_block_row(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         # Seed two segments on different pages so we see distinct
         # block_index values when the seed helper writes them.
@@ -413,9 +366,7 @@ class TestAttentionItemBlockIndex:
 
 @pytest.mark.asyncio
 class TestSegmentAuditDetail:
-    async def test_returns_none_for_segment_outside_project(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_returns_none_for_segment_outside_project(self, db_session: AsyncSession) -> None:
         project_a = await seed_project(db_session)
         project_b = await seed_project(db_session)
         seg = await seed_segment(db_session, project=project_a, text="a", page_index=1)
@@ -476,9 +427,7 @@ class TestSegmentAuditDetail:
         assert gem.text == "بسم الله"
         assert cv.text == "سمع غير"
 
-    async def test_legacy_ocr_po_without_per_engine_text(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_legacy_ocr_po_without_per_engine_text(self, db_session: AsyncSession) -> None:
         # Simulate a pre-N-2 OCR-PO that only has `text_chars`, no `text`.
         project = await seed_project(db_session)
         seg = await seed_segment(db_session, project=project, text="a", page_index=1)
@@ -511,9 +460,7 @@ class TestSegmentAuditDetail:
         assert detail.ocr_engines[0].text is None
         assert detail.ocr_engines[0].text_chars == 5
 
-    async def test_includes_translation_situation(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_includes_translation_situation(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         seg = await seed_segment(db_session, project=project, text="a", page_index=1)
         await create_po(
@@ -535,9 +482,7 @@ class TestSegmentAuditDetail:
         assert detail.translation_situation == "substantive_deviation"
         assert detail.translation_target_text == "Im Namen Gottes"
 
-    async def test_includes_open_befunde(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_includes_open_befunde(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         seg = await seed_segment(db_session, project=project, text="a", page_index=1)
         job = await _seed_audit_job(db_session)

@@ -59,9 +59,7 @@ async def _upload(session: AsyncSession, project: Project, filename: str, data: 
         total_chunks=1,
         total_size_bytes=len(data),
     )
-    await append_chunk(
-        session=session, upload_job=job, chunk_index=0, chunk_data=data
-    )
+    await append_chunk(session=session, upload_job=job, chunk_index=0, chunk_data=data)
     return job, await finalize_upload(session=session, upload_job=job)
 
 
@@ -75,9 +73,7 @@ class TestTwoGigLimit:
     async def test_max_constant_is_two_gigabytes(self) -> None:
         assert MAX_UPLOAD_SIZE_BYTES == 2 * 1024 * 1024 * 1024
 
-    async def test_start_upload_rejects_declared_over_2gb(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_start_upload_rejects_declared_over_2gb(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         with pytest.raises(UploadTooLarge) as info:
             await start_upload(
@@ -90,9 +86,7 @@ class TestTwoGigLimit:
         assert info.value.size_bytes == MAX_UPLOAD_SIZE_BYTES + 1
         assert info.value.max_bytes == MAX_UPLOAD_SIZE_BYTES
 
-    async def test_start_upload_accepts_exactly_2gb(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_start_upload_accepts_exactly_2gb(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         # Exactly the limit is permitted; 1 byte over is not.
         job = await start_upload(
@@ -109,9 +103,7 @@ class TestTwoGigLimit:
     ) -> None:
         # Use a small simulated max so the test can actually drive
         # the defensive cap without writing GB to disk.
-        monkeypatch.setattr(
-            "waraq.upload.service.MAX_UPLOAD_SIZE_BYTES", 100, raising=True
-        )
+        monkeypatch.setattr("waraq.upload.service.MAX_UPLOAD_SIZE_BYTES", 100, raising=True)
         project = await seed_project(db_session)
         # Lie about the declared size (say 50, push 200 bytes).
         job = await start_upload(
@@ -155,13 +147,9 @@ class TestPrecheckFilenameMatch:
         assert result.filename_matches == ()
         assert result.project_has_existing_pages is False
 
-    async def test_filename_match_after_prior_upload(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_filename_match_after_prior_upload(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
-        _, pages_resp = await _upload(
-            db_session, project, "scan.jpg", _jpeg_bytes(seed=0)
-        )
+        _, pages_resp = await _upload(db_session, project, "scan.jpg", _jpeg_bytes(seed=0))
         assert len(pages_resp) == 1
 
         # New upload with the SAME filename → precheck flags it.
@@ -176,9 +164,7 @@ class TestPrecheckFilenameMatch:
         assert match.page_uuid == pages_resp[0].page_uuid
         assert match.original_filename == "scan.jpg"
 
-    async def test_filename_match_is_per_project_not_global(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_filename_match_is_per_project_not_global(self, db_session: AsyncSession) -> None:
         project_a = await seed_project(db_session)
         project_b = await seed_project(db_session)
         # Upload to project A.
@@ -193,9 +179,7 @@ class TestPrecheckFilenameMatch:
         assert result.filename_matches == ()
         assert result.project_has_existing_pages is False
 
-    async def test_different_filename_no_match(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_different_filename_no_match(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         await _upload(db_session, project, "scan_a.jpg", _jpeg_bytes(seed=0))
         result = await precheck_for_project(
@@ -208,9 +192,7 @@ class TestPrecheckFilenameMatch:
 
 @pytest.mark.asyncio
 class TestSha256DedupePostFinalize:
-    async def test_same_content_different_filename_detected(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_same_content_different_filename_detected(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         jpeg_bytes = _jpeg_bytes(seed=0)
 
@@ -238,9 +220,7 @@ class TestSha256DedupePostFinalize:
         )
         assert matches == ()
 
-    async def test_exclude_job_filters_self_match(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_exclude_job_filters_self_match(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         job, pages = await _upload(db_session, project, "scan.jpg", _jpeg_bytes(seed=0))
         sha = job.result["source_sha256"]

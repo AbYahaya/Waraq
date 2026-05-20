@@ -175,9 +175,7 @@ def _extract_zip(archive_path: Path, dest_dir: Path) -> list[tuple[str, Path]]:
                 with zf.open(info) as src, out_path.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
             except Exception as exc:
-                raise ArchiveCorrupted(
-                    f"Could not read ZIP entry {inner_name!r}: {exc!r}"
-                ) from exc
+                raise ArchiveCorrupted(f"Could not read ZIP entry {inner_name!r}: {exc!r}") from exc
             out.append((inner_name, out_path))
     finally:
         zf.close()
@@ -217,9 +215,7 @@ def _extract_rar(archive_path: Path, dest_dir: Path) -> list[tuple[str, Path]]:
                 with rf.open(info) as src, out_path.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
             except Exception as exc:
-                raise ArchiveCorrupted(
-                    f"Could not read RAR entry {inner_name!r}: {exc!r}"
-                ) from exc
+                raise ArchiveCorrupted(f"Could not read RAR entry {inner_name!r}: {exc!r}") from exc
             out.append((inner_name, out_path))
     finally:
         rf.close()

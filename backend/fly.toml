@@ -11,6 +11,9 @@ kill_timeout = '30s'
 [build]
   dockerfile = 'Dockerfile'
 
+[deploy]
+  release_command = 'alembic upgrade head'
+
 [env]
   GEMINI_OCR_MODEL = 'gemini-2.5-pro'
   PORT = '8080'
@@ -23,9 +26,9 @@ kill_timeout = '30s'
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = 'stop'
+  auto_stop_machines = 'off'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ['app']
 
   [http_service.concurrency]
@@ -34,9 +37,9 @@ kill_timeout = '30s'
     soft_limit = 80
 
   [[http_service.checks]]
-    interval = '30s'
-    timeout = '5s'
-    grace_period = '15s'
+    interval = '15s'
+    timeout = '10s'
+    grace_period = '60s'
     method = 'GET'
     path = '/health'
     protocol = 'http'

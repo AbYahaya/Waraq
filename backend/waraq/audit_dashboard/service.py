@@ -197,17 +197,13 @@ async def summarize_project(
         ausstehend=sum(1 for p in pages if p.ocr_status == OcrStatus.AUSSTEHEND),
         in_review=sum(1 for p in pages if p.ocr_status == OcrStatus.IN_REVIEW),
         go=sum(1 for p in pages if p.ocr_status == OcrStatus.GO),
-        go_with_warning=sum(
-            1 for p in pages if p.ocr_status == OcrStatus.GO_WITH_WARNING
-        ),
+        go_with_warning=sum(1 for p in pages if p.ocr_status == OcrStatus.GO_WITH_WARNING),
         no_go=sum(1 for p in pages if p.ocr_status == OcrStatus.NO_GO),
     )
 
     # OCR-POs + TRANSLATION-POs scoped to segments in this project.
     segment_uuids = {s.satz_uuid for s in segments}
-    ocr_pos_by_segment = await _latest_pos_for_segments(
-        session, segment_uuids, POType.OCR
-    )
+    ocr_pos_by_segment = await _latest_pos_for_segments(session, segment_uuids, POType.OCR)
     trans_pos_by_segment = await _latest_pos_for_segments(
         session, segment_uuids, POType.TRANSLATION
     )
@@ -313,9 +309,7 @@ async def list_attention_segments(
         AttentionFilter.CROSS_CHECK_FAILED,
     } & active_filters
     if cross_filters:
-        trans_pos = await _latest_pos_for_segments(
-            session, segment_uuids, POType.TRANSLATION
-        )
+        trans_pos = await _latest_pos_for_segments(session, segment_uuids, POType.TRANSLATION)
         for satz_uuid, po in trans_pos.items():
             payload = po.payload or {}
             cross_check = payload.get("cross_check") or {}
@@ -395,9 +389,7 @@ async def _project_pages(session: AsyncSession, project_uuid: _uuid.UUID) -> lis
     return list(result.scalars())
 
 
-async def _project_blocks(
-    session: AsyncSession, project_uuid: _uuid.UUID
-) -> list[Block]:
+async def _project_blocks(session: AsyncSession, project_uuid: _uuid.UUID) -> list[Block]:
     result = await session.execute(
         select(Block)
         .join(Page, Page.page_uuid == Block.page_uuid)
@@ -408,9 +400,7 @@ async def _project_blocks(
     return list(result.scalars())
 
 
-async def _project_segments(
-    session: AsyncSession, project_uuid: _uuid.UUID
-) -> list[Segment]:
+async def _project_segments(session: AsyncSession, project_uuid: _uuid.UUID) -> list[Segment]:
     result = await session.execute(
         select(Segment)
         .join(Block, Block.block_uuid == Segment.block_uuid)
@@ -556,9 +546,7 @@ async def _open_befunde_for_project(
     return list(result.scalars())
 
 
-async def _open_konsistenz_count(
-    session: AsyncSession, project_uuid: _uuid.UUID
-) -> int:
+async def _open_konsistenz_count(session: AsyncSession, project_uuid: _uuid.UUID) -> int:
     result = await session.execute(
         select(KonsistenzBefund)
         .where(KonsistenzBefund.project_uuid == project_uuid)
@@ -567,9 +555,7 @@ async def _open_konsistenz_count(
     return len(list(result.scalars()))
 
 
-async def _open_conflicts_count(
-    session: AsyncSession, segment_uuids: set[_uuid.UUID]
-) -> int:
+async def _open_conflicts_count(session: AsyncSession, segment_uuids: set[_uuid.UUID]) -> int:
     if not segment_uuids:
         return 0
     result = await session.execute(
@@ -705,9 +691,7 @@ async def segment_audit_detail(
     trans_payload: dict[str, Any] = (trans_po.payload or {}) if trans_po else {}
     cross_check = trans_payload.get("cross_check") or {}
     situation = (
-        cross_check.get("situation")
-        if isinstance(cross_check.get("situation"), str)
-        else None
+        cross_check.get("situation") if isinstance(cross_check.get("situation"), str) else None
     )
     primary_engine = (
         cross_check.get("primary_engine")
