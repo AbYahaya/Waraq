@@ -89,6 +89,41 @@ async def _seed(
     return project, segment
 
 
+async def _seed_segment_for_project(
+    session: AsyncSession,
+    *,
+    project: Project,
+    segment_text: str,
+    page_index: int = 2,
+) -> Segment:
+    page = Page(
+        page_uuid=new_uuid(),
+        project_uuid=project.project_uuid,
+        page_index=page_index,
+        ocr_status=OcrStatus.GO,
+    )
+    session.add(page)
+    await session.flush()
+    block = Block(
+        block_uuid=new_uuid(),
+        page_uuid=page.page_uuid,
+        block_type="main_text",
+        block_index=1,
+    )
+    session.add(block)
+    await session.flush()
+    segment = Segment(
+        satz_uuid=new_uuid(),
+        block_uuid=block.block_uuid,
+        satz_index=1,
+        lock_flag=LockFlag.NONE,
+        text_content=segment_text,
+    )
+    session.add(segment)
+    await session.flush()
+    return segment
+
+
 async def _make_manual_revision_after_engine_revision(
     session: AsyncSession, *, segment: Segment, engine_translation: str, user_correction: str
 ):
@@ -504,13 +539,17 @@ class TestKandidatInertInTranslation:
         kandidat = registered[0]
         assert "canonical-user-fix" in kandidat.sample_corrections
 
-        # Now run the translation pipeline on the segment. The translator
+        # Now run the translation pipeline on a fresh matching segment.
+        # The translator
         # is the engine — it should NOT see the kandidat's user-fix as
         # input or be told to use it as output.
         await start_translation(session=db_session, project_uuid=project.project_uuid)
-        # Reset segment text so translation has fresh input.
-        segment.text_content = "recurring source"
-        await db_session.flush()
+        fresh_segment = await _seed_segment_for_project(
+            db_session,
+            project=project,
+            segment_text="recurring source",
+            page_index=2,
+        )
 
         seen_inputs: list[str] = []
 
@@ -525,7 +564,7 @@ class TestKandidatInertInTranslation:
         job = await start_translation_job(
             session=db_session,
             project_uuid=project.project_uuid,
-            segment_uuids=[segment.satz_uuid],
+            segment_uuids=[fresh_segment.satz_uuid],
         )
         hook = make_translation_persistence_hook(engine_identifier="stub")
         await run_translation_job(

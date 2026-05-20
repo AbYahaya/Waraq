@@ -185,7 +185,7 @@ class TestPromptInjectionFirstOccurrence:
                 @staticmethod
                 async def create(**kw: object) -> _StubResponse:
                     captured.append(kw["messages"][0]["content"])  # type: ignore[index]
-                    return _StubResponse("translated")
+                    return _StubResponse("[[L0001]] translated")
 
         class _StubClient:
             chat = _StubChat()

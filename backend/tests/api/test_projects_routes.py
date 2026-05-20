@@ -78,6 +78,7 @@ class TestProjectsCrud:
         )
 
         from tests.conftest import _test_database_url
+        from waraq.invariant.enums import OperationMode
         from waraq.revision import create_revision
         from waraq.schemas import Segment
         from waraq.schemas.enums import ChangeSource
@@ -97,6 +98,7 @@ class TestProjectsCrud:
                     segment=segment,
                     after_text="Im Namen Allahs",
                     change_source=ChangeSource.RE_TRANSLATE,
+                    operation_mode=OperationMode.MANUAL_WITH_CONFIRMATION,
                 )
         finally:
             await engine.dispose()
@@ -146,6 +148,9 @@ class TestProjectsCrud:
                     change_source=ChangeSource.RE_TRANSLATE,
                     operation_mode=OperationMode.MANUAL_WITH_CONFIRMATION,
                 )
+            async with sm() as session, session.begin():
+                segment = await session.get(Segment, fixture.satz_uuid)
+                assert segment is not None
                 await create_revision(
                     session=session,
                     segment=segment,

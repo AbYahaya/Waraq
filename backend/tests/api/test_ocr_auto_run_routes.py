@@ -339,7 +339,7 @@ class TestStatusEndpointSelfHeals:
                         payload={
                             "total_pages": 2,
                             "processed_count": 1,
-                            "cancel_requested": True,
+                            "cancel_requested": False,
                         },
                     )
                 )

@@ -47,6 +47,7 @@ async def seed_segment_with_revision(
     text: str,
     page_index: int = 1,
     block_index: int = 0,
+    block_type: str = "main_text",
     satz_index: int = 0,
     create_initial_revision: bool = True,
 ) -> Segment:
@@ -66,7 +67,7 @@ async def seed_segment_with_revision(
     block = Block(
         block_uuid=new_uuid(),
         page_uuid=page.page_uuid,
-        block_type="main_text",
+        block_type=block_type,
         block_index=block_index,
     )
     session.add(block)

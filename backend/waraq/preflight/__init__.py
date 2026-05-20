@@ -20,6 +20,7 @@ from waraq.preflight.enums import (
     HadithKlasse,
     HadithStellenTyp,
     PreflightState,
+    WarningSlot,
 )
 from waraq.preflight.exceptions import (
     GuardNearBlocked,
@@ -83,6 +84,7 @@ __all__ = [
     "PreflightEvaluation",
     "PreflightState",
     "SlotNotImplemented",
+    "WarningSlot",
     "accept_warning_gate",
     "confirm_pdf_format_choice",
     "confirm_pflichtfrage",

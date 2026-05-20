@@ -165,7 +165,7 @@ class TestTranslatorIntegration:
                 @staticmethod
                 async def create(**_kw: object) -> _StubResponse:
                     # Return text containing every canon-rule violation.
-                    return _StubResponse("Sure ١٤٤٦ Ḳurʾān صلى الله عليه وسلم")
+                    return _StubResponse("[[L0001]] Sure ١٤٤٦ Ḳurʾān صلى الله عليه وسلم")
 
         class _StubClient:
             chat = _StubChat()

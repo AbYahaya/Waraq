@@ -45,6 +45,7 @@ from waraq.canon_rules.digit_guard import has_arabic_indic_digits
 from waraq.canon_rules.religious_formulas import has_religious_formula_violations
 from waraq.canon_rules.transliteration import has_ei2_violations
 from waraq.schemas import Block, Page, Segment
+from waraq.text_state import SEPARATOR, split_source_target_text
 
 
 class CanonRuleViolationKind(StrEnum):
@@ -93,21 +94,25 @@ async def verify_canon_rules_for_export(
     for satz_uuid, text in result.all():
         if not text:
             continue
-        if has_arabic_indic_digits(text):
+        _source_text, target_text = split_source_target_text(text)
+        text_to_check = target_text if SEPARATOR in text else text
+        if not text_to_check:
+            continue
+        if has_arabic_indic_digits(text_to_check):
             violations.append(
                 CanonRuleViolation(
                     satz_uuid=satz_uuid,
                     kind=CanonRuleViolationKind.ARABIC_INDIC_DIGITS,
                 )
             )
-        if has_ei2_violations(text):
+        if has_ei2_violations(text_to_check):
             violations.append(
                 CanonRuleViolation(
                     satz_uuid=satz_uuid,
                     kind=CanonRuleViolationKind.EI2_TRANSLITERATION,
                 )
             )
-        if has_religious_formula_violations(text):
+        if has_religious_formula_violations(text_to_check):
             violations.append(
                 CanonRuleViolation(
                     satz_uuid=satz_uuid,

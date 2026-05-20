@@ -109,6 +109,7 @@ class GuardNearResult:
     """
 
     blockers: list[GuardNearViolation] = field(default_factory=list)
+    advisories: list[GuardNearViolation] = field(default_factory=list)
     evidence: dict[str, list[str]] = field(default_factory=dict)
 
     @property
@@ -131,11 +132,13 @@ FontResolver = Callable[[Sequence[str]], list[str]]
 
 
 async def _detect_digit_standard(session: AsyncSession, project_uuid: _uuid.UUID) -> list[str]:
-    """Scan all project Segment.text_content for Arabic-Indic digits.
+    """Scan export-target text for Arabic-Indic digits.
 
     Returns evidence list of `satz_uuid` hex strings for offenders.
     Empty list → no digit-standard violations.
     """
+    from waraq.text_state import SEPARATOR, split_source_target_text
+
     result = await session.execute(
         select(Segment.satz_uuid, Segment.text_content)
         .join(Block, Block.block_uuid == Segment.block_uuid)
@@ -144,7 +147,9 @@ async def _detect_digit_standard(session: AsyncSession, project_uuid: _uuid.UUID
     )
     offenders: list[str] = []
     for satz_uuid, text in result.all():
-        if text and has_arabic_indic_digits(text):
+        _source_text, target_text = split_source_target_text(text)
+        text_to_check = target_text if SEPARATOR in (text or "") else text
+        if text_to_check and has_arabic_indic_digits(text_to_check):
             offenders.append(str(satz_uuid))
     return offenders
 
@@ -222,6 +227,7 @@ async def run_guard_near_checks(
     rtl_detector: RtlDetector | None = None,
     style_template_detector: StyleTemplateDetector | None = None,
     font_resolver: FontResolver | None = None,
+    blocking_violations: set[GuardNearViolation] | None = None,
 ) -> GuardNearResult:
     """Run all four §4.7.3 guard-near pre-checks and return the result.
 
@@ -235,33 +241,35 @@ async def run_guard_near_checks(
     fonts = font_resolver if font_resolver is not None else _default_font_resolver
 
     blockers: list[GuardNearViolation] = []
+    advisories: list[GuardNearViolation] = []
     evidence: dict[str, list[str]] = {}
+
+    def record(violation: GuardNearViolation, items: list[str]) -> None:
+        if not items:
+            return
+        if blocking_violations is None or violation in blocking_violations:
+            blockers.append(violation)
+        else:
+            advisories.append(violation)
+        evidence[violation.value] = items
 
     # 1. Digit standard.
     digit_offenders = await _detect_digit_standard(session, project_uuid)
-    if digit_offenders:
-        blockers.append(GuardNearViolation.DIGIT_STANDARD)
-        evidence[GuardNearViolation.DIGIT_STANDARD.value] = digit_offenders
+    record(GuardNearViolation.DIGIT_STANDARD, digit_offenders)
 
     # 2. RTL encoding/application.
     rtl_evidence = await rtl(session, project_uuid)
-    if rtl_evidence:
-        blockers.append(GuardNearViolation.CRITICAL_RTL)
-        evidence[GuardNearViolation.CRITICAL_RTL.value] = rtl_evidence
+    record(GuardNearViolation.CRITICAL_RTL, rtl_evidence)
 
     # 3. Style template integrity.
     template_evidence = await template(session, project_uuid)
-    if template_evidence:
-        blockers.append(GuardNearViolation.STYLE_TEMPLATE_INTEGRITY)
-        evidence[GuardNearViolation.STYLE_TEMPLATE_INTEGRITY.value] = template_evidence
+    record(GuardNearViolation.STYLE_TEMPLATE_INTEGRITY, template_evidence)
 
     # 4. Critical font availability.
     missing_fonts = fonts(CRITICAL_FONTS)
-    if missing_fonts:
-        blockers.append(GuardNearViolation.CRITICAL_FONT_MISSING)
-        evidence[GuardNearViolation.CRITICAL_FONT_MISSING.value] = missing_fonts
+    record(GuardNearViolation.CRITICAL_FONT_MISSING, missing_fonts)
 
-    return GuardNearResult(blockers=blockers, evidence=evidence)
+    return GuardNearResult(blockers=blockers, advisories=advisories, evidence=evidence)
 
 
 __all__ = [

@@ -22,8 +22,9 @@ from __future__ import annotations
 import hashlib
 import io
 import uuid as _uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from docx import Document
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
@@ -34,7 +35,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.identity.service import new_uuid
 from waraq.schemas import Block, Page, Revision, Segment
-from waraq.text_state import resolve_segment_source_text, resolve_segment_text_state
+from waraq.text_state import (
+    resolve_segment_source_text,
+    resolve_segment_text_state,
+    split_source_target_text,
+)
+
+TocPosition = Literal["front", "back"]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class TranslationDocxConfig:
+    """Export-layout choices captured during preflight."""
+
+    header_heading_level: int = 1
+    chapter_break_heading_level: int = 1
+    toc_position: TocPosition = "front"
+    display_arabic_chapter_headings: bool = True
+
+
+DEFAULT_DOCX_CONFIG = TranslationDocxConfig()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -68,21 +88,86 @@ def _set_paragraph_rtl(paragraph: Any) -> None:
         p_pr.append(bidi)
 
 
-def _add_toc(document: Any) -> None:
-    """Insert a TOC field with `\\o "1-6"` per Formatvorlagen-Baseline
-    v1.1 §7.2 (Schluss-Audit Paket 7 Item 2 (a), 2026-05-08). Word
-    renders this on first open; python-docx writes it as a field
-    instruction.
-    """
+def _heading_level(value: object, default: int = 1) -> int:
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return default
+    else:
+        return default
+    return max(1, min(6, parsed))
+
+
+def _answer_heading_level(answer: object) -> object:
+    if isinstance(answer, Mapping):
+        return answer.get("heading_level")
+    return None
+
+
+def _answer_position(answer: object) -> object:
+    if isinstance(answer, Mapping):
+        return answer.get("position")
+    return None
+
+
+def _answer_display(answer: object) -> bool:
+    if isinstance(answer, Mapping) and "display" in answer:
+        return bool(answer.get("display"))
+    return True
+
+
+def _toc_position(value: object) -> TocPosition:
+    return "back" if value == "back" else "front"
+
+
+def docx_config_from_pflichtfragen(
+    pflichtfragen: Sequence[Mapping[str, Any]] | None,
+) -> TranslationDocxConfig:
+    """Build a DOCX config from persisted preflight decision-event payloads."""
+    values: dict[str, Any] = {}
+    for entry in pflichtfragen or []:
+        key = entry.get("frage_key")
+        answer = entry.get("answer")
+        if not isinstance(key, str) or not isinstance(answer, Mapping):
+            continue
+        values[key] = dict(answer)
+
+    return TranslationDocxConfig(
+        header_heading_level=_heading_level(
+            _answer_heading_level(values.get("header_heading_level"))
+        ),
+        chapter_break_heading_level=_heading_level(
+            _answer_heading_level(values.get("chapter_break_heading_level"))
+        ),
+        toc_position=_toc_position(_answer_position(values.get("toc_position"))),
+        display_arabic_chapter_headings=_answer_display(
+            values.get("display_arabic_chapter_headings")
+        ),
+    )
+
+
+def docx_config_from_export_payload(payload: Mapping[str, Any]) -> TranslationDocxConfig:
+    export_config = payload.get("export_config")
+    if not isinstance(export_config, Mapping):
+        return DEFAULT_DOCX_CONFIG
+    pflichtfragen = export_config.get("pflichtfragen")
+    if not isinstance(pflichtfragen, list):
+        return DEFAULT_DOCX_CONFIG
+    return docx_config_from_pflichtfragen(pflichtfragen)
+
+
+def _add_field_run(paragraph: Any, instruction: str) -> None:
     from docx.oxml import OxmlElement
 
-    paragraph = document.add_paragraph()
     run = paragraph.add_run()
     fld_begin = OxmlElement("w:fldChar")
     fld_begin.set(qn("w:fldCharType"), "begin")
     instr = OxmlElement("w:instrText")
     instr.set(qn("xml:space"), "preserve")
-    instr.text = 'TOC \\o "1-6" \\h \\z \\u'
+    instr.text = instruction
     fld_sep = OxmlElement("w:fldChar")
     fld_sep.set(qn("w:fldCharType"), "separate")
     fld_end = OxmlElement("w:fldChar")
@@ -91,6 +176,23 @@ def _add_toc(document: Any) -> None:
     run._r.append(instr)
     run._r.append(fld_sep)
     run._r.append(fld_end)
+
+
+def _set_running_header(document: Any, *, project_title: str, heading_level: int) -> None:
+    header = document.sections[0].header
+    paragraph = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+    paragraph.text = f"{project_title} | "
+    _add_field_run(paragraph, f'STYLEREF "Heading {heading_level}"')
+
+
+def _add_toc(document: Any) -> None:
+    """Insert a TOC field with `\\o "1-6"` per Formatvorlagen-Baseline
+    v1.1 §7.2 (Schluss-Audit Paket 7 Item 2 (a), 2026-05-08). Word
+    renders this on first open; python-docx writes it as a field
+    instruction.
+    """
+    paragraph = document.add_paragraph()
+    _add_field_run(paragraph, 'TOC \\o "1-6" \\h \\z \\u')
 
 
 _BLOCK_TYPE_STYLE: dict[str, str] = {
@@ -104,12 +206,45 @@ _BLOCK_TYPE_STYLE: dict[str, str] = {
 }
 
 
+def _style_for_block(block_type: str, config: TranslationDocxConfig) -> str:
+    if block_type == "UE":
+        return f"Heading {config.chapter_break_heading_level}"
+    if block_type == "HD":
+        return f"Heading {min(6, config.chapter_break_heading_level + 1)}"
+    return _BLOCK_TYPE_STYLE.get(block_type, "Normal")
+
+
+def _include_source_for_block(block_type: str, config: TranslationDocxConfig) -> bool:
+    return not (block_type in {"UE", "HD"} and not config.display_arabic_chapter_headings)
+
+
+def _add_title_page(document: Any, *, project_title: str, config: TranslationDocxConfig) -> None:
+    title = document.add_heading(project_title, level=0)
+    for run in title.runs:
+        run.font.size = Pt(20)
+    document.add_paragraph()
+    if config.toc_position == "front":
+        _add_toc(document)
+        document.add_page_break()
+    else:
+        document.add_page_break()
+
+
+def _add_back_toc(document: Any, config: TranslationDocxConfig) -> None:
+    if config.toc_position != "back":
+        return
+    document.add_page_break()
+    document.add_heading("Contents", level=1)
+    _add_toc(document)
+
+
 async def build_translation_docx(
     *,
     session: AsyncSession,
     project_uuid: _uuid.UUID,
     project_title: str,
     segment_uuids: list[_uuid.UUID] | None = None,
+    config: TranslationDocxConfig = DEFAULT_DOCX_CONFIG,
 ) -> TranslationDocxArtefact:
     """Build the translation-export DOCX in memory.
 
@@ -146,13 +281,12 @@ async def build_translation_docx(
     section.top_margin = Cm(2.5)
     section.bottom_margin = Cm(2.5)
 
-    # Title page + TOC.
-    title = document.add_heading(project_title, level=0)
-    for run in title.runs:
-        run.font.size = Pt(20)
-    document.add_paragraph()
-    _add_toc(document)
-    document.add_page_break()  # type: ignore[no-untyped-call]
+    _set_running_header(
+        document,
+        project_title=project_title,
+        heading_level=config.header_heading_level,
+    )
+    _add_title_page(document, project_title=project_title, config=config)
 
     pages_seen: set[_uuid.UUID] = set()
     blocks_seen: set[_uuid.UUID] = set()
@@ -175,9 +309,9 @@ async def build_translation_docx(
         text_state = await resolve_segment_text_state(session=session, segment=segment)
         source, target = text_state.source_text, text_state.target_text
 
-        style = _BLOCK_TYPE_STYLE.get(block.block_type, "Normal")
+        style = _style_for_block(block.block_type, config)
 
-        if source.strip():
+        if source.strip() and _include_source_for_block(block.block_type, config):
             ar_paragraph = document.add_paragraph(source, style=style)
             ar_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
             _set_paragraph_rtl(ar_paragraph)
@@ -185,6 +319,8 @@ async def build_translation_docx(
         if target.strip() or not source.strip():
             de_paragraph = document.add_paragraph(target or "", style=style)
             de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+
+    _add_back_toc(document, config)
 
     # Serialize.
     buffer = io.BytesIO()
@@ -207,6 +343,12 @@ async def build_translation_docx(
             "n_pages": len(pages_seen),
             "n_segments": len(segs_seen),
             "block_types_present": sorted(block_types_seen),
+            "docx_config": {
+                "header_heading_level": config.header_heading_level,
+                "chapter_break_heading_level": config.chapter_break_heading_level,
+                "toc_position": config.toc_position,
+                "display_arabic_chapter_headings": config.display_arabic_chapter_headings,
+            },
         },
     )
 
@@ -217,6 +359,7 @@ async def build_translation_docx_from_snapshot(
     project_uuid: _uuid.UUID,
     project_title: str,
     revision_uuids: list[_uuid.UUID],
+    config: TranslationDocxConfig = DEFAULT_DOCX_CONFIG,
 ) -> TranslationDocxArtefact:
     """Rebuild a translation-export DOCX from a frozen `revision_snapshot[]`.
 
@@ -252,12 +395,12 @@ async def build_translation_docx_from_snapshot(
     section.top_margin = Cm(2.5)
     section.bottom_margin = Cm(2.5)
 
-    title = document.add_heading(project_title, level=0)
-    for run in title.runs:
-        run.font.size = Pt(20)
-    document.add_paragraph()
-    _add_toc(document)
-    document.add_page_break()  # type: ignore[no-untyped-call]
+    _set_running_header(
+        document,
+        project_title=project_title,
+        heading_level=config.header_heading_level,
+    )
+    _add_title_page(document, project_title=project_title, config=config)
 
     pages_seen: set[_uuid.UUID] = set()
     blocks_seen: set[_uuid.UUID] = set()
@@ -283,15 +426,20 @@ async def build_translation_docx_from_snapshot(
             segment=segment,
             at_or_before=revision.created_at,
         )
-        target = revision.after_text
-        style = _BLOCK_TYPE_STYLE.get(block.block_type, "Normal")
-        if source.strip():
+        embedded_source, embedded_target = split_source_target_text(revision.after_text)
+        target = embedded_target or revision.after_text
+        if embedded_source and not source:
+            source = embedded_source
+        style = _style_for_block(block.block_type, config)
+        if source.strip() and _include_source_for_block(block.block_type, config):
             ar_paragraph = document.add_paragraph(source, style=style)
             ar_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
             _set_paragraph_rtl(ar_paragraph)
         if target.strip() or not source.strip():
             de_paragraph = document.add_paragraph(target or "", style=style)
             de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+
+    _add_back_toc(document, config)
 
     buffer = io.BytesIO()
     document.save(buffer)
@@ -314,12 +462,22 @@ async def build_translation_docx_from_snapshot(
             "n_segments": len(segs_seen),
             "block_types_present": sorted(block_types_seen),
             "rebuilt_from_snapshot": True,
+            "docx_config": {
+                "header_heading_level": config.header_heading_level,
+                "chapter_break_heading_level": config.chapter_break_heading_level,
+                "toc_position": config.toc_position,
+                "display_arabic_chapter_headings": config.display_arabic_chapter_headings,
+            },
         },
     )
 
 
 __all__ = [
+    "DEFAULT_DOCX_CONFIG",
     "TranslationDocxArtefact",
+    "TranslationDocxConfig",
     "build_translation_docx",
     "build_translation_docx_from_snapshot",
+    "docx_config_from_export_payload",
+    "docx_config_from_pflichtfragen",
 ]

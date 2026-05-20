@@ -51,6 +51,7 @@ from waraq.preflight.exceptions import GuardNearBlocked, PflichthinweisCannotBeW
 from waraq.preflight.guard_near import (
     FontResolver,
     GuardNearResult,
+    GuardNearViolation,
     RtlDetector,
     StyleTemplateDetector,
     run_guard_near_checks,
@@ -113,6 +114,7 @@ async def start_preflight_run(
     rtl_detector: RtlDetector | None = None,
     style_template_detector: StyleTemplateDetector | None = None,
     font_resolver: FontResolver | None = None,
+    blocking_guard_near_violations: set[GuardNearViolation] | None = None,
 ) -> Job:
     """Open a fresh preflight run as a Job (state=PENDING → RUNNING).
 
@@ -133,6 +135,7 @@ async def start_preflight_run(
         rtl_detector=rtl_detector,
         style_template_detector=style_template_detector,
         font_resolver=font_resolver,
+        blocking_violations=blocking_guard_near_violations,
     )
     if not guard_result.passes:
         blockers = ", ".join(b.value for b in guard_result.blockers)
@@ -161,6 +164,7 @@ async def evaluate_guard_near(
     rtl_detector: RtlDetector | None = None,
     style_template_detector: StyleTemplateDetector | None = None,
     font_resolver: FontResolver | None = None,
+    blocking_guard_near_violations: set[GuardNearViolation] | None = None,
 ) -> GuardNearResult:
     """Run guard-near checks without attempting to open a run.
 
@@ -174,6 +178,7 @@ async def evaluate_guard_near(
         rtl_detector=rtl_detector,
         style_template_detector=style_template_detector,
         font_resolver=font_resolver,
+        blocking_violations=blocking_guard_near_violations,
     )
 
 

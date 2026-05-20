@@ -42,7 +42,7 @@ from waraq.export.artefact_storage import (
     ArtefactStoreCommitFailed,
     InMemoryArtefactStore,
 )
-from waraq.export.docx_builder import build_translation_docx
+from waraq.export.docx_builder import build_translation_docx, docx_config_from_pflichtfragen
 from waraq.export.enums import ExportGateMode
 from waraq.export.exceptions import (
     CanonRuleViolationsDetected,
@@ -55,7 +55,13 @@ from waraq.export.snapshot import (
 )
 from waraq.identity.service import new_uuid
 from waraq.jobs import complete_job, fail_job, start_job
-from waraq.preflight import PreflightState, evaluate_preflight, start_preflight_run
+from waraq.preflight import (
+    PdfFormatChoice,
+    PreflightState,
+    evaluate_preflight,
+    read_pdf_format_choice,
+    start_preflight_run,
+)
 from waraq.preflight.service import JOB_TYPE as PREFLIGHT_JOB_TYPE
 from waraq.provenance import create_po
 from waraq.schemas import DecisionEvent, Job, ProvenanceObject
@@ -303,13 +309,81 @@ async def run_export_job(
         else []
     )
 
-    # --- Step 3: build artefact (read-only) ---
+    preflight_decision_scope_id = str(config.preflight_run.job_uuid)
+
+    # --- Step 3: build export config + artefact (read-only) ---
+    # Build the snapshots first; they read project state, no writes.
+    (
+        revision_snapshot,
+        snapshot_seg_uuids,
+        page_uuids,
+        block_uuids,
+    ) = await collect_revision_snapshot(
+        session=session,
+        project_uuid=config.project_uuid,
+        segment_uuids=config.segment_uuids,
+    )
+    active_de_uuids = await collect_active_decision_event_uuids(
+        session=session,
+        project_uuid=config.project_uuid,
+        account_uuid=config.account_uuid,
+        segment_uuids=snapshot_seg_uuids,
+        page_uuids=page_uuids,
+        block_uuids=block_uuids,
+        current_export_attempt_id=preflight_decision_scope_id,
+    )
+
+    # Read the Pflichtfragen-Bestätigungen of the current attempt to
+    # populate `export_config`. Per Pflichtfragen-Read-From-Decision-
+    # Events-Test: read DEs, never read the Export-Profil table.
+    pflichtfragen_des = list(
+        (
+            await session.execute(
+                _build_current_pflichtfragen_query(
+                    project_uuid=config.project_uuid,
+                    export_attempt_id=preflight_decision_scope_id,
+                )
+            )
+        ).scalars()
+    )
+    pflichtfragen_payload = [
+        {
+            "decision_event_uuid": str(de.decision_event_uuid),
+            "frage_index": (de.content or {}).get("frage_index"),
+            "frage_key": (de.content or {}).get("frage_key"),
+            "answer": (de.content or {}).get("answer"),
+        }
+        for de in pflichtfragen_des
+    ]
+    docx_config = docx_config_from_pflichtfragen(pflichtfragen_payload)
+    pdf_format = await read_pdf_format_choice(
+        session=session,
+        project_uuid=config.project_uuid,
+        preflight_run_uuid=config.preflight_run.job_uuid,
+    )
+    export_config_payload: dict[str, Any] = {
+        "export_type": config.export_type,
+        "scope_segment_uuids": (
+            [str(u) for u in config.segment_uuids] if config.segment_uuids is not None else None
+        ),
+        "preflight_run_uuid": preflight_decision_scope_id,
+        "pflichtfragen": pflichtfragen_payload,
+        "pdf_format_choice": (pdf_format or PdfFormatChoice.PRINT_PDF_X_1A).value,
+        "docx_layout": {
+            "header_heading_level": docx_config.header_heading_level,
+            "chapter_break_heading_level": docx_config.chapter_break_heading_level,
+            "toc_position": docx_config.toc_position,
+            "display_arabic_chapter_headings": docx_config.display_arabic_chapter_headings,
+        },
+    }
+
     try:
         artefact = await build_translation_docx(
             session=session,
             project_uuid=config.project_uuid,
             project_title=config.project_title,
             segment_uuids=config.segment_uuids,
+            config=docx_config,
         )
     except Exception as exc:
         await fail_job(
@@ -335,55 +409,6 @@ async def run_export_job(
         raise
 
     # --- Step 4: atomic commit ---
-    # Build the snapshots first; they read project state, no writes.
-    (
-        revision_snapshot,
-        snapshot_seg_uuids,
-        page_uuids,
-        block_uuids,
-    ) = await collect_revision_snapshot(
-        session=session,
-        project_uuid=config.project_uuid,
-        segment_uuids=config.segment_uuids,
-    )
-    active_de_uuids = await collect_active_decision_event_uuids(
-        session=session,
-        project_uuid=config.project_uuid,
-        account_uuid=config.account_uuid,
-        segment_uuids=snapshot_seg_uuids,
-        page_uuids=page_uuids,
-        block_uuids=block_uuids,
-        current_export_attempt_id=config.current_export_attempt_id,
-    )
-
-    # Read the Pflichtfragen-Bestätigungen of the current attempt to
-    # populate `export_config`. Per Pflichtfragen-Read-From-Decision-
-    # Events-Test: read DEs, never read the Export-Profil table.
-    pflichtfragen_des = list(
-        (
-            await session.execute(
-                _build_current_pflichtfragen_query(
-                    project_uuid=config.project_uuid,
-                    export_attempt_id=config.current_export_attempt_id,
-                )
-            )
-        ).scalars()
-    )
-    export_config_payload: dict[str, Any] = {
-        "export_type": config.export_type,
-        "scope_segment_uuids": (
-            [str(u) for u in config.segment_uuids] if config.segment_uuids is not None else None
-        ),
-        "pflichtfragen": [
-            {
-                "decision_event_uuid": str(de.decision_event_uuid),
-                "frage_index": (de.content or {}).get("frage_index"),
-                "frage_key": (de.content or {}).get("frage_key"),
-                "answer": (de.content or {}).get("answer"),
-            }
-            for de in pflichtfragen_des
-        ],
-    }
 
     # (a) Move artefact to persistent location.
     try:

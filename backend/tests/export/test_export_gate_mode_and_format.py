@@ -44,7 +44,9 @@ from waraq.export import (
 )
 from waraq.identity import new_uuid
 from waraq.preflight import (
+    PdfFormatChoice,
     PreflightState,
+    confirm_pdf_format_choice,
     confirm_pflichtfrage,
     evaluate_preflight,
     save_export_profile_prefill,
@@ -56,7 +58,7 @@ from waraq.schemas import (
     LogEntry,
     ProvenanceObject,
 )
-from waraq.schemas.enums import DecisionSource, JobState, POType, ScopeType
+from waraq.schemas.enums import JobState, POType, ScopeType
 
 # --- Gate-Mode-Set-Correctly-Test -------------------------------------
 
@@ -209,43 +211,6 @@ class TestPflichtfragenFromDecisionEvents:
                 answer=ans,
             )
 
-        # The Sprint-4 evaluator counts confirmations against the
-        # `preflight_run_uuid`. The export-side pflichtfragen lookup
-        # uses the export_attempt_id. Confirm pflichtfragen against the
-        # export_attempt_id explicitly to drive the test through the
-        # code path Pflichtfragen-Read-From-Decision-Events-Test
-        # exercises (export-side query).
-        export_attempt_id = str(new_uuid())
-        for i in range(1, 5):
-            key, ans = canonical_pflichtfrage_payload(i)
-            await confirm_pflichtfrage(
-                session=db_session,
-                project_uuid=project.project_uuid,
-                preflight_run_uuid=run.job_uuid,
-                frage_index=i,
-                frage_key=key,
-                answer=ans,
-            )
-
-        # Re-write a confirmation tagged with the EXPORT attempt id.
-        from waraq.decisions import create_decision_event
-
-        for i in range(1, 5):
-            key, ans = canonical_pflichtfrage_payload(i)
-            await create_decision_event(
-                session=db_session,
-                scope_type=ScopeType.PROJECT,
-                scope_uuid=project.project_uuid,
-                decision_type="pflichtfrage_bestaetigung",
-                decision_source=DecisionSource.PREFLIGHT_CONFIRMATION,
-                content={
-                    "frage_index": i,
-                    "frage_key": key,
-                    "answer": ans,
-                },
-                related_export_attempt_id=export_attempt_id,
-            )
-
         ev = await evaluate_preflight(
             session=db_session,
             project_uuid=project.project_uuid,
@@ -256,7 +221,7 @@ class TestPflichtfragenFromDecisionEvents:
             project_uuid=project.project_uuid,
             account_uuid=account_uuid,
             project_title="T",
-            current_export_attempt_id=export_attempt_id,
+            current_export_attempt_id=str(new_uuid()),
             preflight_run=run,
         )
         result = await run_export_job(session=db_session, config=config)
@@ -557,3 +522,64 @@ class TestFormatvorlagenAdherence:
         doc = Document(io.BytesIO(bytes_))
         body_xml = doc.element.body.xml  # type: ignore[attr-defined]
         assert 'TOC \\o "1-6"' in body_xml
+
+    async def test_preflight_choices_drive_docx_layout(self, db_session: AsyncSession) -> None:
+        project, account_uuid = await seed_project_with_account(db_session)
+        await seed_segment_with_revision(
+            db_session,
+            project=project,
+            text="باب الطهارة\n---\nChapter of purification",
+            block_type="UE",
+        )
+
+        run = await start_preflight_run(session=db_session, project_uuid=project.project_uuid)
+        custom_answers = {
+            1: ("header_heading_level", {"heading_level": 2}),
+            2: ("chapter_break_heading_level", {"heading_level": 3}),
+            3: ("toc_position", {"position": "back"}),
+            4: ("display_arabic_chapter_headings", {"display": False}),
+        }
+        for idx, (key, answer) in custom_answers.items():
+            await confirm_pflichtfrage(
+                session=db_session,
+                project_uuid=project.project_uuid,
+                preflight_run_uuid=run.job_uuid,
+                frage_index=idx,
+                frage_key=key,
+                answer=answer,
+            )
+        await confirm_pdf_format_choice(
+            session=db_session,
+            project_uuid=project.project_uuid,
+            preflight_run_uuid=run.job_uuid,
+            choice=PdfFormatChoice.DIGITAL_RGB,
+        )
+        ev = await evaluate_preflight(
+            session=db_session, project_uuid=project.project_uuid, preflight_run=run
+        )
+        assert ev.state == PreflightState.EXPORTIERBAR
+
+        from waraq.export import InMemoryArtefactStore
+
+        store = InMemoryArtefactStore()
+        result = await run_export_job(
+            session=db_session,
+            config=ExportConfig(
+                project_uuid=project.project_uuid,
+                account_uuid=account_uuid,
+                project_title="T",
+                current_export_attempt_id=str(new_uuid()),
+                preflight_run=run,
+            ),
+            artefact_store=store,
+        )
+        bytes_ = store.get(artefact_uuid=result.artefact_uuid)
+        assert bytes_ is not None
+        doc = Document(io.BytesIO(bytes_))
+        all_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Chapter of purification" in all_text
+        assert "باب الطهارة" not in all_text
+        heading = next(p for p in doc.paragraphs if p.text == "Chapter of purification")
+        assert heading.style.name == "Heading 3"
+        assert 'STYLEREF "Heading 2"' in doc.sections[0].header._element.xml
+        assert result.export_event_po.payload["export_config"]["pdf_format_choice"] == "digital_rgb"

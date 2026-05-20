@@ -121,16 +121,21 @@ def _reconstruct_structured_text(full: Any) -> str:
                     symbols = getattr(word, "symbols", None) or []
                     if not symbols:
                         continue
+                    word_parts: list[str] = []
+                    last_break_name: str | None = None
                     for symbol in symbols:
-                        _append(getattr(symbol, "text", "") or "")
+                        word_parts.append(getattr(symbol, "text", "") or "")
                         break_name = _detected_break_name(symbol)
-                        if break_name in {"SPACE", "SURE_SPACE", "UNKNOWN"}:
-                            _append(" ")
-                        elif break_name in {"EOL_SURE_SPACE", "LINE_BREAK"}:
-                            _append("\n")
-                        elif break_name == "HYPHEN":
-                            # Soft line-wrap hyphen; don't force an extra space.
-                            continue
+                        if break_name:
+                            last_break_name = break_name
+                    _append("".join(word_parts))
+                    if last_break_name in {"SPACE", "SURE_SPACE", "UNKNOWN"}:
+                        _append(" ")
+                    elif last_break_name in {"EOL_SURE_SPACE", "LINE_BREAK"}:
+                        _append("\n")
+                    elif last_break_name == "HYPHEN":
+                        # Soft line-wrap hyphen; don't force an extra space.
+                        continue
                 if len(out) > paragraph_start_len and not "".join(out).endswith("\n"):
                     _append("\n")
                 if len(out) > paragraph_start_len:

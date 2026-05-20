@@ -32,7 +32,13 @@ def _test_database_url() -> str:
     return parent()
 
 
-async def make_page_block_segment(project_uuid_str: str, *, text: str = "بسم الله") -> _M4Fixture:
+async def make_page_block_segment(
+    project_uuid_str: str,
+    *,
+    text: str = "بسم الله",
+    block_type: str = "main_text",
+    page_index: int = 1,
+) -> _M4Fixture:
     """Insert one page + block + segment under the given project. Commits
     via its own engine so the API session sees them. Returns the UUIDs."""
     engine = create_async_engine(_test_database_url(), future=True)
@@ -47,7 +53,7 @@ async def make_page_block_segment(project_uuid_str: str, *, text: str = "بسم 
                 Page(
                     page_uuid=page_uuid,
                     project_uuid=project_uuid,
-                    page_index=1,
+                    page_index=page_index,
                 )
             )
             await session.flush()
@@ -55,7 +61,7 @@ async def make_page_block_segment(project_uuid_str: str, *, text: str = "بسم 
                 Block(
                     block_uuid=block_uuid,
                     page_uuid=page_uuid,
-                    block_type="main_text",
+                    block_type=block_type,
                     block_index=0,
                 )
             )

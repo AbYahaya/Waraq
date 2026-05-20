@@ -34,7 +34,10 @@ from pydantic import BaseModel, Field
 from waraq.api._ownership import owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.export import ExportConfig, run_export_job
-from waraq.export.docx_builder import build_translation_docx_from_snapshot
+from waraq.export.docx_builder import (
+    build_translation_docx_from_snapshot,
+    docx_config_from_export_payload,
+)
 from waraq.export.exceptions import (
     CanonRuleViolationsDetected,
     ExportNotInExportableState,
@@ -78,11 +81,13 @@ async def _rebuild_docx_for_po(*, session: DbSession, po: ProvenanceObject) -> t
     rev_uuids = [_uuid.UUID(s) for s in snapshot if isinstance(s, str)]
 
     project_title = str(payload.get("project_title") or "Waraq Export")
+    docx_config = docx_config_from_export_payload(payload)
     artefact = await build_translation_docx_from_snapshot(
         session=session,
         project_uuid=po.scope_uuid,
         project_title=project_title,
         revision_uuids=rev_uuids,
+        config=docx_config,
     )
     raw_filename = str(payload.get("filename") or f"export_{po.po_uuid}.docx")
     stem = raw_filename.rsplit(".", 1)[0]
@@ -196,7 +201,7 @@ async def download_translation_artefact_pdf(
     po_uuid: _uuid.UUID,
     session: DbSession,
     current: CurrentAccount,
-    format: PdfFormatChoice = PdfFormatChoice.PRINT_PDF_X_1A,
+    format: PdfFormatChoice | None = None,
 ) -> StreamingResponse:
     """Stream a PDF artefact for the EXPORT_EVENT-PO.
 
@@ -219,7 +224,18 @@ async def download_translation_artefact_pdf(
     po = await _resolve_export_event_po(session, po_uuid, current.account_uuid)
     docx_bytes, stem = await _rebuild_docx_for_po(session=session, po=po)
 
-    is_digital = format == PdfFormatChoice.DIGITAL_RGB
+    payload = po.payload or {}
+    export_config = payload.get("export_config") if isinstance(payload, dict) else None
+    stored_choice = None
+    if isinstance(export_config, dict):
+        raw_choice = export_config.get("pdf_format_choice")
+        if isinstance(raw_choice, str):
+            try:
+                stored_choice = PdfFormatChoice(raw_choice)
+            except ValueError:
+                stored_choice = None
+    effective_format = format or stored_choice or PdfFormatChoice.PRINT_PDF_X_1A
+    is_digital = effective_format == PdfFormatChoice.DIGITAL_RGB
     try:
         result = await docx_to_pdf_print(
             docx_bytes=docx_bytes,
@@ -234,7 +250,7 @@ async def download_translation_artefact_pdf(
 
     headers = {
         "Content-Disposition": f'attachment; filename="{stem}.pdf"',
-        "X-Waraq-PDF-Format": format.value,
+        "X-Waraq-PDF-Format": effective_format.value,
         "X-Waraq-PDF-X-1a": "true" if result.is_pdf_x_1a else "false",
         "X-Waraq-veraPDF-Valid": (
             ("true" if result.verapdf_validation["valid"] else "false")

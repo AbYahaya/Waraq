@@ -275,7 +275,7 @@ class TestPromptInjection:
                 @staticmethod
                 async def create(**kw: object) -> _StubResponse:
                     captured_messages.append(kw["messages"])
-                    return _StubResponse("translated")
+                    return _StubResponse("[[L0001]] translated")
 
         class _StubClient:
             chat = _StubChat()
@@ -337,7 +337,7 @@ class TestPromptInjection:
                 @staticmethod
                 async def create(**kw: object) -> _StubResponse:
                     captured_messages.append(kw["messages"])
-                    return _StubResponse("translated")
+                    return _StubResponse("[[L0001]] translated")
 
         class _StubClient:
             chat = _StubChat()

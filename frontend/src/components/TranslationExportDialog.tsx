@@ -62,6 +62,13 @@ interface PreflightEvaluateResponse {
   pflichtfrage_active_count: number;
 }
 
+interface GuardNearResponse {
+  passes: boolean;
+  blockers: string[];
+  advisories: string[];
+  evidence: Record<string, string[]>;
+}
+
 interface ExportRunResponse {
   job_uuid: string;
   job_state: string;
@@ -72,6 +79,8 @@ interface ExportRunResponse {
   gate_mode: string;
   n_segments_exported: number;
 }
+
+type PdfFormatChoice = "digital_rgb" | "print_pdf_x_1a";
 
 // Canonical 4 Pflichtfragen per §4.7.2 — keys + answer shapes are
 // validated server-side via per-question Pydantic schemas. The shape
@@ -125,6 +134,47 @@ const DEFAULT_PFLICHTFRAGEN_STATE: PflichtfragenState = {
   display_arabic_chapter_headings: true,
 };
 
+const PREFLIGHT_LABELS: Record<string, string> = {
+  digit_standard: "Some exported translation text still contains Arabic-Indic digits.",
+  critical_rtl: "A critical right-to-left formatting issue was detected.",
+  style_template_integrity: "The export style template has a structural problem.",
+  critical_font_missing: "One or more preferred print fonts are missing on the backend.",
+  p_03_kritisch: "Critical audit, consistency, or OCR findings are still unresolved.",
+  p_04_hoch_pflichthinweis: "High-priority mandatory notices are still unresolved.",
+  hadith_h2: "A hadith reference check is blocking export.",
+  konfigurationsschicht_unvollstaendig:
+    "All four export setup questions must be confirmed for this run.",
+  w_01_mittel_audit: "Medium audit findings need acknowledgement before export.",
+  w_02_konsistenz: "Consistency findings need acknowledgement before export.",
+  w_03_formatvorlagen_graduell:
+    "Non-critical style-template differences need acknowledgement before export.",
+  hadith_h1: "Hadith reference warnings need acknowledgement before export.",
+};
+
+const describeCode = (code: string): string => PREFLIGHT_LABELS[code] ?? code;
+
+const describeApiError = (err: unknown, fallback: string): string => {
+  if (!(err instanceof ApiError)) return fallback;
+  const body = err.body as { detail?: unknown } | null;
+  const detail = body?.detail;
+  if (detail && typeof detail === "object") {
+    const reason = "reason" in detail ? String((detail as { reason?: unknown }).reason) : null;
+    const blockers = Array.isArray((detail as { blockers?: unknown }).blockers)
+      ? ((detail as { blockers: unknown[] }).blockers as unknown[]).map(String)
+      : [];
+    const advisories = Array.isArray((detail as { advisories?: unknown }).advisories)
+      ? ((detail as { advisories: unknown[] }).advisories as unknown[]).map(String)
+      : [];
+    const parts = [
+      reason ? describeCode(reason) : fallback,
+      ...blockers.map(describeCode),
+      ...advisories.map((code) => `Advisory: ${describeCode(code)}`),
+    ];
+    return parts.join(" ");
+  }
+  return err.detail || fallback;
+};
+
 export interface TranslationExportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -145,6 +195,8 @@ export function TranslationExportDialog({
   const [pflichtfragenAnswers, setPflichtfragenAnswers] = useState<PflichtfragenState>(
     DEFAULT_PFLICHTFRAGEN_STATE,
   );
+  const [pdfFormatChoice, setPdfFormatChoice] =
+    useState<PdfFormatChoice>("print_pdf_x_1a");
   const [preflightState, setPreflightState] = useState<PreflightEvaluateResponse | null>(
     null,
   );
@@ -179,6 +231,13 @@ export function TranslationExportDialog({
   });
   const { refetch: refetchTranslationAvailability } = translationAvailabilityQ;
 
+  const guardNearQ = useQuery<GuardNearResponse>({
+    queryKey: ["projects", projectUuid, "preflight", "guard-near"],
+    enabled: open,
+    queryFn: () =>
+      api.get<GuardNearResponse>(`/projects/${projectUuid}/preflight/guard-near`),
+  });
+
   // Collect every segment UUID across all pages — translation runs
   // project-wide.
   const allSegmentsQuery = useQuery<Segment[]>({
@@ -210,7 +269,7 @@ export function TranslationExportDialog({
     },
     onSuccess: (j) => setTranslationJob(j),
     onError: (err) =>
-      setError(err instanceof ApiError ? err.detail : "Translation failed"),
+      setError(describeApiError(err, "Translation failed")),
   });
 
   // Poll the job while it's still active so we can show a progress bar
@@ -242,7 +301,7 @@ export function TranslationExportDialog({
     },
     onSuccess: (j) => setTranslationJob(j),
     onError: (err) =>
-      setError(err instanceof ApiError ? err.detail : "Cancel failed"),
+      setError(describeApiError(err, "Cancel failed")),
   });
 
   const jobPayload = (translationJob?.payload ?? {}) as TranslationJobPayload;
@@ -266,7 +325,7 @@ export function TranslationExportDialog({
       setPreflightState(null);
     },
     onError: (err) =>
-      setError(err instanceof ApiError ? err.detail : "Preflight could not start"),
+      setError(describeApiError(err, "Preflight could not start")),
   });
 
   const confirmFrageMutation = useMutation({
@@ -286,19 +345,43 @@ export function TranslationExportDialog({
         return next;
       }),
     onError: (err) =>
-      setError(err instanceof ApiError ? err.detail : "Confirmation failed"),
+      setError(describeApiError(err, "Confirmation failed")),
   });
 
   const evaluateMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!preflightRunUuid) throw new Error("no preflight run");
+      await api.post(
+        `/projects/${projectUuid}/preflight/runs/${preflightRunUuid}/pdf-format`,
+        { choice: pdfFormatChoice },
+      );
       return api.post<PreflightEvaluateResponse>(
         `/projects/${projectUuid}/preflight/runs/${preflightRunUuid}/evaluate`,
       );
     },
     onSuccess: (e) => setPreflightState(e),
     onError: (err) =>
-      setError(err instanceof ApiError ? err.detail : "Evaluation failed"),
+      setError(describeApiError(err, "Evaluation failed")),
+  });
+
+  const acceptWarningsMutation = useMutation({
+    mutationFn: async (): Promise<PreflightEvaluateResponse> => {
+      if (!preflightRunUuid || !preflightState) throw new Error("no warning state");
+      await Promise.all(
+        preflightState.open_warning_slots.map((warningSlot) =>
+          api.post(
+            `/projects/${projectUuid}/preflight/runs/${preflightRunUuid}/warnings`,
+            { warning_slot: warningSlot },
+          ),
+        ),
+      );
+      return api.post<PreflightEvaluateResponse>(
+        `/projects/${projectUuid}/preflight/runs/${preflightRunUuid}/evaluate`,
+      );
+    },
+    onSuccess: (e) => setPreflightState(e),
+    onError: (err) =>
+      setError(describeApiError(err, "Warning acknowledgement failed")),
   });
 
   const exportMutation = useMutation({
@@ -312,7 +395,7 @@ export function TranslationExportDialog({
     },
     onSuccess: (r) => setExportResult(r),
     onError: (err) =>
-      setError(err instanceof ApiError ? err.detail : "Export failed"),
+      setError(describeApiError(err, "Export failed")),
   });
 
   const reset = (): void => {
@@ -321,6 +404,7 @@ export function TranslationExportDialog({
     setPreflightRunUuid(null);
     setConfirmedFragen(new Set());
     setPflichtfragenAnswers(DEFAULT_PFLICHTFRAGEN_STATE);
+    setPdfFormatChoice("print_pdf_x_1a");
     setPreflightState(null);
     setExportResult(null);
   };
@@ -379,9 +463,8 @@ export function TranslationExportDialog({
           <DialogHeader>
             <DialogTitle>Export translation</DialogTitle>
             <DialogDescription>
-              Translates every segment, runs preflight (4 Pflichtfragen +
-              audit/consistency gates), then writes the EXPORT_EVENT and
-              offers DOCX + PDF download.
+              Translates every segment, checks export readiness, records the
+              required setup choices, then creates DOCX and PDF downloads.
             </DialogDescription>
           </DialogHeader>
           {/* --- Stage 1: translation -------------------------------- */}
@@ -531,6 +614,39 @@ export function TranslationExportDialog({
             )}
           >
             <header className="text-sm font-medium">2. Preflight</header>
+            <p className="text-xs text-muted-foreground">
+              This step does not rewrite the document. It checks whether export
+              is safe, records the layout choices below, and explains any
+              blockers or warnings before the file is generated.
+            </p>
+            {guardNearQ.data && (
+              <div className="rounded border bg-muted/30 p-2 text-xs space-y-1">
+                <p className="font-medium">
+                  Readiness preview:{" "}
+                  <span
+                    className={
+                      guardNearQ.data.passes ? "text-emerald-700" : "text-destructive"
+                    }
+                  >
+                    {guardNearQ.data.passes ? "no hard blockers" : "blocked"}
+                  </span>
+                </p>
+                {guardNearQ.data.blockers.length > 0 && (
+                  <ul className="list-disc pl-4 text-destructive">
+                    {guardNearQ.data.blockers.map((code) => (
+                      <li key={code}>{describeCode(code)}</li>
+                    ))}
+                  </ul>
+                )}
+                {guardNearQ.data.advisories.length > 0 && (
+                  <ul className="list-disc pl-4 text-amber-700">
+                    {guardNearQ.data.advisories.map((code) => (
+                      <li key={code}>{describeCode(code)}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             {!translationReady && persistedTranslation && (
               <p className="text-xs text-muted-foreground">
                 Preflight unlocks when the whole project has a fresh translation state.
@@ -554,8 +670,8 @@ export function TranslationExportDialog({
             {preflightRunUuid && (
               <>
                 <p className="text-xs text-muted-foreground">
-                  Confirm each Pflichtfrage (Sprint 4 §A — active
-                  confirmation per export run).
+                  Confirm each setup question for this export run. These choices
+                  are written into the export record and applied to the DOCX/PDF.
                 </p>
                 <ul className="space-y-2">
                   {PFLICHTFRAGEN.map((f) => {
@@ -639,6 +755,24 @@ export function TranslationExportDialog({
                     );
                   })}
                 </ul>
+                <div className="rounded border p-2 space-y-1">
+                  <Label htmlFor="pdf-format">PDF output</Label>
+                  <select
+                    id="pdf-format"
+                    className="h-8 rounded border bg-background px-2 text-sm"
+                    value={pdfFormatChoice}
+                    onChange={(e) =>
+                      setPdfFormatChoice(e.target.value as PdfFormatChoice)
+                    }
+                  >
+                    <option value="print_pdf_x_1a">Print PDF/X-1a</option>
+                    <option value="digital_rgb">Digital RGB PDF</option>
+                  </select>
+                  <p className="text-[11px] text-muted-foreground">
+                    Print mode uses the stricter Ghostscript PDF/X path; digital
+                    mode is lighter and better for screen review.
+                  </p>
+                </div>
                 <Button
                   size="sm"
                   variant="outline"
@@ -671,16 +805,34 @@ export function TranslationExportDialog({
                     {preflightState.blocking_reasons.length > 0 && (
                       <ul className="list-disc pl-4 text-destructive">
                         {preflightState.blocking_reasons.map((r) => (
-                          <li key={r}>{r}</li>
+                          <li key={r}>{describeCode(r)}</li>
                         ))}
                       </ul>
                     )}
                     {preflightState.open_warning_slots.length > 0 && (
-                      <ul className="list-disc pl-4 text-amber-700">
-                        {preflightState.open_warning_slots.map((w) => (
-                          <li key={w}>{w}</li>
-                        ))}
-                      </ul>
+                      <div className="space-y-2">
+                        <ul className="list-disc pl-4 text-amber-700">
+                          {preflightState.open_warning_slots.map((w) => (
+                            <li key={w}>{describeCode(w)}</li>
+                          ))}
+                        </ul>
+                        {preflightState.blocking_reasons.length === 0 &&
+                          preflightState.state === "blockiert" && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={acceptWarningsMutation.isPending}
+                              onClick={() => {
+                                setError(null);
+                                acceptWarningsMutation.mutate();
+                              }}
+                            >
+                              {acceptWarningsMutation.isPending
+                                ? "Acknowledging…"
+                                : "Acknowledge warnings and re-check"}
+                            </Button>
+                          )}
+                      </div>
                     )}
                   </div>
                 )}

@@ -208,10 +208,21 @@ Read order:
   - added missing imports uncovered by lint/typecheck
   - clarified optional project UUID handling in translation protected-passage resolution
   - renamed OCR page-wide Stage-3 locals to avoid mypy redefinition errors
+  - updated OpenAI translator tests to return tagged `[[L0001]]` output so
+    they match the new line-protocol truncation guard
+  - corrected the promotion inertness test to translate a fresh matching
+    segment instead of reusing a segment whose latest manual revision is a
+    user correction
+  - hardened OCR auto-run orphan/cancel handling after rollback and stale-row
+    refreshes
+  - improved Cloud Vision structured text reconstruction so symbols inside
+    one OCR word are joined before applying word-level breaks
   - local checks now pass:
     - `ruff check waraq tests`
     - `ruff format --check waraq tests`
     - `mypy waraq`
+    - full pytest against local disposable Postgres:
+      `1589 passed, 2 skipped, 1 warning`
 
 ## Key Diagnosis
 

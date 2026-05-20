@@ -31,8 +31,11 @@ from waraq.preflight import (
     PFLICHTFRAGE_COUNT,
     PFLICHTFRAGEN,
     GuardNearBlocked,
+    GuardNearViolation,
     PdfFormatChoice,
     PreflightError,
+    WarningSlot,
+    accept_warning_gate,
     confirm_pdf_format_choice,
     confirm_pflichtfrage,
     evaluate_guard_near,
@@ -44,6 +47,12 @@ from waraq.preflight.service import JOB_TYPE as PREFLIGHT_JOB_TYPE
 from waraq.schemas import Job
 
 router = APIRouter(tags=["preflight"])
+
+
+TESTER_BLOCKING_GUARD_NEAR: set[GuardNearViolation] = {
+    GuardNearViolation.CRITICAL_RTL,
+    GuardNearViolation.STYLE_TEMPLATE_INTEGRITY,
+}
 
 
 class PreflightRunResponse(BaseModel):
@@ -76,6 +85,15 @@ class PreflightEvaluateResponse(BaseModel):
     w_03_formatvorlagen_finding_keys: list[str]
     hadith_h2_status_uuids: list[_uuid.UUID]
     hadith_h1_status_uuids: list[_uuid.UUID]
+
+
+class WarningAcceptRequest(BaseModel):
+    warning_slot: WarningSlot
+
+
+class WarningAcceptResponse(BaseModel):
+    decision_event_uuid: _uuid.UUID
+    warning_slot: WarningSlot
 
 
 async def _resolve_run_or_404(
@@ -132,6 +150,7 @@ async def list_pflichtfrage_definitions() -> PflichtfragenDefinitionsResponse:
 class GuardNearResponse(BaseModel):
     passes: bool
     blockers: list[str]
+    advisories: list[str] = Field(default_factory=list)
     evidence: dict[str, list[str]]
 
 
@@ -152,10 +171,15 @@ async def get_guard_near_state(
     `start_preflight_run`.
     """
     await owned_project_or_404(session, project_uuid, current.account_uuid)
-    result = await evaluate_guard_near(session=session, project_uuid=project_uuid)
+    result = await evaluate_guard_near(
+        session=session,
+        project_uuid=project_uuid,
+        blocking_guard_near_violations=TESTER_BLOCKING_GUARD_NEAR,
+    )
     return GuardNearResponse(
         passes=result.passes,
         blockers=[b.value for b in result.blockers],
+        advisories=[a.value for a in result.advisories],
         evidence=result.evidence,
     )
 
@@ -172,7 +196,11 @@ async def open_preflight_run(
 ) -> PreflightRunResponse:
     await owned_project_or_404(session, project_uuid, current.account_uuid)
     try:
-        job = await start_preflight_run(session=session, project_uuid=project_uuid)
+        job = await start_preflight_run(
+            session=session,
+            project_uuid=project_uuid,
+            blocking_guard_near_violations=TESTER_BLOCKING_GUARD_NEAR,
+        )
     except GuardNearBlocked as exc:
         # Per §4.7.3 — preflight dialog refused; surface the blockers
         # so the UI can render the resolution panel directly. 409 is
@@ -183,6 +211,7 @@ async def open_preflight_run(
             detail={
                 "reason": "guard_near_blocked",
                 "blockers": [b.value for b in guard_result.blockers],
+                "advisories": [a.value for a in guard_result.advisories],
                 "evidence": guard_result.evidence,
             },
         ) from exc
@@ -278,6 +307,37 @@ async def get_pdf_format(
         session=session, project_uuid=project_uuid, preflight_run_uuid=run_uuid
     )
     return PdfFormatChoiceReadResponse(choice=choice)
+
+
+@router.post(
+    "/projects/{project_uuid}/preflight/runs/{run_uuid}/warnings",
+    response_model=WarningAcceptResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def accept_preflight_warning(
+    project_uuid: _uuid.UUID,
+    run_uuid: _uuid.UUID,
+    req: WarningAcceptRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> WarningAcceptResponse:
+    """Accept one warning slot for this readiness run and allow re-evaluation."""
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    job = await _resolve_run_or_404(session=session, project_uuid=project_uuid, run_uuid=run_uuid)
+    try:
+        de = await accept_warning_gate(
+            session=session,
+            project_uuid=project_uuid,
+            preflight_run=job,
+            warning_slot=req.warning_slot,
+            actor_uuid=current.account_uuid,
+        )
+    except PreflightError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return WarningAcceptResponse(
+        decision_event_uuid=de.decision_event_uuid,
+        warning_slot=req.warning_slot,
+    )
 
 
 @router.post(

@@ -253,6 +253,7 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
         payload["current_page_index"] = page.page_index
         flag_modified(job, "payload")
         await session.commit()
+        page_index = page.page_index
 
         logger.info(
             "ocr_auto_run.page.start",
@@ -286,12 +287,13 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
                 },
             )
             await session.rollback()
+            await session.refresh(job)
             await fail_job(
                 session=session,
                 job=job,
                 error={
                     "phase": "user_cancelled",
-                    "page_index": page.page_index,
+                    "page_index": page_index,
                     "processed_count": processed,
                 },
             )
@@ -307,12 +309,13 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
                 },
             )
             await session.rollback()
+            await session.refresh(job)
             await fail_job(
                 session=session,
                 job=job,
                 error={
                     "phase": "page_timeout",
-                    "page_index": page.page_index,
+                    "page_index": page_index,
                     "timeout_s": PER_PAGE_TIMEOUT_SECONDS,
                     "processed_count": processed,
                 },
@@ -328,12 +331,13 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
                 },
             )
             await session.rollback()
+            await session.refresh(job)
             await fail_job(
                 session=session,
                 job=job,
                 error={
                     "phase": "page_error",
-                    "page_index": page.page_index,
+                    "page_index": page_index,
                     "error_class": type(exc).__name__,
                     "message": str(exc)[:300],
                     "processed_count": processed,
@@ -449,6 +453,7 @@ async def reap_orphan_jobs(
     candidates = list(result.scalars())
     reaped: list[_uuid.UUID] = []
     for job in candidates:
+        await session.refresh(job, ["updated_at", "state"])
         payload: dict[str, Any] = job.payload or {}
         cancel_requested = bool(payload.get("cancel_requested"))
         stale = job.updated_at < threshold

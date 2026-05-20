@@ -87,6 +87,18 @@ class TestGuardNearChecks:
         )
         assert result.passes is True
 
+    async def test_arabic_source_digits_do_not_block_when_translation_is_clean(
+        self, db_session: AsyncSession
+    ) -> None:
+        project = await seed_project(db_session)
+        await seed_segment(db_session, project=project, text="صفحة ٤٢\n---\nPage 42")
+        result = await run_guard_near_checks(
+            session=db_session,
+            project_uuid=project.project_uuid,
+            font_resolver=_all_fonts_present,
+        )
+        assert result.passes is True
+
     async def test_rtl_detector_blocks(self, db_session: AsyncSession) -> None:
         project = await seed_project(db_session)
         result = await run_guard_near_checks(
