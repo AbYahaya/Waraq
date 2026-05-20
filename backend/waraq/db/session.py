@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from functools import lru_cache
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,14 +22,34 @@ class Settings(BaseSettings):
         Managed Postgres providers (Fly Postgres, Supabase, Neon) expose
         `DATABASE_URL` with a `postgres://` or `postgresql://` scheme.
         SQLAlchemy + asyncpg need the explicit `postgresql+asyncpg://`
-        driver suffix; rewriting here keeps the runtime + alembic env in
-        sync without per-deploy URL massaging.
+        driver suffix. Some providers also append libpq-style query
+        params such as `sslmode=disable`; SQLAlchemy passes URL query
+        params to asyncpg as keyword args, where `sslmode` is invalid.
+        Convert it to asyncpg's supported `ssl=...` form so Fly's
+        private Postgres URL does not attempt a TLS handshake.
         """
         if v.startswith("postgres://"):
-            return "postgresql+asyncpg://" + v[len("postgres://") :]
+            v = "postgresql+asyncpg://" + v[len("postgres://") :]
         if v.startswith("postgresql://") and "+asyncpg" not in v.split("://", 1)[0]:
-            return "postgresql+asyncpg://" + v[len("postgresql://") :]
-        return v
+            v = "postgresql+asyncpg://" + v[len("postgresql://") :]
+        parts = urlsplit(v)
+        query_items: list[tuple[str, str]] = []
+        has_ssl = False
+        sslmode: str | None = None
+        for key, value in parse_qsl(parts.query, keep_blank_values=True):
+            key_lower = key.lower()
+            if key_lower == "ssl":
+                has_ssl = True
+                query_items.append((key, value))
+            elif key_lower == "sslmode":
+                sslmode = value
+            else:
+                query_items.append((key, value))
+        if sslmode and not has_ssl:
+            query_items.append(("ssl", sslmode))
+        return urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(query_items), parts.fragment)
+        )
 
     redis_url: str = "redis://localhost:6379/0"
     # Local persistent path for uploaded source files. Per-upload layout:

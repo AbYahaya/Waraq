@@ -1,0 +1,36 @@
+# Secrets and local runtime configuration
+.env
+.env.*
+!.env.example
+
+# Local Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local/generated app data
+uploads/
+exports/
+tmp/
+*.sqlite
+*.sqlite3
+
+# VCS/editor noise
+.git/
+.gitignore
+.DS_Store
+.idea/
+.vscode/
+
+# Tests are not needed in the production runtime image
+tests/
+
+# Local docs/logs not needed by the backend container
+*.log

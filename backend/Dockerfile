@@ -13,6 +13,7 @@ FROM python:3.12-slim-bookworm AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -26,6 +27,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY pyproject.toml ./
+COPY waraq ./waraq
 
 # Install into a venv we'll copy to the runtime stage. Using `pip
 # install -e .` here lets editable mode work for dev; for production
@@ -39,6 +41,7 @@ FROM python:3.12-slim-bookworm AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
     PATH="/opt/venv/bin:$PATH" \
     UPLOADS_DIR=/data/uploads
 

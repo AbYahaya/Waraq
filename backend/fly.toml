@@ -1,57 +1,46 @@
-# fly.toml — Waraq backend deploy config.
+# fly.toml app configuration file generated for waraq-backend-yabdulrauf on 2026-05-20T01:30:48+01:00
 #
-# Region must be set before first deploy: see infra/DEPLOY.md.
-# Recommended for Medina-based primary user + Swiss/EU collaborators:
-#   fra (Frankfurt) — best EU reach + acceptable KSA latency
-#   bom (Mumbai)    — best KSA latency, weaker EU
-#   cdg (Paris)     — alternate EU
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-# Once decided, update `primary_region` below and run:
-#   fly launch --copy-config --no-deploy   # for first-time create
-#   fly deploy
 
-app = "waraq-backend"           # placeholder; choose unique name on `fly launch`
-primary_region = "fra"          # placeholder; user-confirmed before deploy
-kill_signal = "SIGTERM"
-kill_timeout = "30s"
+app = 'waraq-backend-yabdulrauf'
+primary_region = 'fra'
+kill_signal = 'SIGTERM'
+kill_timeout = '30s'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  # Non-secret runtime config. Secrets live in `fly secrets set`.
-  PORT = "8080"
-  UPLOADS_DIR = "/data/uploads"
-  # Default Gemini model — canon-faithful per Dokument 1 §3.3. Override
-  # via `fly secrets set GEMINI_OCR_MODEL=gemini-2.5-flash` for free-tier
-  # accounts.
-  GEMINI_OCR_MODEL = "gemini-2.5-pro"
+  GEMINI_OCR_MODEL = 'gemini-2.5-pro'
+  PORT = '8080'
+  UPLOADS_DIR = '/data/uploads'
+
+[[mounts]]
+  source = 'waraq_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"   # idle machines spin down to save credits
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0      # cold-start friendly for low-traffic v1.0
-  processes = ["app"]
+  min_machines_running = 0
+  processes = ['app']
 
   [http_service.concurrency]
-    type = "requests"
+    type = 'requests'
     hard_limit = 100
     soft_limit = 80
 
-[[http_service.checks]]
-  interval = "30s"
-  timeout = "5s"
-  grace_period = "15s"
-  method = "GET"
-  path = "/health"
-  protocol = "http"
-
-[[mounts]]
-  source = "waraq_data"          # named volume; created via `fly volumes create`
-  destination = "/data"
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '15s'
+    method = 'GET'
+    path = '/health'
+    protocol = 'http'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "1gb"
+  size = 'shared-cpu-1x'
+  memory = '1gb'

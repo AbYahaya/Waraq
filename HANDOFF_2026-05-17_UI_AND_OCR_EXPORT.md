@@ -148,6 +148,30 @@ Read order:
   - [backend/waraq/ocr/auto_run.py](./backend/waraq/ocr/auto_run.py)
   - [backend/waraq/ocr/gemini.py](./backend/waraq/ocr/gemini.py)
 
+- Deployed the backend tester instance to Fly.io:
+  - app: `waraq-backend-yabdulrauf`
+  - URL: `https://waraq-backend-yabdulrauf.fly.dev`
+  - region: `fra`
+  - upload volume: `waraq_data` mounted at `/data`
+  - database: `waraq-db-yabdulrauf` Fly Postgres app attached via `DATABASE_URL`
+  - verified public endpoints:
+    - `/health` -> `{"status":"ok"}`
+    - `/health/db` -> `{"status":"ok","db":"ok"}`
+- Deployment hardening done during Fly rollout:
+  - added backend `.dockerignore` so local `.env`, `.venv`, uploads, exports, caches, and test artifacts are not sent to the remote builder
+  - fixed the Docker build by copying `waraq/` before `pip install .`
+  - moved `camel-tools` out of mandatory production deps into optional `morphology` extras because it pulled large Torch/CUDA packages and made the small Fly image impractical
+  - normalized provider-style Postgres URLs for SQLAlchemy/asyncpg, including converting Fly's `sslmode=disable` to asyncpg-compatible `ssl=disable`
+  - set runtime secrets on Fly for OpenAI, Google AI, JWT, and admin allowlist; do not commit or repeat actual secret values
+  - Fly's normal release creation timed out after pushing the final image, so the existing machine was updated directly to the final image tag and started; the machine is healthy even though older Fly release rows may still show `pending`
+- Deployment docs updated:
+  - [infra/DEPLOY.md](./infra/DEPLOY.md)
+  - [backend/fly.toml](./backend/fly.toml)
+  - [backend/Dockerfile](./backend/Dockerfile)
+  - [backend/pyproject.toml](./backend/pyproject.toml)
+  - [backend/waraq/db/session.py](./backend/waraq/db/session.py)
+  - [backend/.dockerignore](./backend/.dockerignore)
+
 ## Key Diagnosis
 
 The current data model mixes source and translation concerns.
@@ -194,6 +218,8 @@ After the latest patch:
 - page-wide OCR still defaults to the heavier canonical path: Gemini + OpenAI OCR + Stage-3 OCR validation
 - this means real-world runtime can still be high, and any future speedup work should preserve that verification guarantee unless the user explicitly opts out
 - `GET /ocr/projects/{project_uuid}/ocr-jobs/in-flight` only tracks project-wide auto-run jobs; it is expected to return `null` during a single-page `Run OCR` action because per-page OCR is still a synchronous request, not a detached tracked job
+- the backend tester deployment is live on Fly and connected to its Fly Postgres database
+- frontend-on-Vercel integration still needs the final Vercel URL added to backend `CORS_ORIGINS`
 
 But:
 
