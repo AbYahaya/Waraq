@@ -164,6 +164,8 @@ Read order:
   - normalized provider-style Postgres URLs for SQLAlchemy/asyncpg, including converting Fly's `sslmode=disable` to asyncpg-compatible `ssl=disable`
   - set runtime secrets on Fly for OpenAI, Google AI, JWT, and admin allowlist; do not commit or repeat actual secret values
   - Fly's normal release creation timed out after pushing the final image, so the existing machine was updated directly to the final image tag and started; the machine is healthy even though older Fly release rows may still show `pending`
+  - added `poppler-utils` to the runtime image after deployed OCR reported `pdftoppm` missing; production now resolves `/usr/bin/pdftoppm` (`pdftoppm version 22.12.0`)
+  - ran the app's OCR auto-run orphan reaper against production after the poppler rollout; there were no remaining pending/running `ocr_auto_run` jobs
 - Deployment docs updated:
   - [infra/DEPLOY.md](./infra/DEPLOY.md)
   - [backend/fly.toml](./backend/fly.toml)
@@ -171,6 +173,13 @@ Read order:
   - [backend/pyproject.toml](./backend/pyproject.toml)
   - [backend/waraq/db/session.py](./backend/waraq/db/session.py)
   - [backend/.dockerignore](./backend/.dockerignore)
+
+- Hardened the Auto-OCR progress panel:
+  - status polling errors now render an explicit status message instead of leaving the panel stuck on `Loading...`
+  - a missing job row (`404`) now gives the user a `New run` recovery button
+  - transient status errors give a `Retry` button
+- File changed for that UI hardening:
+  - [frontend/src/components/OcrAutoRunPanel.tsx](./frontend/src/components/OcrAutoRunPanel.tsx)
 
 ## Key Diagnosis
 
@@ -219,7 +228,10 @@ After the latest patch:
 - this means real-world runtime can still be high, and any future speedup work should preserve that verification guarantee unless the user explicitly opts out
 - `GET /ocr/projects/{project_uuid}/ocr-jobs/in-flight` only tracks project-wide auto-run jobs; it is expected to return `null` during a single-page `Run OCR` action because per-page OCR is still a synchronous request, not a detached tracked job
 - the backend tester deployment is live on Fly and connected to its Fly Postgres database
-- frontend-on-Vercel integration still needs the final Vercel URL added to backend `CORS_ORIGINS`
+- frontend-on-Vercel integration is wired for `https://waraq-mauve.vercel.app`
+- backend `CORS_ORIGINS` is set to `https://waraq-mauve.vercel.app`; public preflight returned 200 with the expected `access-control-allow-origin`
+- the deployed backend image includes `poppler-utils`, so PDF-to-image rasterization for OCR is available on Fly
+- once the frontend change is deployed, Auto-OCR status errors should surface clearly instead of appearing as an endless running state
 
 But:
 

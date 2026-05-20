@@ -51,6 +51,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # - libreoffice-core + libreoffice-writer: PDF print export pipeline
 #   (DOCX → PDF). Adds ~250 MB to the image but is load-bearing for
 #   the M5 PDF print export endpoint.
+# - poppler-utils: `pdftoppm` rasterizes PDF pages for OCR + scan preview.
 # - ghostscript: PDF/X-1a post-processing for print-grade artefacts
 # - curl + ca-certificates: healthcheck + outbound HTTPS to providers
 RUN apt-get update \
@@ -59,6 +60,7 @@ RUN apt-get update \
         fonts-noto-core \
         libreoffice-core \
         libreoffice-writer \
+        poppler-utils \
         ghostscript \
         curl \
         ca-certificates \

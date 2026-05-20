@@ -133,6 +133,14 @@ export function OcrAutoRunPanel({
       return TERMINAL_STATES.has(s.state) ? false : 1500;
     },
   });
+  const statusError =
+    statusQ.error instanceof ApiError
+      ? statusQ.error.detail
+      : statusQ.error instanceof Error
+        ? statusQ.error.message
+        : null;
+  const statusMissing =
+    statusQ.error instanceof ApiError && statusQ.error.status === 404;
 
   // When the job reaches a terminal state, invalidate the pages list
   // so OCR'd pages reflect their new status in the sidebar. Also
@@ -176,11 +184,12 @@ export function OcrAutoRunPanel({
   const reset = useCallback(() => {
     setActiveJobUuid(null);
     setStartError(null);
-  }, []);
+    void qc.invalidateQueries({ queryKey: inFlightKey(projectUuid) });
+  }, [qc, projectUuid]);
 
   const status = statusQ.data;
   const isTerminal = status ? TERMINAL_STATES.has(status.state) : false;
-  const inProgress = status && !isTerminal;
+  const inProgress = status && !isTerminal && !statusQ.isError;
 
   const percentage = useMemo(() => {
     if (!status || status.total_pages === 0) return 0;
@@ -222,7 +231,11 @@ export function OcrAutoRunPanel({
     <div className="space-y-1 rounded border bg-muted/30 p-2">
       <div className="flex items-center justify-between text-xs">
         <span className="font-medium">
-          {inProgress
+          {statusQ.isError
+            ? statusMissing
+              ? "Auto-OCR job no longer exists"
+              : "Auto-OCR status unavailable"
+            : inProgress
             ? `Auto-OCR running (${status?.processed_count ?? 0}/${status?.total_pages ?? 0})`
             : status?.state === "completed"
               ? `Auto-OCR complete — ${status.processed_count} processed, ${status.skipped_count} skipped`
@@ -248,6 +261,21 @@ export function OcrAutoRunPanel({
           <Button size="sm" variant="outline" onClick={reset}>
             New run
           </Button>
+        )}
+        {statusQ.isError && (
+          statusMissing ? (
+            <Button size="sm" variant="outline" onClick={reset}>
+              New run
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void statusQ.refetch()}
+            >
+              Retry
+            </Button>
+          )
         )}
       </div>
       {status && status.total_pages > 0 && (
@@ -275,6 +303,9 @@ export function OcrAutoRunPanel({
             ? status.last_error.message
             : JSON.stringify(status.last_error)}
         </p>
+      )}
+      {statusError && (
+        <p className="text-[10px] text-destructive">{statusError}</p>
       )}
       {startError && (
         <p className="text-[10px] text-destructive">{startError}</p>

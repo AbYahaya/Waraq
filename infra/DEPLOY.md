@@ -11,12 +11,14 @@ separately at the bottom (Vercel through GitHub or static-on-Fly).
 - Machine: `shared-cpu-1x`, `1gb`, autostop enabled
 - Upload volume: `waraq_data`, 3 GB, mounted at `/data`
 - Database app: `waraq-db-yabdulrauf` (Fly Postgres, unmanaged)
+- Frontend URL: `https://waraq-mauve.vercel.app`
+- Backend CORS: `CORS_ORIGINS=https://waraq-mauve.vercel.app`
 - Verified on 2026-05-20:
   - `/health` returned `{"status":"ok"}`
   - `/health/db` returned `{"status":"ok","db":"ok"}`
-
-Pending:
-- Set `CORS_ORIGINS` after the Vercel frontend URL is known.
+  - CORS preflight from `https://waraq-mauve.vercel.app` returned 200
+  - runtime OCR dependency check returned `/usr/bin/pdftoppm`
+    (`pdftoppm version 22.12.0`)
 
 ## Prerequisites
 
@@ -129,6 +131,7 @@ flyctl status -a waraq-backend-yabdulrauf
 flyctl logs -a waraq-backend-yabdulrauf        # tail backend stdout
 curl https://waraq-backend-yabdulrauf.fly.dev/health
 curl https://waraq-backend-yabdulrauf.fly.dev/health/db
+flyctl ssh console -a waraq-backend-yabdulrauf -C "which pdftoppm"
 ```
 
 If Fly reports `createRelease.release Timeout` after successfully pushing
