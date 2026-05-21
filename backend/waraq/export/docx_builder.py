@@ -88,6 +88,25 @@ def _set_paragraph_rtl(paragraph: Any) -> None:
         p_pr.append(bidi)
 
 
+def _set_run_rtl(run: Any) -> None:
+    """Mark a run right-to-left. Some Word renderers ignore paragraph-level
+    `<w:bidi/>` unless runs are also RTL."""
+    r_pr = run._r.get_or_add_rPr()
+    rtl = r_pr.find(qn("w:rtl"))
+    if rtl is None:
+        from docx.oxml import OxmlElement
+
+        rtl = OxmlElement("w:rtl")
+        r_pr.append(rtl)
+
+
+def _apply_arabic_layout(paragraph: Any) -> None:
+    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+    _set_paragraph_rtl(paragraph)
+    for run in paragraph.runs:
+        _set_run_rtl(run)
+
+
 def _heading_level(value: object, default: int = 1) -> int:
     if isinstance(value, int):
         parsed = value
@@ -178,11 +197,55 @@ def _add_field_run(paragraph: Any, instruction: str) -> None:
     run._r.append(fld_end)
 
 
-def _set_running_header(document: Any, *, project_title: str, heading_level: int) -> None:
-    header = document.sections[0].header
+def _heading_level_from_style(style: str) -> int | None:
+    if not style.startswith("Heading "):
+        return None
+    _, _, tail = style.partition(" ")
+    try:
+        return int(tail)
+    except ValueError:
+        return None
+
+
+def _effective_header_heading_level(
+    *, requested: int, fallback: int, styles_present: set[str]
+) -> int:
+    """Avoid emitting a STYLEREF that would yield 'Reference source not found'."""
+    present_levels = {
+        level
+        for style in styles_present
+        if (level := _heading_level_from_style(style)) is not None
+    }
+    if requested in present_levels:
+        return requested
+    if fallback in present_levels:
+        return fallback
+    return 1
+
+
+def _set_running_header(
+    document: Any, *, project_title: str, heading_level: int | None
+) -> None:
+    section = document.sections[0]
+    # Avoid STYLEREF errors on the title page by using a first-page-only
+    # header without fields.
+    section.different_first_page_header_footer = True
+
+    first_header = section.first_page_header
+    first_paragraph = (
+        first_header.paragraphs[0] if first_header.paragraphs else first_header.add_paragraph()
+    )
+    first_paragraph.text = project_title
+
+    header = section.header
     paragraph = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
-    paragraph.text = f"{project_title} | "
-    _add_field_run(paragraph, f'STYLEREF "Heading {heading_level}"')
+    paragraph.text = project_title
+    if heading_level is None:
+        return
+    paragraph.add_run(" | ")
+    # Use numeric STYLEREF to avoid localization issues (e.g. German Word
+    # uses 'Ueberschrift 1' for the display name).
+    _add_field_run(paragraph, f"STYLEREF {heading_level}")
 
 
 def _add_toc(document: Any) -> None:
@@ -270,6 +333,19 @@ async def build_translation_docx(
         stmt = stmt.where(Segment.satz_uuid.in_(segment_uuids))
     rows = (await session.execute(stmt)).all()
 
+    styles_present: set[str] = set()
+    if rows:
+        styles_present.add("Heading 1")  # injected Page headings
+    for _page, block, _segment in rows:
+        styles_present.add(_style_for_block(block.block_type, config))
+    header_level: int | None = None
+    if rows:
+        header_level = _effective_header_heading_level(
+            requested=config.header_heading_level,
+            fallback=config.chapter_break_heading_level,
+            styles_present=styles_present,
+        )
+
     document = Document()
 
     # Page setup per Formatvorlagen-Baseline v1.1 §7.2.
@@ -284,7 +360,7 @@ async def build_translation_docx(
     _set_running_header(
         document,
         project_title=project_title,
-        heading_level=config.header_heading_level,
+        heading_level=header_level,
     )
     _add_title_page(document, project_title=project_title, config=config)
 
@@ -313,12 +389,11 @@ async def build_translation_docx(
 
         if source.strip() and _include_source_for_block(block.block_type, config):
             ar_paragraph = document.add_paragraph(source, style=style)
-            ar_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
-            _set_paragraph_rtl(ar_paragraph)
+            _apply_arabic_layout(ar_paragraph)
 
         if target.strip() or not source.strip():
             de_paragraph = document.add_paragraph(target or "", style=style)
-            de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+            de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
 
     _add_back_toc(document, config)
 
@@ -345,6 +420,7 @@ async def build_translation_docx(
             "block_types_present": sorted(block_types_seen),
             "docx_config": {
                 "header_heading_level": config.header_heading_level,
+                "effective_header_heading_level": header_level,
                 "chapter_break_heading_level": config.chapter_break_heading_level,
                 "toc_position": config.toc_position,
                 "display_arabic_chapter_headings": config.display_arabic_chapter_headings,
@@ -386,6 +462,19 @@ async def build_translation_docx_from_snapshot(
         )
     ).all()
 
+    styles_present: set[str] = set()
+    if rows:
+        styles_present.add("Heading 1")  # injected Page headings
+    for _revision, _page, block, _segment in rows:
+        styles_present.add(_style_for_block(block.block_type, config))
+    header_level: int | None = None
+    if rows:
+        header_level = _effective_header_heading_level(
+            requested=config.header_heading_level,
+            fallback=config.chapter_break_heading_level,
+            styles_present=styles_present,
+        )
+
     document = Document()
     section = document.sections[0]
     section.page_height = Cm(29.7)
@@ -398,7 +487,7 @@ async def build_translation_docx_from_snapshot(
     _set_running_header(
         document,
         project_title=project_title,
-        heading_level=config.header_heading_level,
+        heading_level=header_level,
     )
     _add_title_page(document, project_title=project_title, config=config)
 
@@ -433,11 +522,10 @@ async def build_translation_docx_from_snapshot(
         style = _style_for_block(block.block_type, config)
         if source.strip() and _include_source_for_block(block.block_type, config):
             ar_paragraph = document.add_paragraph(source, style=style)
-            ar_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
-            _set_paragraph_rtl(ar_paragraph)
+            _apply_arabic_layout(ar_paragraph)
         if target.strip() or not source.strip():
             de_paragraph = document.add_paragraph(target or "", style=style)
-            de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+            de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
 
     _add_back_toc(document, config)
 
@@ -464,6 +552,7 @@ async def build_translation_docx_from_snapshot(
             "rebuilt_from_snapshot": True,
             "docx_config": {
                 "header_heading_level": config.header_heading_level,
+                "effective_header_heading_level": header_level,
                 "chapter_break_heading_level": config.chapter_break_heading_level,
                 "toc_position": config.toc_position,
                 "display_arabic_chapter_headings": config.display_arabic_chapter_headings,

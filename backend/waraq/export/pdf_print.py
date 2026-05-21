@@ -32,6 +32,7 @@ files on crash).
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 import tempfile
@@ -65,7 +66,27 @@ class PdfPrintError(Exception):
 def _which(name: str) -> str | None:
     """Look up a system binary by name. Returns the resolved absolute
     path or None if not on PATH."""
-    return shutil.which(name)
+    found = shutil.which(name)
+    if found:
+        return found
+
+    # Fly/Debian images sometimes expose LibreOffice via a non-PATH
+    # location (or with only the `.bin` binary). These fallbacks keep
+    # PDF export working even when PATH is minimal.
+    fallbacks: dict[str, tuple[str, ...]] = {
+        "soffice": (
+            "/usr/bin/soffice",
+            "/usr/lib/libreoffice/program/soffice",
+            "/usr/lib/libreoffice/program/soffice.bin",
+        ),
+        "libreoffice": ("/usr/bin/libreoffice",),
+        "gs": ("/usr/bin/gs",),
+        "verapdf": ("/usr/bin/verapdf",),
+    }
+    for candidate in fallbacks.get(name, ()):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 async def _run(
@@ -205,7 +226,7 @@ async def docx_to_pdf_print(
     if soffice is None:
         raise PdfPrintError(
             "LibreOffice headless is required for PDF print export but "
-            "no `soffice` / `libreoffice` binary found on PATH. Install "
+            "no `soffice` / `libreoffice` binary found (PATH + common system locations). Install "
             "via `apt-get install libreoffice-core libreoffice-writer` "
             "or equivalent."
         )

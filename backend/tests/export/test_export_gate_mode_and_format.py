@@ -581,5 +581,8 @@ class TestFormatvorlagenAdherence:
         assert "باب الطهارة" not in all_text
         heading = next(p for p in doc.paragraphs if p.text == "Chapter of purification")
         assert heading.style.name == "Heading 3"
-        assert 'STYLEREF "Heading 2"' in doc.sections[0].header._element.xml
+        # Header uses numeric STYLEREF and falls back to a heading level
+        # that actually appears in the document (avoids Word's "Reference
+        # source not found" when no Heading 2 exists).
+        assert "STYLEREF 3" in doc.sections[0].header._element.xml
         assert result.export_event_po.payload["export_config"]["pdf_format_choice"] == "digital_rgb"
