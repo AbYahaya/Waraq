@@ -493,6 +493,13 @@ class TestRtlPerRun:
         assert p_pr is not None
         bidi = p_pr.find(qn("w:bidi"))
         assert bidi is not None, "Arabic paragraph missing <w:bidi/>"
+        jc = p_pr.find(qn("w:jc"))
+        assert jc is not None
+        assert jc.get(qn("w:val")) == "right"
+        first_run = ar_para.runs[0]
+        r_pr = first_run._r.find(qn("w:rPr"))
+        assert r_pr is not None
+        assert r_pr.find(qn("w:rtl")) is not None, "Arabic run missing <w:rtl/>"
 
 
 @pytest.mark.asyncio
@@ -581,8 +588,6 @@ class TestFormatvorlagenAdherence:
         assert "باب الطهارة" not in all_text
         heading = next(p for p in doc.paragraphs if p.text == "Chapter of purification")
         assert heading.style.name == "Heading 3"
-        # Header uses numeric STYLEREF and falls back to a heading level
-        # that actually appears in the document (avoids Word's "Reference
-        # source not found" when no Heading 2 exists).
-        assert "STYLEREF 3" in doc.sections[0].header._element.xml
+        assert "STYLEREF" not in doc.sections[0].header._element.xml
+        assert doc.sections[0].header.paragraphs[0].text == "T"
         assert result.export_event_po.payload["export_config"]["pdf_format_choice"] == "digital_rgb"
