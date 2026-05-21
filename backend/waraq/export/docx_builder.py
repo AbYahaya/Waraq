@@ -95,6 +95,12 @@ def _set_paragraph_rtl(paragraph: Any) -> None:
         p_pr.append(jc)
     jc.set(qn("w:val"), "right")
 
+    text_direction = p_pr.find(qn("w:textDirection"))
+    if text_direction is None:
+        text_direction = OxmlElement("w:textDirection")
+        p_pr.append(text_direction)
+    text_direction.set(qn("w:val"), "rlTb")
+
 
 def _set_run_rtl(run: Any) -> None:
     """Mark a run right-to-left. Some Word renderers ignore paragraph-level
@@ -106,6 +112,11 @@ def _set_run_rtl(run: Any) -> None:
         r_pr.append(rtl)
     rtl.set(qn("w:val"), "1")
 
+    complex_script = r_pr.find(qn("w:cs"))
+    if complex_script is None:
+        complex_script = OxmlElement("w:cs")
+        r_pr.append(complex_script)
+
     r_fonts = r_pr.find(qn("w:rFonts"))
     if r_fonts is None:
         r_fonts = OxmlElement("w:rFonts")
@@ -113,6 +124,7 @@ def _set_run_rtl(run: Any) -> None:
     r_fonts.set(qn("w:ascii"), ARABIC_FONT)
     r_fonts.set(qn("w:hAnsi"), ARABIC_FONT)
     r_fonts.set(qn("w:cs"), ARABIC_FONT)
+    r_fonts.set(qn("w:hint"), "cs")
 
     lang = r_pr.find(qn("w:lang"))
     if lang is None:
@@ -231,6 +243,17 @@ def _set_running_header(document: Any, *, project_title: str) -> None:
     header = section.header
     paragraph = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
     paragraph.text = project_title
+
+
+def _sanitize_headers(document: Any, *, project_title: str) -> None:
+    """Keep headers field-free so Word cannot render stale field errors."""
+    for section in document.sections:
+        section.different_first_page_header_footer = True
+        for header in (section.header, section.first_page_header, section.even_page_header):
+            paragraph = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+            paragraph.text = project_title
+            for extra in header.paragraphs[1:]:
+                extra.text = ""
 
 
 def _add_toc(document: Any) -> None:
@@ -364,6 +387,7 @@ async def build_translation_docx(
             de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
 
     _add_back_toc(document, config)
+    _sanitize_headers(document, project_title=project_title)
 
     # Serialize.
     buffer = io.BytesIO()
@@ -478,6 +502,7 @@ async def build_translation_docx_from_snapshot(
             de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
 
     _add_back_toc(document, config)
+    _sanitize_headers(document, project_title=project_title)
 
     buffer = io.BytesIO()
     document.save(buffer)

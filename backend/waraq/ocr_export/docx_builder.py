@@ -35,6 +35,7 @@ from typing import Any
 
 from docx import Document
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 from sqlalchemy import select
@@ -58,6 +59,8 @@ _BLOCK_TYPE_STYLE: dict[str, str] = {
     "QR": "Quote",
     "RN": "Caption",
 }
+
+ARABIC_FONT = "Noto Naskh Arabic"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -85,9 +88,59 @@ def _set_paragraph_rtl(paragraph: Any) -> None:
     p_pr = paragraph._p.get_or_add_pPr()
     bidi = p_pr.find(qn("w:bidi"))
     if bidi is None:
-        from lxml.etree import SubElement  # type: ignore[import-untyped]
+        bidi = OxmlElement("w:bidi")
+        p_pr.append(bidi)
+    bidi.set(qn("w:val"), "1")
 
-        SubElement(p_pr, qn("w:bidi"))
+    jc = p_pr.find(qn("w:jc"))
+    if jc is None:
+        jc = OxmlElement("w:jc")
+        p_pr.append(jc)
+    jc.set(qn("w:val"), "right")
+
+    text_direction = p_pr.find(qn("w:textDirection"))
+    if text_direction is None:
+        text_direction = OxmlElement("w:textDirection")
+        p_pr.append(text_direction)
+    text_direction.set(qn("w:val"), "rlTb")
+
+
+def _set_run_rtl(run: Any) -> None:
+    r_pr = run._r.get_or_add_rPr()
+    rtl = r_pr.find(qn("w:rtl"))
+    if rtl is None:
+        rtl = OxmlElement("w:rtl")
+        r_pr.append(rtl)
+    rtl.set(qn("w:val"), "1")
+
+    complex_script = r_pr.find(qn("w:cs"))
+    if complex_script is None:
+        complex_script = OxmlElement("w:cs")
+        r_pr.append(complex_script)
+
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.append(r_fonts)
+    r_fonts.set(qn("w:ascii"), ARABIC_FONT)
+    r_fonts.set(qn("w:hAnsi"), ARABIC_FONT)
+    r_fonts.set(qn("w:cs"), ARABIC_FONT)
+    r_fonts.set(qn("w:hint"), "cs")
+
+    lang = r_pr.find(qn("w:lang"))
+    if lang is None:
+        lang = OxmlElement("w:lang")
+        r_pr.append(lang)
+    lang.set(qn("w:bidi"), "ar-SA")
+
+    run.font.name = ARABIC_FONT
+
+
+def _apply_arabic_layout(paragraph: Any) -> None:
+    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+    _set_paragraph_rtl(paragraph)
+    for run in paragraph.runs:
+        _set_run_rtl(run)
 
 
 async def _load_pages_in_range(
@@ -195,8 +248,7 @@ async def build_ocr_docx(
                 # custom names may not). Fall back to Normal.
                 paragraph = document.add_paragraph(text)
 
-            _set_paragraph_rtl(paragraph)
-            paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+            _apply_arabic_layout(paragraph)
             exported_segment_uuids.append(seg.satz_uuid)
 
         # Export protocol — always produced (Export-Protokoll-Immer-Test).
