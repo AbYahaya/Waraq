@@ -50,6 +50,7 @@ export function DeleteProjectDialog({
     onSuccess: () => {
       // Project list lost an entry; in-flight job polls should stop.
       void qc.invalidateQueries({ queryKey: qk.projects() });
+      void qc.invalidateQueries({ queryKey: qk.projectTrash() });
       // Drop any cached page/segment data scoped to this project so a
       // back-button can't show a stale workspace.
       qc.removeQueries({ queryKey: qk.project(projectUuid) });
@@ -78,8 +79,8 @@ export function DeleteProjectDialog({
             <span className="font-medium">{projectName}</span> will be hidden
             from your projects list. Pages, OCR results, translations, and
             provenance history are preserved in the database (H-5: UUIDs
-            are immutable). Any running OCR or translation job on this
-            project will be cancelled.
+            are immutable). You can restore it from Trash for 10 days. Any
+            running OCR or translation job on this project will be cancelled.
           </DialogDescription>
         </DialogHeader>
         {error && (

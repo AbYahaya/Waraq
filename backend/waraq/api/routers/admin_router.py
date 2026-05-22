@@ -16,6 +16,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 
+from waraq.admission import is_admin_email
 from waraq.api.dependencies import CurrentAdmin, DbSession
 from waraq.schemas import Account, Project
 
@@ -29,6 +30,8 @@ class AdminAccountResponse(BaseModel):
     email: str
     display_name: str | None
     active: bool
+    approval_status: str
+    is_admin: bool = False
 
 
 class AdminProjectResponse(BaseModel):
@@ -51,7 +54,19 @@ async def list_all_accounts(
     if not include_inactive:
         stmt = stmt.where(Account.active.is_(True))
     result = await session.execute(stmt)
-    return [AdminAccountResponse.model_validate(a) for a in result.scalars()]
+    return [
+        AdminAccountResponse(
+            account_uuid=a.account_uuid,
+            email=a.email,
+            display_name=a.display_name,
+            active=a.active,
+            approval_status=a.approval_status.value
+            if hasattr(a.approval_status, "value")
+            else str(a.approval_status),
+            is_admin=is_admin_email(a.email),
+        )
+        for a in result.scalars()
+    ]
 
 
 @router.get("/projects", response_model=list[AdminProjectResponse])

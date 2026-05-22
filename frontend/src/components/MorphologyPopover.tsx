@@ -11,7 +11,7 @@
  * rendering remains stable.
  */
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
 
 import {
@@ -74,6 +74,7 @@ export function ClickableArabic({
   const [activeWord, setActiveWord] = useState<string | null>(null);
   if (!text) return <span className={className}>{emptyText}</span>;
   const tokens = splitArabicTokens(text);
+  const wordStats = buildWordStats(tokens);
   return (
     <>
       <span className={className}>
@@ -97,6 +98,7 @@ export function ClickableArabic({
       </span>
       <MorphologyDialog
         word={activeWord}
+        wordStats={wordStats}
         onClose={() => setActiveWord(null)}
       />
     </>
@@ -105,19 +107,32 @@ export function ClickableArabic({
 
 interface MorphologyDialogProps {
   word: string | null;
+  wordStats: WordStats;
   onClose: () => void;
 }
 
-function MorphologyDialog({ word, onClose }: MorphologyDialogProps): JSX.Element {
+interface WordStats {
+  totalWords: number;
+  frequencies: Map<string, number>;
+  topForms: Array<{ word: string; count: number }>;
+}
+
+function MorphologyDialog({
+  word,
+  wordStats,
+  onClose,
+}: MorphologyDialogProps): JSX.Element {
   const mutation = useMutation({
     mutationFn: (w: string) =>
       api.post<MorphologyResponse>("/morphology/analyze", { word: w }),
   });
+  const activeFrequency = word ? wordStats.frequencies.get(normalizeArabicWord(word)) ?? 0 : 0;
 
-  // Fire the analysis when the dialog opens.
-  if (word !== null && mutation.isIdle) {
+  useEffect(() => {
+    if (word === null) return;
     mutation.mutate(word);
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [word]);
 
   return (
     <Dialog
@@ -129,15 +144,47 @@ function MorphologyDialog({ word, onClose }: MorphologyDialogProps): JSX.Element
         }
       }}
     >
-      <DialogContent className="max-w-xl">
+      <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>
             <span dir="rtl" className="font-arabic text-xl">
               {word}
             </span>
           </DialogTitle>
-          <DialogDescription>Morphological analyses (CAMeL Tools)</DialogDescription>
+          <DialogDescription>
+            Morphological side panel with CAMeL Tools analysis and local word-form frequency.
+          </DialogDescription>
         </DialogHeader>
+
+        <div className="grid gap-3 rounded-2xl border bg-muted/30 p-3 text-sm sm:grid-cols-[1fr_1.2fr]">
+          <div>
+            <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+              Frequency in this text
+            </div>
+            <div className="mt-1 text-lg font-semibold">
+              {activeFrequency} / {wordStats.totalWords || 0}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+              Common forms
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {wordStats.topForms.slice(0, 6).map((item) => (
+                <span
+                  key={item.word}
+                  dir="rtl"
+                  className="rounded-full border bg-background px-2.5 py-1 font-arabic text-sm"
+                >
+                  {item.word} <span dir="ltr" className="text-muted-foreground">×{item.count}</span>
+                </span>
+              ))}
+              {wordStats.topForms.length === 0 && (
+                <span className="text-xs text-muted-foreground">No Arabic forms detected.</span>
+              )}
+            </div>
+          </div>
+        </div>
 
         {mutation.isPending && (
           <p className="text-sm text-muted-foreground">Analyzing…</p>
@@ -196,4 +243,25 @@ function MorphologyDialog({ word, onClose }: MorphologyDialogProps): JSX.Element
       </DialogContent>
     </Dialog>
   );
+}
+
+function buildWordStats(tokens: Array<{ word: boolean; text: string }>): WordStats {
+  const frequencies = new Map<string, number>();
+  for (const token of tokens) {
+    if (!token.word) continue;
+    const normalized = normalizeArabicWord(token.text);
+    if (!normalized) continue;
+    frequencies.set(normalized, (frequencies.get(normalized) ?? 0) + 1);
+  }
+  const topForms = [...frequencies.entries()]
+    .map(([word, count]) => ({ word, count }))
+    .sort((a, b) => b.count - a.count || a.word.localeCompare(b.word));
+  const totalWords = [...frequencies.values()].reduce((sum, count) => sum + count, 0);
+  return { totalWords, frequencies, topForms };
+}
+
+function normalizeArabicWord(word: string): string {
+  return word
+    .replace(/[ًٌٍَُِّْـ]/g, "")
+    .trim();
 }

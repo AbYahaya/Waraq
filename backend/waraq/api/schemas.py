@@ -67,6 +67,13 @@ class ProjectResponse(BaseModel):
     active: bool
 
 
+class TrashedProjectResponse(ProjectResponse):
+    deleted_at: str | None
+    restore_until: str | None
+    days_remaining: int
+    restorable: bool
+
+
 class ProjectTranslationAvailabilityResponse(BaseModel):
     project_uuid: _uuid.UUID
     total_segments: int

@@ -13,10 +13,12 @@ import type {
   ProjectStyleProfile,
   ReleaseGate,
   Segment,
+  TrashedProject,
 } from "@/lib/types";
 
 export const qk = {
   projects: () => ["projects"] as const,
+  projectTrash: () => ["projects", "trash"] as const,
   project: (uuid: string) => ["projects", uuid] as const,
   projectPages: (uuid: string) => ["projects", uuid, "pages"] as const,
   projectStyleProfile: (uuid: string) => ["projects", uuid, "style-profile"] as const,
@@ -37,6 +39,10 @@ export const queries = {
   projects: () => ({
     queryKey: qk.projects(),
     queryFn: () => api.get<Project[]>("/projects"),
+  }),
+  projectTrash: () => ({
+    queryKey: qk.projectTrash(),
+    queryFn: () => api.get<TrashedProject[]>("/projects/trash"),
   }),
   project: (uuid: string) => ({
     queryKey: qk.project(uuid),

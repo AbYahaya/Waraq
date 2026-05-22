@@ -14,6 +14,7 @@ FROM python:3.12-slim-bookworm AS builder
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
+    CAMELTOOLS_DATA=/opt/camel_tools_data \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -34,7 +35,9 @@ COPY waraq ./waraq
 # we install non-editable from the project dir.
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install .
+    && /opt/venv/bin/pip install ".[morphology]" \
+    && mkdir -p "$CAMELTOOLS_DATA" \
+    && /opt/venv/bin/camel_data -i morphology-db-msa-r13
 
 # ---------- runtime stage ----------
 FROM python:3.12-slim-bookworm AS runtime
@@ -43,6 +46,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     PATH="/opt/venv/bin:$PATH" \
+    CAMELTOOLS_DATA=/opt/camel_tools_data \
     UPLOADS_DIR=/data/uploads
 
 # Runtime libs:
@@ -70,6 +74,7 @@ WORKDIR /app
 
 # Bring over the prebuilt venv + project source.
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/camel_tools_data /opt/camel_tools_data
 COPY . .
 
 # Persistent data dir for uploads. Fly volumes / mounts attach here.
@@ -77,7 +82,7 @@ RUN mkdir -p /data/uploads
 
 # Non-root user; writes go to /data which the volume mount owns.
 RUN useradd -r -u 1000 -m -d /home/waraq waraq \
-    && chown -R waraq:waraq /data /app
+    && chown -R waraq:waraq /data /app /opt/camel_tools_data
 USER waraq
 
 EXPOSE 8080

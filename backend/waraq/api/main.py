@@ -37,6 +37,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from waraq.api.routers import (
+    account_router,
     admin_router,
     admissions_router,
     audit_dashboard_router,
@@ -160,6 +161,7 @@ def create_app() -> FastAPI:
     # M1 layer
     app.include_router(health_router.router)
     app.include_router(auth_router.router)
+    app.include_router(account_router.router)
     app.include_router(projects_router.router)
     app.include_router(uploads_router.router)
     app.include_router(ocr_router.router)

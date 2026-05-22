@@ -72,6 +72,29 @@ function ErrorBlock({ error }: { error: unknown }): JSX.Element {
   );
 }
 
+function StatusTile({
+  title,
+  status,
+  detail,
+}: {
+  title: string;
+  status: "ready" | "partial" | "manual";
+  detail: string;
+}): JSX.Element {
+  const classes =
+    status === "ready"
+      ? "border-green-200 bg-green-50 text-green-900"
+      : status === "partial"
+        ? "border-amber-200 bg-amber-50 text-amber-900"
+        : "border-slate-200 bg-slate-50 text-slate-900";
+  return (
+    <div className={`rounded-2xl border p-3 ${classes}`}>
+      <div className="text-sm font-semibold">{title}</div>
+      <div className="mt-1 text-xs leading-5 opacity-80">{detail}</div>
+    </div>
+  );
+}
+
 function Section({
   title,
   description,
@@ -121,6 +144,77 @@ function EnvironmentSection(): JSX.Element {
           <Pill
             ok={data.morphology_db_available}
             label="CAMeL morphology DB"
+          />
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function OperationalOverviewSection(): JSX.Element {
+  const { data, error, isFetching } = useQuery<EnvDiag>({
+    queryKey: ["diagnostics", "environment"],
+    queryFn: () => api.get<EnvDiag>("/diagnostics/environment"),
+  });
+  const aiReady = Boolean(data?.openai_key_present && data.google_ai_key_present);
+  const ocrReady = Boolean(data?.openai_key_present || data?.google_ai_key_present);
+  const referenceReady = Boolean(data?.sunnah_com_api_key_present);
+  const morphologyReady = Boolean(data?.morphology_db_available);
+
+  return (
+    <Section
+      title="Operational status overview"
+      description="Quick production-facing readout before drilling into raw diagnostics."
+    >
+      {isFetching && <p className="text-sm text-muted-foreground">Checking host status…</p>}
+      {error ? <ErrorBlock error={error} /> : null}
+      {data && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <StatusTile
+            title="System"
+            status="ready"
+            detail="Backend is reachable and authenticated diagnostics loaded."
+          />
+          <StatusTile
+            title="OCR"
+            status={ocrReady ? "ready" : "partial"}
+            detail={
+              ocrReady
+                ? "At least one AI OCR provider is configured."
+                : "No AI OCR provider key detected."
+            }
+          />
+          <StatusTile
+            title="Translation"
+            status={aiReady ? "ready" : "partial"}
+            detail={
+              aiReady
+                ? "OpenAI and Gemini are both present for cross-check workflows."
+                : "Translation can degrade if one cross-check provider is missing."
+            }
+          />
+          <StatusTile
+            title="Morphology"
+            status={morphologyReady ? "ready" : "partial"}
+            detail={
+              morphologyReady
+                ? "CAMeL morphology database is installed."
+                : "CAMeL database is missing; click-word analysis will be unavailable."
+            }
+          />
+          <StatusTile
+            title="References"
+            status={referenceReady ? "ready" : "manual"}
+            detail={
+              referenceReady
+                ? "Sunnah API key is present; Quran/Shamela checks are below."
+                : "Sunnah API key is absent; local Quran/Shamela checks may still work."
+            }
+          />
+          <StatusTile
+            title="Retry / errors"
+            status="manual"
+            detail="Use OCR-PO, Shamela, morphology, Quran, and Hadith sections below to inspect specific failures."
           />
         </div>
       )}
@@ -714,10 +808,10 @@ export function DiagnosticsPage(): JSX.Element {
     <div className="max-w-4xl">
       <h1 className="text-2xl font-semibold mb-2">Phase 1–4 Diagnostics</h1>
       <p className="text-sm text-muted-foreground mb-6">
-        Lean test surface for confirming every Phase 1–4 backend feature is
-        wired and reachable. Each section calls one HTTP endpoint and shows
-        the raw response. NOT production UI.
+        Operational surface for confirming system, OCR, translation, API,
+        retry, reference, morphology, and error handling paths.
       </p>
+      <OperationalOverviewSection />
       <EnvironmentSection />
       <QuranVerseSection />
       <QuranTranslationSection />

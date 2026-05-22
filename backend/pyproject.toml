@@ -59,8 +59,9 @@ dependencies = [
 [project.optional-dependencies]
 morphology = [
     # Optional click-word morphology / morphology-aware refinements.
-    # Keeping this out of base production deps avoids pulling Torch/CUDA
-    # into the 1 GB Fly web machine image.
+    # The Fly production Dockerfile installs this extra explicitly so
+    # deployed morphology is reproducible without bloating local/default
+    # installs that do not need CAMeL.
     "camel-tools>=1.5",
 ]
 dev = [

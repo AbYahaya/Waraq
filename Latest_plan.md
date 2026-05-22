@@ -143,14 +143,20 @@ Status: implemented locally, awaiting user validation.
 
 ### 13. Account Settings And Usage
 
+Status: implemented locally, awaiting user validation.
+
 - Add Account Settings area from profile/dashboard navigation.
 - Include profile/email/password management, notification preferences, account/access/subscription display.
 - Add general usage statistics: projects, uploaded books, OCR pages, translated pages, storage, limits.
 - Add API usage statistics: OpenAI/Gemini/Google Vision calls, token usage, OCR/translation call counts, estimated cost per project.
 - Public API change: add account usage and API usage endpoints.
+- Added `/me/profile`, `/me/password`, and `/me/usage` endpoints. Usage reports real project/page/OCR/translation/job/provenance counts and explicitly marks token/cost as unavailable until provider token metadata is stored.
+- Added Settings navigation and a settings page with profile update, password change, notification preferences, general usage, provider call counts, job breakdowns, and token/cost availability notes.
 - User test: open settings; confirm user can see profile, notifications, general usage, and API cost usage.
 
 ### 14. Remaining UI Areas
+
+Status: implemented locally, awaiting user validation.
 
 - Polish Book Preview / Live Book Preview beyond the MVP moved into fix 6.
 - Complete Morphology UI: Arabic word click opens morphology side panel; add word-form frequency modal.
@@ -158,6 +164,13 @@ Status: implemented locally, awaiting user validation.
 - Connect Delete/Trash/Restore to 10-day trash retention behavior.
 - Expand Admin/Admissions with applicant review, user access decisions, account levels, and user management.
 - Surface archives/directories: Glossary, Terminology, Religious Formulas, Reference/Entity System, Style Profile Option B.
+- Configured the Fly backend Docker image to install CAMeL Tools + `morphology-db-msa-r13` so morphology is installed on the next backend deploy and survives future redeploys.
+- Morphology click analysis now opens a wider side-panel style dialog with local word-form frequency and common-form chips beside CAMeL analyses.
+- Added Trash route with 10-day restore window, restore API, dashboard/sidebar links, and clearer delete dialog wording.
+- Added Directories route for Glossary, Terminology, Religious Formulas, Reference/Entity System, and Style Profile Option B, each linked to its current working surface.
+- Diagnostics now starts with an operational status overview for system, OCR, translation, morphology, references, retry, and errors.
+- Admin panel now surfaces approval status, account level, admission review link, account counts, and pending-review count.
+- Book Preview now exposes live preview stats for pages, translated anchors, and stale translations.
 - User test: review each new navigation area and confirm it is visible, reachable, and not placeholder-only.
 
 ## Test Plan

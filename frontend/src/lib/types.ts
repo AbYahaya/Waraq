@@ -36,6 +36,13 @@ export interface Project {
   active: boolean;
 }
 
+export interface TrashedProject extends Project {
+  deleted_at: string | null;
+  restore_until: string | null;
+  days_remaining: number;
+  restorable: boolean;
+}
+
 export interface ProjectTranslationAvailability {
   project_uuid: string;
   total_segments: number;

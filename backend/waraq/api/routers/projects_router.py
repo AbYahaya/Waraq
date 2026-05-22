@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import uuid as _uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import select
 
 from waraq.api._ownership import owned_project_or_404
@@ -14,6 +14,7 @@ from waraq.api.schemas import (
     ProjectCreateRequest,
     ProjectResponse,
     ProjectTranslationAvailabilityResponse,
+    TrashedProjectResponse,
 )
 from waraq.identity.service import new_uuid
 from waraq.projects import delete_project as delete_project_service
@@ -21,6 +22,8 @@ from waraq.schemas import Block, Page, Project, Revision, Segment
 from waraq.schemas.enums import ChangeSource
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+TRASH_RETENTION_DAYS = 10
 
 
 @router.post(
@@ -53,6 +56,19 @@ async def list_my_projects(session: DbSession, current: CurrentAccount) -> list[
     return [ProjectResponse.model_validate(p) for p in result.scalars().all()]
 
 
+@router.get("/trash", response_model=list[TrashedProjectResponse])
+async def list_trashed_projects(
+    session: DbSession,
+    current: CurrentAccount,
+) -> list[TrashedProjectResponse]:
+    result = await session.execute(
+        select(Project)
+        .where(Project.account_uuid == current.account_uuid, Project.active.is_(False))
+        .order_by(Project.updated_at.desc())
+    )
+    return [_trashed_project_response(p) for p in result.scalars().all()]
+
+
 @router.get("/{project_uuid}", response_model=ProjectResponse)
 async def get_project(
     project_uuid: _uuid.UUID,
@@ -63,6 +79,34 @@ async def get_project(
     # so deleted (active=False) projects 404 here too, matching the rest
     # of the routes that already use it.
     project = await owned_project_or_404(session, project_uuid, current.account_uuid)
+    return ProjectResponse.model_validate(project)
+
+
+@router.post("/{project_uuid}/restore", response_model=ProjectResponse)
+async def restore_project(
+    project_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> ProjectResponse:
+    result = await session.execute(
+        select(Project).where(
+            Project.project_uuid == project_uuid,
+            Project.account_uuid == current.account_uuid,
+            Project.active.is_(False),
+        )
+    )
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    if not _is_restorable(project):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Project restore window expired after {TRASH_RETENTION_DAYS} days.",
+        )
+
+    project.active = True
+    await session.flush()
     return ProjectResponse.model_validate(project)
 
 
@@ -169,3 +213,46 @@ async def delete_project(
     await delete_project_service(session=session, project=project)
     # Session.commit() happens via the DbSession dependency.
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _deleted_at(project: Project) -> datetime | None:
+    return project.updated_at or project.created_at
+
+
+def _as_aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _restore_until(project: Project) -> datetime | None:
+    deleted_at = _as_aware(_deleted_at(project))
+    if deleted_at is None:
+        return None
+    return deleted_at + timedelta(days=TRASH_RETENTION_DAYS)
+
+
+def _is_restorable(project: Project) -> bool:
+    restore_until = _restore_until(project)
+    return restore_until is not None and datetime.now(UTC) <= restore_until
+
+
+def _trashed_project_response(project: Project) -> TrashedProjectResponse:
+    deleted_at = _as_aware(_deleted_at(project))
+    restore_until = _restore_until(project)
+    remaining = 0
+    if restore_until is not None:
+        seconds = (restore_until - datetime.now(UTC)).total_seconds()
+        remaining = max(0, int((seconds + 86_399) // 86_400))
+    return TrashedProjectResponse(
+        project_uuid=project.project_uuid,
+        account_uuid=project.account_uuid,
+        name=project.name,
+        active=project.active,
+        deleted_at=deleted_at.isoformat() if deleted_at else None,
+        restore_until=restore_until.isoformat() if restore_until else None,
+        days_remaining=remaining,
+        restorable=_is_restorable(project),
+    )

@@ -92,6 +92,10 @@ export function BookPreview({
 
   const textStyle = translationTextStyle(styleDraft);
   const arabicStyle = arabicTextStyle(styleDraft);
+  const translatedCount = entries.filter((entry) =>
+    Boolean(getLatestTranslationRevision(entry.history)?.text),
+  ).length;
+  const staleCount = entries.filter((entry) => isTranslationStale(entry.history)).length;
 
   return (
     <div className="h-full overflow-auto bg-[#efe7d8] px-3 py-4">
@@ -103,14 +107,23 @@ export function BookPreview({
           onProfileChange={setStyleDraft}
         />
         <header className="rounded-[1.75rem] border border-[#e0d5c4] bg-[#fffdf8] px-6 py-6 shadow-sm">
-          <p className="text-[10px] uppercase tracking-[0.28em] text-muted-foreground">
-            Book preview
-          </p>
-          <h2 className="mt-1 text-3xl font-semibold text-[#1d221d]">{projectName}</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Previewing {pages.length} page{pages.length === 1 ? "" : "s"} with the current
-            project style profile. Save style before running a new export.
-          </p>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.28em] text-muted-foreground">
+                Live book preview
+              </p>
+              <h2 className="mt-1 text-3xl font-semibold text-[#1d221d]">{projectName}</h2>
+              <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+                Previewing saved style, OCR source, translation paragraphs, headings,
+                quotes, protected passages, and stale translation state before export.
+              </p>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <PreviewStat label="Pages" value={pages.length} />
+              <PreviewStat label="Translated" value={translatedCount} />
+              <PreviewStat label="Stale" value={staleCount} tone={staleCount > 0 ? "warn" : "ok"} />
+            </div>
+          </div>
         </header>
 
         {pages.map((page) => (
@@ -123,6 +136,35 @@ export function BookPreview({
             arabicStyle={arabicStyle}
           />
         ))}
+      </div>
+    </div>
+  );
+}
+
+function PreviewStat({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: number;
+  tone?: "neutral" | "ok" | "warn";
+}): JSX.Element {
+  return (
+    <div className="min-w-24 rounded-2xl border border-[#eee5d6] bg-[#fcfaf5] px-4 py-3">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+        {label}
+      </div>
+      <div
+        className={
+          tone === "warn"
+            ? "mt-1 text-2xl font-semibold text-amber-700"
+            : tone === "ok"
+              ? "mt-1 text-2xl font-semibold text-green-700"
+              : "mt-1 text-2xl font-semibold text-[#1d221d]"
+        }
+      >
+        {value}
       </div>
     </div>
   );

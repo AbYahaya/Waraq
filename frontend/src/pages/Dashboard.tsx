@@ -194,6 +194,12 @@ export function DashboardPage(): JSX.Element {
               <Button asChild variant="outline" className="w-full justify-start rounded-xl">
                 <Link to="/diagnostics">Open diagnostics</Link>
               </Button>
+              <Button asChild variant="outline" className="w-full justify-start rounded-xl">
+                <Link to="/directories">Open directories</Link>
+              </Button>
+              <Button asChild variant="outline" className="w-full justify-start rounded-xl">
+                <Link to="/trash">Open trash</Link>
+              </Button>
               {account?.is_admin && (
                 <Button asChild variant="ghost" className="w-full justify-start rounded-xl">
                   <Link to="/admin">Open admin panel</Link>

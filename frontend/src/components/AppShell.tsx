@@ -10,9 +10,12 @@ import {
   BookCopy,
   FolderOpen,
   LayoutDashboard,
+  Library,
   LogOut,
+  Settings,
   ShieldCheck,
   Stethoscope,
+  Trash2,
 } from "lucide-react";
 
 import { NotificationPanel } from "@/components/NotificationPanel";
@@ -63,6 +66,24 @@ export function AppShell(): JSX.Element {
       to: "/diagnostics",
       icon: Stethoscope,
       active: location.pathname.startsWith("/diagnostics"),
+    },
+    {
+      label: "Directories",
+      to: "/directories",
+      icon: Library,
+      active: location.pathname.startsWith("/directories"),
+    },
+    {
+      label: "Trash",
+      to: "/trash",
+      icon: Trash2,
+      active: location.pathname.startsWith("/trash"),
+    },
+    {
+      label: "Settings",
+      to: "/settings",
+      icon: Settings,
+      active: location.pathname.startsWith("/settings"),
     },
   ];
 
@@ -258,6 +279,15 @@ function getPageMeta(pathname: string): {
   }
   if (pathname.startsWith("/admin/admissions")) {
     return { eyebrow: "Review", title: "Admission Requests" };
+  }
+  if (pathname.startsWith("/settings")) {
+    return { eyebrow: "Account", title: "Settings" };
+  }
+  if (pathname.startsWith("/directories")) {
+    return { eyebrow: "Archives", title: "Directories" };
+  }
+  if (pathname.startsWith("/trash")) {
+    return { eyebrow: "Recovery", title: "Trash" };
   }
   if (pathname.startsWith("/admin")) {
     return { eyebrow: "Operations", title: "Admin Panel" };
