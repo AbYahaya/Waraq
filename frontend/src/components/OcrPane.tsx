@@ -7,7 +7,7 @@
  * to work.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ClickableArabic } from "@/components/MorphologyPopover";
@@ -25,12 +25,13 @@ import {
   getLatestTranslationRevision,
   isTranslationStale,
 } from "@/lib/segment-history";
-import type { Segment } from "@/lib/types";
+import type { ProjectStyleProfile, Segment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export interface OcrPaneProps {
   pageUuid: string;
   pageIndex: number;
+  projectUuid: string;
   editable?: boolean;
 }
 
@@ -48,9 +49,11 @@ const ORIGIN = "ocr";
 export function OcrPane({
   pageUuid,
   pageIndex,
+  projectUuid,
   editable = false,
 }: OcrPaneProps): JSX.Element {
   const segmentsQ = useQuery(queries.pageSegments(pageUuid));
+  const styleQ = useQuery(queries.projectStyleProfile(projectUuid));
   const histories = useQueries({
     queries: (segmentsQ.data ?? []).map((s) => ({
       ...queries.segmentHistory(s.satz_uuid),
@@ -89,23 +92,45 @@ export function OcrPane({
   }
 
   if (editable) {
-    return <OcrPageEditor pageUuid={pageUuid} pageIndex={pageIndex} entries={entries} />;
+    return (
+      <OcrPageEditor
+        pageUuid={pageUuid}
+        pageIndex={pageIndex}
+        entries={entries}
+        styleProfile={styleQ.data ?? DEFAULT_STYLE_PROFILE}
+      />
+    );
   }
 
-  return <OcrPageReadView pageIndex={pageIndex} entries={entries} />;
+  return (
+    <OcrPageReadView
+      pageIndex={pageIndex}
+      entries={entries}
+      styleProfile={styleQ.data ?? DEFAULT_STYLE_PROFILE}
+    />
+  );
 }
 
 interface OcrPageViewProps {
   pageIndex: number;
   entries: OcrPageEntry[];
+  styleProfile: ProjectStyleProfile;
 }
 
-function OcrPageReadView({ pageIndex, entries }: OcrPageViewProps): JSX.Element {
+function OcrPageReadView({
+  pageIndex,
+  entries,
+  styleProfile,
+}: OcrPageViewProps): JSX.Element {
   const staleCount = entries.filter((entry) => entry.stale).length;
+  const textStyle = arabicTextStyle(styleProfile);
 
   return (
     <div className="h-full overflow-auto bg-[#f4efe6] px-3 py-4">
-      <article className="mx-auto min-h-full max-w-[54rem] rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-6 py-8 shadow-sm sm:px-10 sm:py-12">
+      <article
+        className="mx-auto min-h-full rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-6 py-8 shadow-sm sm:px-10 sm:py-12"
+        style={{ maxWidth: `${styleProfile.page_max_width_rem}rem` }}
+      >
         <OcrPageHeader
           pageIndex={pageIndex}
           entries={entries}
@@ -114,7 +139,8 @@ function OcrPageReadView({ pageIndex, entries }: OcrPageViewProps): JSX.Element 
         />
         <div
           dir="rtl"
-          className="mt-8 space-y-5 whitespace-pre-wrap text-right font-arabic text-[1.35rem] leading-[2.35] text-[#1d221d]"
+          className="mt-8 space-y-5 whitespace-pre-wrap text-right font-arabic text-[#1d221d]"
+          style={textStyle}
         >
           {entries.map((entry) => (
             <OcrPageAnchor
@@ -122,7 +148,9 @@ function OcrPageReadView({ pageIndex, entries }: OcrPageViewProps): JSX.Element 
               entry={entry}
               pageIndex={pageIndex}
             >
-              <ClickableArabic text={entry.source} />
+              <span style={arabicBlockTextStyle(styleProfile, entry.segment.block_type)}>
+                <ClickableArabic text={entry.source} />
+              </span>
             </OcrPageAnchor>
           ))}
         </div>
@@ -135,9 +163,15 @@ interface OcrPageEditorProps {
   pageUuid: string;
   pageIndex: number;
   entries: OcrPageEntry[];
+  styleProfile: ProjectStyleProfile;
 }
 
-function OcrPageEditor({ pageUuid, pageIndex, entries }: OcrPageEditorProps): JSX.Element {
+function OcrPageEditor({
+  pageUuid,
+  pageIndex,
+  entries,
+  styleProfile,
+}: OcrPageEditorProps): JSX.Element {
   const qc = useQueryClient();
   const pageText = useMemo(() => entries.map((entry) => entry.source).join("\n\n"), [entries]);
   const staleCount = entries.filter((entry) => entry.stale).length;
@@ -178,10 +212,14 @@ function OcrPageEditor({ pageUuid, pageIndex, entries }: OcrPageEditorProps): JS
   });
 
   const isLegacyMultiSegment = entries.length > 1;
+  const textStyle = arabicTextStyle(styleProfile);
 
   return (
     <div className="h-full overflow-auto bg-[#f4efe6] px-3 py-4">
-      <article className="mx-auto flex min-h-full max-w-[54rem] flex-col rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-4 py-5 shadow-sm sm:px-8 sm:py-8">
+      <article
+        className="mx-auto flex min-h-full flex-col rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-4 py-5 shadow-sm sm:px-8 sm:py-8"
+        style={{ maxWidth: `${styleProfile.page_max_width_rem}rem` }}
+      >
         <OcrPageHeader
           pageIndex={pageIndex}
           entries={entries}
@@ -204,7 +242,8 @@ function OcrPageEditor({ pageUuid, pageIndex, entries }: OcrPageEditorProps): JS
           }}
           dir="rtl"
           spellCheck={false}
-          className="mt-5 min-h-[58vh] flex-1 resize-y rounded-[1.25rem] border-[#d8cdbb] bg-[#fffaf0] px-5 py-5 text-right font-arabic text-[1.3rem] leading-[2.2] text-[#1d221d] shadow-inner"
+          className="mt-5 min-h-[58vh] flex-1 resize-y rounded-[1.25rem] border-[#d8cdbb] bg-[#fffaf0] px-5 py-5 text-right font-arabic text-[#1d221d] shadow-inner"
+          style={textStyle}
           aria-label={`Editable OCR text for page ${pageIndex}`}
         />
 
@@ -332,4 +371,92 @@ function splitDraftForSegments(draft: string, expectedCount: number): string[] {
     );
   }
   return chunks;
+}
+
+const DEFAULT_STYLE_PROFILE: ProjectStyleProfile = {
+  translation_font_family: "Iowan Old Style",
+  translation_font_size_px: 17,
+  translation_line_height: 1.95,
+  translation_paragraph_spacing_px: 20,
+  heading_font_size_px: 25,
+  heading_line_height: 1.35,
+  heading_paragraph_spacing_px: 24,
+  quote_font_size_px: 16,
+  quote_line_height: 1.85,
+  quote_paragraph_spacing_px: 18,
+  footnote_font_size_px: 14,
+  footnote_line_height: 1.65,
+  footnote_paragraph_spacing_px: 10,
+  protected_font_size_px: 16,
+  protected_line_height: 1.9,
+  protected_paragraph_spacing_px: 16,
+  arabic_font_family: "Noto Naskh Arabic",
+  arabic_font_size_px: 22,
+  arabic_line_height: 2.35,
+  page_max_width_rem: 54,
+  docx_translation_font_family: "Times New Roman",
+  docx_translation_font_size_pt: 11,
+  docx_arabic_font_family: "Noto Naskh Arabic",
+  docx_arabic_font_size_pt: 14,
+  docx_line_spacing: 1.25,
+  docx_paragraph_spacing_pt: 6,
+  docx_heading_font_size_pt: 16,
+  docx_quote_font_size_pt: 10,
+  docx_footnote_font_size_pt: 9,
+  docx_protected_font_size_pt: 11,
+  docx_header_font_size_pt: 9,
+};
+
+function arabicTextStyle(profile: ProjectStyleProfile): CSSProperties {
+  return {
+    fontFamily: `"${profile.arabic_font_family}", "Noto Naskh Arabic", serif`,
+    fontSize: `${profile.arabic_font_size_px}px`,
+    lineHeight: profile.arabic_line_height,
+  };
+}
+
+function arabicBlockTextStyle(
+  profile: ProjectStyleProfile,
+  blockType?: string | null,
+): CSSProperties {
+  const kind = styleKindForBlock(blockType);
+  if (kind === "heading") {
+    return {
+      fontSize: `${Math.max(profile.arabic_font_size_px, profile.heading_font_size_px)}px`,
+      fontWeight: 700,
+      lineHeight: profile.heading_line_height,
+    };
+  }
+  if (kind === "quote") {
+    return {
+      fontSize: `${profile.quote_font_size_px}px`,
+      lineHeight: profile.quote_line_height,
+    };
+  }
+  if (kind === "footnote") {
+    return {
+      fontSize: `${profile.footnote_font_size_px}px`,
+      lineHeight: profile.footnote_line_height,
+    };
+  }
+  if (kind === "protected") {
+    return {
+      fontSize: `${profile.protected_font_size_px}px`,
+      lineHeight: profile.protected_line_height,
+    };
+  }
+  return {};
+}
+
+function styleKindForBlock(
+  blockType?: string | null,
+): "body" | "heading" | "quote" | "footnote" | "protected" {
+  const normalized = (blockType ?? "").trim().toLowerCase();
+  if (["ue", "hd", "heading"].includes(normalized)) return "heading";
+  if (["fn", "footnote"].includes(normalized)) return "footnote";
+  if (["quran", "hadith"].includes(normalized)) return "protected";
+  if (["qr", "quote", "marginalia", "rn", "caption"].includes(normalized)) {
+    return "quote";
+  }
+  return "body";
 }

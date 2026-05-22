@@ -848,6 +848,10 @@ export function TranslationExportDialog({
             )}
           >
             <header className="text-sm font-medium">3. Export</header>
+            <p className="text-[11px] text-muted-foreground">
+              Export uses the saved project style profile at the moment you run export.
+              Save style changes in Book preview or Solo Translation before exporting.
+            </p>
             <div className="space-y-1">
               <Label htmlFor="project-title">Title (used in DOCX header)</Label>
               <Input

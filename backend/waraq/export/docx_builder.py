@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.identity.service import new_uuid
 from waraq.schemas import Block, Page, Revision, Segment
+from waraq.style_profile import DEFAULT_STYLE_PROFILE, normalize_style_profile
 from waraq.text_state import (
     resolve_segment_source_text,
     resolve_segment_text_state,
@@ -53,11 +54,12 @@ class TranslationDocxConfig:
     chapter_break_heading_level: int = 1
     toc_position: TocPosition = "front"
     display_arabic_chapter_headings: bool = True
+    style_profile: Mapping[str, Any] = field(default_factory=dict)
 
 
 DEFAULT_DOCX_CONFIG = TranslationDocxConfig()
 
-ARABIC_FONT = "Noto Naskh Arabic"
+ARABIC_FONT = str(DEFAULT_STYLE_PROFILE["docx_arabic_font_family"])
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -102,7 +104,7 @@ def _set_paragraph_rtl(paragraph: Any) -> None:
     text_direction.set(qn("w:val"), "rlTb")
 
 
-def _set_run_rtl(run: Any) -> None:
+def _set_run_rtl(run: Any, *, font_name: str = ARABIC_FONT, font_size_pt: int | None = None) -> None:
     """Mark a run right-to-left. Some Word renderers ignore paragraph-level
     `<w:bidi/>` unless runs are also RTL."""
     r_pr = run._r.get_or_add_rPr()
@@ -121,9 +123,9 @@ def _set_run_rtl(run: Any) -> None:
     if r_fonts is None:
         r_fonts = OxmlElement("w:rFonts")
         r_pr.append(r_fonts)
-    r_fonts.set(qn("w:ascii"), ARABIC_FONT)
-    r_fonts.set(qn("w:hAnsi"), ARABIC_FONT)
-    r_fonts.set(qn("w:cs"), ARABIC_FONT)
+    r_fonts.set(qn("w:ascii"), font_name)
+    r_fonts.set(qn("w:hAnsi"), font_name)
+    r_fonts.set(qn("w:cs"), font_name)
     r_fonts.set(qn("w:hint"), "cs")
 
     lang = r_pr.find(qn("w:lang"))
@@ -132,14 +134,95 @@ def _set_run_rtl(run: Any) -> None:
         r_pr.append(lang)
     lang.set(qn("w:bidi"), "ar-SA")
 
-    run.font.name = ARABIC_FONT
+    run.font.name = font_name
+    if font_size_pt is not None:
+        run.font.size = Pt(font_size_pt)
 
 
-def _apply_arabic_layout(paragraph: Any) -> None:
+def _effective_style_profile(config: TranslationDocxConfig) -> dict[str, Any]:
+    return normalize_style_profile(dict(config.style_profile or {}))
+
+
+def _block_style_kind(block_type: str | None) -> str:
+    normalized = (block_type or "").strip().lower()
+    if normalized in {"ue", "hd", "heading"}:
+        return "heading"
+    if normalized in {"fn", "footnote"}:
+        return "footnote"
+    if normalized in {"quran", "hadith"}:
+        return "protected"
+    if normalized in {"qr", "quote", "marginalia", "rn", "caption"}:
+        return "quote"
+    return "body"
+
+
+def _docx_font_size_for_block(
+    profile: Mapping[str, Any],
+    *,
+    block_type: str | None,
+    source: bool,
+) -> int:
+    kind = _block_style_kind(block_type)
+    if kind == "heading":
+        return int(profile["docx_heading_font_size_pt"])
+    if kind == "quote":
+        return int(profile["docx_quote_font_size_pt"])
+    if kind == "footnote":
+        return int(profile["docx_footnote_font_size_pt"])
+    if kind == "protected":
+        return int(profile["docx_protected_font_size_pt"])
+    key = "docx_arabic_font_size_pt" if source else "docx_translation_font_size_pt"
+    return int(profile[key])
+
+
+def _docx_spacing_for_block(profile: Mapping[str, Any], block_type: str | None) -> int:
+    kind = _block_style_kind(block_type)
+    if kind == "heading":
+        return max(int(profile["docx_paragraph_spacing_pt"]), 10)
+    if kind == "footnote":
+        return min(int(profile["docx_paragraph_spacing_pt"]), 4)
+    return int(profile["docx_paragraph_spacing_pt"])
+
+
+def _apply_block_indent(paragraph: Any, block_type: str | None) -> None:
+    kind = _block_style_kind(block_type)
+    if kind in {"quote", "protected"}:
+        paragraph.paragraph_format.left_indent = Cm(0.6)
+        paragraph.paragraph_format.right_indent = Cm(0.6)
+
+
+def _apply_arabic_layout(
+    paragraph: Any, config: TranslationDocxConfig, *, block_type: str | None = None
+) -> None:
+    profile = _effective_style_profile(config)
     paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+    paragraph.paragraph_format.space_after = Pt(_docx_spacing_for_block(profile, block_type))
+    paragraph.paragraph_format.line_spacing = float(profile["docx_line_spacing"])
+    _apply_block_indent(paragraph, block_type)
     _set_paragraph_rtl(paragraph)
     for run in paragraph.runs:
-        _set_run_rtl(run)
+        _set_run_rtl(
+            run,
+            font_name=str(profile["docx_arabic_font_family"]),
+            font_size_pt=_docx_font_size_for_block(
+                profile, block_type=block_type, source=True
+            ),
+        )
+
+
+def _apply_translation_layout(
+    paragraph: Any, config: TranslationDocxConfig, *, block_type: str | None = None
+) -> None:
+    profile = _effective_style_profile(config)
+    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+    paragraph.paragraph_format.space_after = Pt(_docx_spacing_for_block(profile, block_type))
+    paragraph.paragraph_format.line_spacing = float(profile["docx_line_spacing"])
+    _apply_block_indent(paragraph, block_type)
+    for run in paragraph.runs:
+        run.font.name = str(profile["docx_translation_font_family"])
+        run.font.size = Pt(
+            _docx_font_size_for_block(profile, block_type=block_type, source=False)
+        )
 
 
 def _heading_level(value: object, default: int = 1) -> int:
@@ -209,8 +292,19 @@ def docx_config_from_export_payload(payload: Mapping[str, Any]) -> TranslationDo
         return DEFAULT_DOCX_CONFIG
     pflichtfragen = export_config.get("pflichtfragen")
     if not isinstance(pflichtfragen, list):
-        return DEFAULT_DOCX_CONFIG
-    return docx_config_from_pflichtfragen(pflichtfragen)
+        base = DEFAULT_DOCX_CONFIG
+    else:
+        base = docx_config_from_pflichtfragen(pflichtfragen)
+    style_profile = export_config.get("style_profile")
+    if not isinstance(style_profile, Mapping):
+        return base
+    return TranslationDocxConfig(
+        header_heading_level=base.header_heading_level,
+        chapter_break_heading_level=base.chapter_break_heading_level,
+        toc_position=base.toc_position,
+        display_arabic_chapter_headings=base.display_arabic_chapter_headings,
+        style_profile=normalize_style_profile(dict(style_profile)),
+    )
 
 
 def _add_field_run(paragraph: Any, instruction: str) -> None:
@@ -230,7 +324,17 @@ def _add_field_run(paragraph: Any, instruction: str) -> None:
     run._r.append(fld_end)
 
 
-def _set_running_header(document: Any, *, project_title: str) -> None:
+def _apply_header_style(paragraph: Any, config: TranslationDocxConfig) -> None:
+    profile = _effective_style_profile(config)
+    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+    for run in paragraph.runs:
+        run.font.name = str(profile["docx_translation_font_family"])
+        run.font.size = Pt(int(profile["docx_header_font_size_pt"]))
+
+
+def _set_running_header(
+    document: Any, *, project_title: str, config: TranslationDocxConfig
+) -> None:
     section = document.sections[0]
     section.different_first_page_header_footer = True
 
@@ -239,19 +343,24 @@ def _set_running_header(document: Any, *, project_title: str) -> None:
         first_header.paragraphs[0] if first_header.paragraphs else first_header.add_paragraph()
     )
     first_paragraph.text = project_title
+    _apply_header_style(first_paragraph, config)
 
     header = section.header
     paragraph = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
     paragraph.text = project_title
+    _apply_header_style(paragraph, config)
 
 
-def _sanitize_headers(document: Any, *, project_title: str) -> None:
+def _sanitize_headers(
+    document: Any, *, project_title: str, config: TranslationDocxConfig
+) -> None:
     """Keep headers field-free so Word cannot render stale field errors."""
     for section in document.sections:
         section.different_first_page_header_footer = True
         for header in (section.header, section.first_page_header, section.even_page_header):
             paragraph = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
             paragraph.text = project_title
+            _apply_header_style(paragraph, config)
             for extra in header.paragraphs[1:]:
                 extra.text = ""
 
@@ -274,6 +383,11 @@ _BLOCK_TYPE_STYLE: dict[str, str] = {
     "FN": "Footnote Text",
     "QR": "Quote",
     "RN": "Caption",
+    "heading": "Heading 1",
+    "footnote": "Footnote Text",
+    "quran": "Quote",
+    "hadith": "Quote",
+    "marginalia": "Caption",
 }
 
 
@@ -342,6 +456,7 @@ async def build_translation_docx(
     rows = (await session.execute(stmt)).all()
 
     document = Document()
+    style_profile = _effective_style_profile(config)
 
     # Page setup per Formatvorlagen-Baseline v1.1 §7.2.
     section = document.sections[0]
@@ -352,7 +467,7 @@ async def build_translation_docx(
     section.top_margin = Cm(2.5)
     section.bottom_margin = Cm(2.5)
 
-    _set_running_header(document, project_title=project_title)
+    _set_running_header(document, project_title=project_title, config=config)
     _add_title_page(document, project_title=project_title, config=config)
 
     pages_seen: set[_uuid.UUID] = set()
@@ -380,14 +495,14 @@ async def build_translation_docx(
 
         if source.strip() and _include_source_for_block(block.block_type, config):
             ar_paragraph = document.add_paragraph(source, style=style)
-            _apply_arabic_layout(ar_paragraph)
+            _apply_arabic_layout(ar_paragraph, config, block_type=block.block_type)
 
         if target.strip() or not source.strip():
             de_paragraph = document.add_paragraph(target or "", style=style)
-            de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+            _apply_translation_layout(de_paragraph, config, block_type=block.block_type)
 
     _add_back_toc(document, config)
-    _sanitize_headers(document, project_title=project_title)
+    _sanitize_headers(document, project_title=project_title, config=config)
 
     # Serialize.
     buffer = io.BytesIO()
@@ -416,6 +531,7 @@ async def build_translation_docx(
                 "toc_position": config.toc_position,
                 "display_arabic_chapter_headings": config.display_arabic_chapter_headings,
             },
+            "style_profile": style_profile,
         },
     )
 
@@ -454,6 +570,7 @@ async def build_translation_docx_from_snapshot(
     ).all()
 
     document = Document()
+    style_profile = _effective_style_profile(config)
     section = document.sections[0]
     section.page_height = Cm(29.7)
     section.page_width = Cm(21.0)
@@ -462,7 +579,7 @@ async def build_translation_docx_from_snapshot(
     section.top_margin = Cm(2.5)
     section.bottom_margin = Cm(2.5)
 
-    _set_running_header(document, project_title=project_title)
+    _set_running_header(document, project_title=project_title, config=config)
     _add_title_page(document, project_title=project_title, config=config)
 
     pages_seen: set[_uuid.UUID] = set()
@@ -496,13 +613,13 @@ async def build_translation_docx_from_snapshot(
         style = _style_for_block(block.block_type, config)
         if source.strip() and _include_source_for_block(block.block_type, config):
             ar_paragraph = document.add_paragraph(source, style=style)
-            _apply_arabic_layout(ar_paragraph)
+            _apply_arabic_layout(ar_paragraph, config, block_type=block.block_type)
         if target.strip() or not source.strip():
             de_paragraph = document.add_paragraph(target or "", style=style)
-            de_paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+            _apply_translation_layout(de_paragraph, config, block_type=block.block_type)
 
     _add_back_toc(document, config)
-    _sanitize_headers(document, project_title=project_title)
+    _sanitize_headers(document, project_title=project_title, config=config)
 
     buffer = io.BytesIO()
     document.save(buffer)
@@ -531,6 +648,7 @@ async def build_translation_docx_from_snapshot(
                 "toc_position": config.toc_position,
                 "display_arabic_chapter_headings": config.display_arabic_chapter_headings,
             },
+            "style_profile": style_profile,
         },
     )
 

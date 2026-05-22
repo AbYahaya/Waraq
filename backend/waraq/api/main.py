@@ -64,6 +64,7 @@ from waraq.api.routers import (
     review_router,
     rule_binding_router,
     segments_router,
+    style_profile_router,
     toc_router,
     translation_router,
     uploads_router,
@@ -180,6 +181,7 @@ def create_app() -> FastAPI:
     app.include_router(rule_binding_router.router)
     app.include_router(promotion_router.router)
     app.include_router(ocr_export_router.router)
+    app.include_router(style_profile_router.router)
     app.include_router(morphology_router.router)
     app.include_router(admin_router.router)
     # Phase 3 sub-batch D — difficulty + guided review.

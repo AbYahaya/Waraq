@@ -19,6 +19,7 @@ import {
   type ComparisonMode,
   type SinglePane,
 } from "@/components/ComparisonModeSelector";
+import { BookPreview } from "@/components/BookPreview";
 import { DeleteProjectDialog } from "@/components/DeleteProjectDialog";
 import { DifficultyBadge } from "@/components/DifficultyBadge";
 import { DpiCompareView } from "@/components/DpiCompareView";
@@ -65,6 +66,7 @@ export function ProjectWorkspacePage(): JSX.Element {
   const [editMode, setEditMode] = useState<boolean>(false);
   const [dpiCompareOpen, setDpiCompareOpen] = useState<boolean>(false);
   const [tocOpen, setTocOpen] = useState<boolean>(false);
+  const [bookPreviewOpen, setBookPreviewOpen] = useState<boolean>(false);
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -94,12 +96,29 @@ export function ProjectWorkspacePage(): JSX.Element {
     const ocr: PaneConfig = {
       id: "ocr",
       label: "OCR (Arabic)",
-      node: <OcrPane pageUuid={pageUuid} pageIndex={idx} editable={editMode} />,
+      node: (
+        <OcrPane
+          pageUuid={pageUuid}
+          pageIndex={idx}
+          projectUuid={projectUuid}
+          editable={editMode}
+        />
+      ),
     };
     const translation: PaneConfig = {
       id: "translation",
       label: "Translation",
-      node: <TranslationPane pageUuid={pageUuid} pageIndex={idx} editable={editMode} />,
+      node: (
+        <TranslationPane
+          pageUuid={pageUuid}
+          pageIndex={idx}
+          projectUuid={projectUuid}
+          editable={editMode}
+          styleControlsEnabled={
+            comparisonMode === "single_fullscreen" && singlePaneSelection === "translation"
+          }
+        />
+      ),
     };
 
     switch (comparisonMode) {
@@ -120,7 +139,7 @@ export function ProjectWorkspacePage(): JSX.Element {
         return [map[singlePaneSelection]];
       }
     }
-  }, [comparisonMode, editMode, singlePaneSelection, pageUuid, pageQ.data]);
+  }, [comparisonMode, editMode, singlePaneSelection, pageUuid, pageQ.data, projectUuid]);
 
   return (
     <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-[20rem_minmax(0,1fr)]">
@@ -236,6 +255,7 @@ export function ProjectWorkspacePage(): JSX.Element {
                 onClick={() => {
                   setDpiCompareOpen((v) => !v);
                   if (tocOpen) setTocOpen(false);
+                  if (bookPreviewOpen) setBookPreviewOpen(false);
                 }}
                 className="text-xs"
                 title="Render this page at low + high DPI side-by-side"
@@ -249,11 +269,26 @@ export function ProjectWorkspacePage(): JSX.Element {
                 onClick={() => {
                   setTocOpen((v) => !v);
                   if (dpiCompareOpen) setDpiCompareOpen(false);
+                  if (bookPreviewOpen) setBookPreviewOpen(false);
                 }}
                 className="text-xs"
                 title="Show the project's auto-detected table of contents"
               >
                 {tocOpen ? "Close TOC" : "TOC"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={bookPreviewOpen ? "default" : "outline"}
+                onClick={() => {
+                  setBookPreviewOpen((v) => !v);
+                  if (dpiCompareOpen) setDpiCompareOpen(false);
+                  if (tocOpen) setTocOpen(false);
+                }}
+                className="text-xs"
+                title="Preview the project as a styled book before export"
+              >
+                {bookPreviewOpen ? "Close book preview" : "Book preview"}
               </Button>
               <DifficultyBadge scope="page" uuid={pageUuid} />
               <PageTranslationPanel projectUuid={projectUuid} pageUuid={pageUuid} />
@@ -263,7 +298,12 @@ export function ProjectWorkspacePage(): JSX.Element {
               </span>
             </div>
             <div className="flex-1 min-h-0">
-              {dpiCompareOpen ? (
+              {bookPreviewOpen ? (
+                <BookPreview
+                  projectUuid={projectUuid}
+                  projectName={projectQ.data?.name ?? "Waraq Export"}
+                />
+              ) : dpiCompareOpen ? (
                 <DpiCompareView pageUuid={pageUuid} />
               ) : tocOpen ? (
                 <TocPanel projectUuid={projectUuid} />

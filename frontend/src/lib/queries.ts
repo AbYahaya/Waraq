@@ -10,6 +10,7 @@ import type {
   Conflict,
   Page,
   Project,
+  ProjectStyleProfile,
   ReleaseGate,
   Segment,
 } from "@/lib/types";
@@ -18,6 +19,7 @@ export const qk = {
   projects: () => ["projects"] as const,
   project: (uuid: string) => ["projects", uuid] as const,
   projectPages: (uuid: string) => ["projects", uuid, "pages"] as const,
+  projectStyleProfile: (uuid: string) => ["projects", uuid, "style-profile"] as const,
   page: (uuid: string) => ["pages", uuid] as const,
   pageSegments: (uuid: string) => ["pages", uuid, "segments"] as const,
   segment: (uuid: string) => ["segments", uuid] as const,
@@ -43,6 +45,10 @@ export const queries = {
   projectPages: (uuid: string) => ({
     queryKey: qk.projectPages(uuid),
     queryFn: () => api.get<Page[]>(`/projects/${uuid}/pages`),
+  }),
+  projectStyleProfile: (uuid: string) => ({
+    queryKey: qk.projectStyleProfile(uuid),
+    queryFn: () => api.get<ProjectStyleProfile>(`/projects/${uuid}/style-profile`),
   }),
   page: (uuid: string) => ({
     queryKey: qk.page(uuid),

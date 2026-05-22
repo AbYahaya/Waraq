@@ -66,6 +66,7 @@ from waraq.preflight.service import JOB_TYPE as PREFLIGHT_JOB_TYPE
 from waraq.provenance import create_po
 from waraq.schemas import DecisionEvent, Job, ProvenanceObject
 from waraq.schemas.enums import DecisionSource, JobState, POType, ScopeType
+from waraq.style_profile import read_project_style_profile
 
 JOB_TYPE = "export"
 
@@ -356,6 +357,17 @@ async def run_export_job(
         for de in pflichtfragen_des
     ]
     docx_config = docx_config_from_pflichtfragen(pflichtfragen_payload)
+    style_profile = await read_project_style_profile(
+        session=session,
+        project_uuid=config.project_uuid,
+    )
+    docx_config = type(docx_config)(
+        header_heading_level=docx_config.header_heading_level,
+        chapter_break_heading_level=docx_config.chapter_break_heading_level,
+        toc_position=docx_config.toc_position,
+        display_arabic_chapter_headings=docx_config.display_arabic_chapter_headings,
+        style_profile=style_profile,
+    )
     pdf_format = await read_pdf_format_choice(
         session=session,
         project_uuid=config.project_uuid,
@@ -375,6 +387,7 @@ async def run_export_job(
             "toc_position": docx_config.toc_position,
             "display_arabic_chapter_headings": docx_config.display_arabic_chapter_headings,
         },
+        "style_profile": style_profile,
     }
 
     try:

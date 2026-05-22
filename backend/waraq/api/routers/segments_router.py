@@ -48,12 +48,15 @@ async def list_segments_in_page(
 ) -> list[SegmentResponse]:
     await owned_page_or_404(session, page_uuid, current.account_uuid)
     result = await session.execute(
-        select(Segment)
+        select(Segment, Block.block_type)
         .join(Block, Block.block_uuid == Segment.block_uuid)
         .where(Block.page_uuid == page_uuid, Segment.active.is_(True))
         .order_by(Block.block_index.asc(), Segment.satz_index.asc())
     )
-    return [SegmentResponse.model_validate(s) for s in result.scalars()]
+    return [
+        SegmentResponse.model_validate(segment).model_copy(update={"block_type": block_type})
+        for segment, block_type in result.all()
+    ]
 
 
 @router.get("/segments/{satz_uuid}", response_model=SegmentResponse)
@@ -63,7 +66,10 @@ async def get_segment(
     current: CurrentAccount,
 ) -> SegmentResponse:
     segment = await owned_segment_or_404(session, satz_uuid, current.account_uuid)
-    return SegmentResponse.model_validate(segment)
+    block_type = await session.scalar(
+        select(Block.block_type).where(Block.block_uuid == segment.block_uuid)
+    )
+    return SegmentResponse.model_validate(segment).model_copy(update={"block_type": block_type})
 
 
 @router.put("/segments/{satz_uuid}/text", response_model=SegmentResponse)
@@ -92,7 +98,10 @@ async def edit_segment_text(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Segment is locked ({exc!s})",
         ) from exc
-    return SegmentResponse.model_validate(segment)
+    block_type = await session.scalar(
+        select(Block.block_type).where(Block.block_uuid == segment.block_uuid)
+    )
+    return SegmentResponse.model_validate(segment).model_copy(update={"block_type": block_type})
 
 
 @router.put("/segments/{satz_uuid}/translation-text", response_model=SegmentResponse)
@@ -123,4 +132,7 @@ async def edit_segment_translation_text(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Segment is locked ({exc!s})",
         ) from exc
-    return SegmentResponse.model_validate(segment)
+    block_type = await session.scalar(
+        select(Block.block_type).where(Block.block_uuid == segment.block_uuid)
+    )
+    return SegmentResponse.model_validate(segment).model_copy(update={"block_type": block_type})

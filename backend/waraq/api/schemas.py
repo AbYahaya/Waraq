@@ -190,6 +190,7 @@ class SegmentResponse(BaseModel):
 
     satz_uuid: _uuid.UUID
     block_uuid: _uuid.UUID
+    block_type: str | None = None
     satz_index: int
     lock_flag: str
     current_rev_uuid: _uuid.UUID | None

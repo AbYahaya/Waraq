@@ -47,7 +47,7 @@ Status: validated in deployed app.
 
 ### 5. Page-Based Translation Editor MVP
 
-Status: implemented locally, awaiting user validation.
+Status: validated in deployed app.
 
 - Make translation read/edit view page-like rather than primarily row/segment-like.
 - In Double and Triple views, support simple plain-text/paragraph editing with segment preservation.
@@ -57,9 +57,15 @@ Status: implemented locally, awaiting user validation.
 
 ### 6. Project Style Profile And Export Integration
 
+Status: implemented locally, awaiting user validation.
+
 - Introduce a project-level style/layout profile using canonical Waraq defaults plus saved overrides.
 - Expose global style controls in Solo Translation for core styles: body translation, Arabic source, headings, quotes, Quran/Hadith blocks, footnotes, spacing, page/header/TOC-related options where already supported.
 - Apply effective style profile consistently to Solo Translation, comparison panes, Book Preview, DOCX export, and PDF export.
+- Book Preview MVP moved forward from fix 14 so style changes can be evaluated before export.
+- Book Preview translation now preserves paragraph breaks and line breaks so style changes do not render as jammed text.
+- Completed block-aware style pass: segment responses now expose block type; workspace/book preview/DOCX export apply distinct styles for body text, headings, quotes/marginalia, footnotes, and protected Quran/Hadith passages.
+- OCR pages now respect the same project page width, and DOCX headers use the saved style profile.
 - Public API change: add project style profile read/update endpoints and include active profile in export config.
 - User test: change a style globally, view it in workspace, export DOCX/PDF, confirm export uses the changed style.
 
@@ -123,7 +129,7 @@ Status: implemented locally, awaiting user validation.
 
 ### 14. Remaining UI Areas
 
-- Add Book Preview / Live Book Preview as a dedicated mode separate from comparison views, consuming the effective style profile.
+- Polish Book Preview / Live Book Preview beyond the MVP moved into fix 6.
 - Complete Morphology UI: Arabic word click opens morphology side panel; add word-form frequency modal.
 - Improve Diagnostics page with system, job, OCR, translation, API, retry, and error status.
 - Connect Delete/Trash/Restore to 10-day trash retention behavior.

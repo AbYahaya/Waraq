@@ -49,6 +49,42 @@ export interface ProjectTranslationAvailability {
   has_full_fresh_translation: boolean;
 }
 
+export interface ProjectStyleProfile {
+  translation_font_family: string;
+  translation_font_size_px: number;
+  translation_line_height: number;
+  translation_paragraph_spacing_px: number;
+  heading_font_size_px: number;
+  heading_line_height: number;
+  heading_paragraph_spacing_px: number;
+  quote_font_size_px: number;
+  quote_line_height: number;
+  quote_paragraph_spacing_px: number;
+  footnote_font_size_px: number;
+  footnote_line_height: number;
+  footnote_paragraph_spacing_px: number;
+  protected_font_size_px: number;
+  protected_line_height: number;
+  protected_paragraph_spacing_px: number;
+  arabic_font_family: string;
+  arabic_font_size_px: number;
+  arabic_line_height: number;
+  page_max_width_rem: number;
+  docx_translation_font_family: string;
+  docx_translation_font_size_pt: number;
+  docx_arabic_font_family: string;
+  docx_arabic_font_size_pt: number;
+  docx_line_spacing: number;
+  docx_paragraph_spacing_pt: number;
+  docx_heading_font_size_pt: number;
+  docx_quote_font_size_pt: number;
+  docx_footnote_font_size_pt: number;
+  docx_protected_font_size_pt: number;
+  docx_header_font_size_pt: number;
+  decision_event_uuid?: string | null;
+  updated_at?: string | null;
+}
+
 export interface Page {
   page_uuid: string;
   project_uuid: string;
@@ -60,6 +96,7 @@ export interface Page {
 export interface Segment {
   satz_uuid: string;
   block_uuid: string;
+  block_type?: string | null;
   satz_index: number;
   lock_flag: "none" | "manual_local" | "manual_editorial";
   current_rev_uuid: string | null;
