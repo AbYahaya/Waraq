@@ -173,6 +173,18 @@ Status: implemented locally, awaiting user validation.
 - Book Preview now exposes live preview stats for pages, translated anchors, and stale translations.
 - User test: review each new navigation area and confirm it is visible, reachable, and not placeholder-only.
 
+### 14b. Workspace Usability Follow-Up
+
+Status: implemented locally, awaiting user validation.
+
+- Changed Fly CAMeL bootstrap so the large morphology DB is no longer downloaded during Docker build; the app starts normally and a background startup helper downloads `morphology-db-msa-r13` best-effort.
+- Made the main Waraq sidebar closable from the app header to reclaim workspace width.
+- Reduced project workspace rail width and compacted Project, Release Gate, and Guided Review panels.
+- Made the page-number list independently scrollable so scrolling page numbers does not move the whole workspace.
+- Kept the page review/header controls sticky and compact.
+- Made Project Style Profile a compact sticky toolbar with advanced controls collapsed by default.
+- Added selection alignment tools: Left, Center, and Justify. These wrap selected translation text with alignment markers, preview correctly, and export to DOCX/PDF alignment.
+
 ## Test Plan
 
 - After each fix, run targeted backend/frontend checks only for the touched area, not the full suite by default.

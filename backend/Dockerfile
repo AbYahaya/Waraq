@@ -35,9 +35,7 @@ COPY waraq ./waraq
 # we install non-editable from the project dir.
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install ".[morphology]" \
-    && mkdir -p "$CAMELTOOLS_DATA" \
-    && /opt/venv/bin/camel_data -i morphology-db-msa-r13
+    && /opt/venv/bin/pip install ".[morphology]"
 
 # ---------- runtime stage ----------
 FROM python:3.12-slim-bookworm AS runtime
@@ -74,11 +72,10 @@ WORKDIR /app
 
 # Bring over the prebuilt venv + project source.
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /opt/camel_tools_data /opt/camel_tools_data
 COPY . .
 
 # Persistent data dir for uploads. Fly volumes / mounts attach here.
-RUN mkdir -p /data/uploads
+RUN mkdir -p /data/uploads /opt/camel_tools_data
 
 # Non-root user; writes go to /data which the volume mount owns.
 RUN useradd -r -u 1000 -m -d /home/waraq waraq \
@@ -89,4 +86,4 @@ EXPOSE 8080
 
 # Fly runs Alembic as a release command before switching traffic to the
 # new image, so the web process only has to start the ASGI server.
-CMD ["uvicorn", "waraq.api.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*"]
+CMD ["sh", "-lc", "python scripts/ensure_camel_data.py & exec uvicorn waraq.api.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips '*'"]

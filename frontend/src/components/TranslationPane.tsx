@@ -243,6 +243,7 @@ function TranslationPageEditor({
   const staleCount = entries.filter((entry) => entry.stale).length;
   const [draft, setDraft] = useState(pageText);
   const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     setDraft(pageText);
@@ -292,6 +293,11 @@ function TranslationPageEditor({
             profile={styleProfile}
             persistedProfile={persistedStyleProfile}
             onProfileChange={onStyleProfileChange}
+            onApplyInlineAlignment={(alignment) => {
+              const next = applyAlignmentToSelection(textareaRef.current, draft, alignment);
+              setDraft(next);
+              setError(null);
+            }}
           />
         )}
         <TranslationPageHeader
@@ -309,6 +315,7 @@ function TranslationPageEditor({
         )}
 
         <Textarea
+          ref={textareaRef}
           value={draft}
           onChange={(e) => {
             setDraft(e.target.value);
@@ -462,20 +469,27 @@ function TranslationText({
 
   return (
     <>
-      <p
-        className={cn(
-          entry.stale && "text-amber-950",
-          canOpenProtectedReference &&
-            "cursor-pointer underline decoration-dotted underline-offset-4",
-        )}
-        style={paragraphStyle}
-        title={entry.protectedReference?.hoverText}
-        onClick={() => {
-          if (canOpenProtectedReference) setReferenceOpen(true);
-        }}
-      >
-        {entry.translation}
-      </p>
+      {splitAlignedText(entry.translation).map((block, index) => (
+        <p
+          key={`${index}-${block.text.slice(0, 18)}`}
+          className={cn(
+            "whitespace-pre-line",
+            entry.stale && "text-amber-950",
+            canOpenProtectedReference &&
+              "cursor-pointer underline decoration-dotted underline-offset-4",
+          )}
+          style={{
+            ...paragraphStyle,
+            textAlign: block.alignment,
+          }}
+          title={entry.protectedReference?.hoverText}
+          onClick={() => {
+            if (canOpenProtectedReference) setReferenceOpen(true);
+          }}
+        >
+          {block.text}
+        </p>
+      ))}
 
       <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
         {entry.protectedReference && (
@@ -554,6 +568,7 @@ export interface TranslationStyleControlsProps {
   profile: ProjectStyleProfile;
   persistedProfile: ProjectStyleProfile;
   onProfileChange: (profile: ProjectStyleProfile) => void;
+  onApplyInlineAlignment?: (alignment: InlineAlignment) => void;
 }
 
 export function TranslationStyleControls({
@@ -561,6 +576,7 @@ export function TranslationStyleControls({
   profile,
   persistedProfile,
   onProfileChange,
+  onApplyInlineAlignment,
 }: TranslationStyleControlsProps): JSX.Element {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
@@ -577,7 +593,7 @@ export function TranslationStyleControls({
   });
 
   return (
-    <section className="mb-5 rounded-2xl border border-[#e7decf] bg-[#fbf6ed] p-3">
+    <section className="sticky top-0 z-20 mb-4 rounded-2xl border border-[#e7decf] bg-[#fbf6ed]/95 p-2.5 shadow-sm backdrop-blur">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-xs font-medium text-[#1d221d]">Project style profile</p>
@@ -585,8 +601,43 @@ export function TranslationStyleControls({
             Applies to workspace pages and the next DOCX/PDF export.
           </p>
         </div>
+        {onApplyInlineAlignment && (
+          <div className="flex flex-wrap gap-1 rounded-xl border border-[#e7decf] bg-white/70 p-1">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px]"
+              onClick={() => onApplyInlineAlignment("left")}
+              title="Apply left alignment to selected translation text"
+            >
+              Left
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px]"
+              onClick={() => onApplyInlineAlignment("center")}
+              title="Center selected translation text, useful for page numbers"
+            >
+              Center
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[11px]"
+              onClick={() => onApplyInlineAlignment("justify")}
+              title="Justify selected translation text"
+            >
+              Justify
+            </Button>
+          </div>
+        )}
         <Button
           size="sm"
+          className="h-8 text-xs"
           onClick={() => saveMutation.mutate(profile)}
           disabled={saveMutation.isPending || shallowEqualProfile(profile, persistedProfile)}
         >
@@ -594,6 +645,10 @@ export function TranslationStyleControls({
         </Button>
       </div>
 
+      <details className="mt-2">
+        <summary className="cursor-pointer select-none text-[11px] font-medium text-muted-foreground">
+          Advanced layout controls
+        </summary>
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StyleField label="Translation font">
           <select
@@ -819,6 +874,7 @@ export function TranslationStyleControls({
           }
         />
       </div>
+      </details>
       {!shallowEqualProfile(profile, persistedProfile) && (
         <p className="mt-2 text-[11px] text-amber-800">
           Previewing unsaved style changes. Save style before running a new export.
@@ -827,6 +883,61 @@ export function TranslationStyleControls({
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
     </section>
   );
+}
+
+type InlineAlignment = "left" | "center" | "justify";
+
+interface AlignedTextBlock {
+  text: string;
+  alignment: CSSProperties["textAlign"];
+}
+
+const ALIGNMENT_MARKER_RE = /\[\[(left|center|justify)\]\]([\s\S]*?)\[\[\/\1\]\]/g;
+
+export function splitAlignedText(text: string): AlignedTextBlock[] {
+  const blocks: AlignedTextBlock[] = [];
+  let last = 0;
+  for (const match of text.matchAll(ALIGNMENT_MARKER_RE)) {
+    const index = match.index ?? 0;
+    if (index > last) {
+      blocks.push({ text: text.slice(last, index), alignment: undefined });
+    }
+    blocks.push({
+      text: match[2] ?? "",
+      alignment: markerAlignmentToCss(match[1]),
+    });
+    last = index + match[0].length;
+  }
+  if (last < text.length) {
+    blocks.push({ text: text.slice(last), alignment: undefined });
+  }
+  return blocks.filter((block) => block.text.length > 0);
+}
+
+function markerAlignmentToCss(value: string | undefined): CSSProperties["textAlign"] {
+  if (value === "center") return "center";
+  if (value === "justify") return "justify";
+  if (value === "left") return "left";
+  return undefined;
+}
+
+function applyAlignmentToSelection(
+  textarea: HTMLTextAreaElement | null,
+  draft: string,
+  alignment: InlineAlignment,
+): string {
+  if (!textarea) return draft;
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  if (start === end) return draft;
+  const selected = draft.slice(start, end);
+  const wrapped = `[[${alignment}]]${selected}[[/${alignment}]]`;
+  const next = `${draft.slice(0, start)}${wrapped}${draft.slice(end)}`;
+  requestAnimationFrame(() => {
+    textarea.focus();
+    textarea.setSelectionRange(start, start + wrapped.length);
+  });
+  return next;
 }
 
 function StyleField({

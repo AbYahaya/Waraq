@@ -50,7 +50,16 @@ export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.El
   }
 
   return (
-    <ul className="space-y-2 px-3 pb-3">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-border/70 bg-card/95 px-3 py-2">
+        <div className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+          Pages
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {pages.length} page{pages.length === 1 ? "" : "s"}
+        </div>
+      </div>
+      <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-2">
       {pages.map((p) => {
         const isActive = p.page_uuid === activePageUuid;
         return (
@@ -58,7 +67,7 @@ export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.El
             <Link
               to={`/projects/${projectUuid}/pages/${p.page_uuid}`}
               className={cn(
-                "block rounded-2xl border border-transparent px-3 py-3 text-sm transition hover:border-border/70 hover:bg-accent/40",
+                "block rounded-xl border border-transparent px-2.5 py-2 text-sm transition hover:border-border/70 hover:bg-accent/40",
                 isActive && "border-border/80 bg-accent/50 shadow-sm",
               )}
             >
@@ -72,7 +81,8 @@ export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.El
           </li>
         );
       })}
-    </ul>
+      </ul>
+    </div>
   );
 }
 

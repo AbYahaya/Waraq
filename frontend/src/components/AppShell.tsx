@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   Link,
   NavLink,
@@ -12,6 +12,8 @@ import {
   LayoutDashboard,
   Library,
   LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
   Settings,
   ShieldCheck,
   Stethoscope,
@@ -29,6 +31,7 @@ export function AppShell(): JSX.Element {
   const location = useLocation();
   const account = useAuthStore((s) => s.account);
   const logout = useAuthStore((s) => s.logout);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const onLogout = useCallback((): void => {
     logout();
@@ -113,7 +116,12 @@ export function AppShell(): JSX.Element {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="flex min-h-screen">
-        <aside className="hidden w-[280px] shrink-0 flex-col bg-[#163927] px-5 py-6 text-white lg:flex">
+        <aside
+          className={cn(
+            "hidden w-[280px] shrink-0 flex-col bg-[#163927] px-5 py-6 text-white lg:flex",
+            !sidebarOpen && "lg:hidden",
+          )}
+        >
           <Link
             to="/"
             className="rounded-[1.75rem] border border-white/10 bg-white/5 px-5 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
@@ -195,16 +203,35 @@ export function AppShell(): JSX.Element {
           <header className="border-b border-border/80 bg-background/80 backdrop-blur">
             <div className="flex h-20 items-center justify-between px-6 sm:px-8">
               <div className="min-w-0">
-                <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                  {pageMeta.eyebrow}
-                </p>
-                <div className="mt-1 flex items-center gap-3">
-                  <h1 className="truncate text-2xl font-semibold text-[#1d221d]">
-                    {pageMeta.title}
-                  </h1>
-                  <div className="hidden items-center gap-2 rounded-full border border-border/80 bg-card px-3 py-1 text-xs text-muted-foreground sm:flex">
-                    <BookCopy className="h-3.5 w-3.5" />
-                    {account?.display_name ?? account?.email ?? "Signed in"}
+                <div className="flex items-start gap-3">
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="hidden h-10 w-10 rounded-xl lg:inline-flex"
+                    onClick={() => setSidebarOpen((open) => !open)}
+                    aria-label={sidebarOpen ? "Close menu" : "Open menu"}
+                    title={sidebarOpen ? "Close menu" : "Open menu"}
+                  >
+                    {sidebarOpen ? (
+                      <PanelLeftClose className="h-4 w-4" />
+                    ) : (
+                      <PanelLeftOpen className="h-4 w-4" />
+                    )}
+                  </Button>
+                  <div className="min-w-0">
+                    <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
+                      {pageMeta.eyebrow}
+                    </p>
+                    <div className="mt-1 flex items-center gap-3">
+                      <h1 className="truncate text-2xl font-semibold text-[#1d221d]">
+                        {pageMeta.title}
+                      </h1>
+                      <div className="hidden items-center gap-2 rounded-full border border-border/80 bg-card px-3 py-1 text-xs text-muted-foreground sm:flex">
+                        <BookCopy className="h-3.5 w-3.5" />
+                        {account?.display_name ?? account?.email ?? "Signed in"}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

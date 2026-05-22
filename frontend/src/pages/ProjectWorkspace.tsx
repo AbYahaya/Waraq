@@ -150,21 +150,21 @@ export function ProjectWorkspacePage(): JSX.Element {
   }, [comparisonMode, editMode, singlePaneSelection, pageUuid, pageQ.data, projectUuid]);
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-[20rem_minmax(0,1fr)]">
+    <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-[18rem_minmax(0,1fr)]">
       <aside className="flex min-h-0 flex-col overflow-hidden rounded-[2rem] border border-border/80 bg-card/95 shadow-sm">
-        <div className="border-b border-border/80 px-4 py-4">
-          <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
+        <div className="shrink-0 border-b border-border/80 px-3 py-3">
+          <div className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
             Project
           </div>
-          <div className="mt-2 truncate text-lg font-semibold text-[#1d221d]">
+          <div className="mt-1 truncate text-base font-semibold text-[#1d221d]">
             {projectQ.data?.name ?? "Loading…"}
           </div>
-          <div className="mt-3">
+          <div className="mt-2">
             <DifficultyBadge scope="project" uuid={projectUuid} projectUuid={projectUuid} />
           </div>
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-3 grid grid-cols-2 gap-2">
             <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setUploadOpen(true)}>
-              Upload book, document, image, or archive
+              Upload
             </Button>
             <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setExportOpen(true)}>
               OCR text
@@ -191,7 +191,9 @@ export function ProjectWorkspacePage(): JSX.Element {
         </div>
         <ReleaseGatePanel projectUuid={projectUuid} />
         <GuidedReviewPanel projectUuid={projectUuid} />
-        <PageList projectUuid={projectUuid} activePageUuid={pageUuid} />
+        <div className="min-h-0 flex-1 overflow-hidden border-t border-border/80">
+          <PageList projectUuid={projectUuid} activePageUuid={pageUuid} />
+        </div>
       </aside>
 
       <UploadPdfDialog

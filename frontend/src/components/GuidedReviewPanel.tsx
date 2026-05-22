@@ -78,9 +78,9 @@ export function GuidedReviewPanel({
   const item: GuidedReviewItemDto = q.data.items[cursor]!;
 
   return (
-    <div className={cn("p-3 space-y-3 border-t", className)}>
+    <div className={cn("shrink-0 space-y-2 border-t p-2.5", className)}>
       <div className="flex items-baseline justify-between">
-        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+        <div className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
           Guided review
         </div>
         <div className="text-xs text-muted-foreground">
@@ -102,7 +102,7 @@ export function GuidedReviewPanel({
         ))}
       </div>
 
-      <div className="rounded border p-3 space-y-2">
+      <div className="rounded-xl border p-2 space-y-2">
         <div className="flex items-center gap-2 text-xs">
           <span
             className={cn(
@@ -138,6 +138,7 @@ export function GuidedReviewPanel({
         <Button
           type="button"
           size="sm"
+          className="h-8 text-xs"
           variant="outline"
           onClick={() => setCursor((c) => Math.max(0, c - 1))}
           disabled={cursor === 0}
@@ -147,6 +148,7 @@ export function GuidedReviewPanel({
         <Button
           type="button"
           size="sm"
+          className="h-8 text-xs"
           onClick={() => setCursor((c) => Math.min(q.data.items.length - 1, c + 1))}
           disabled={cursor >= q.data.items.length - 1}
         >

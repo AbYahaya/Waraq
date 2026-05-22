@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import uuid as _uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from docx import Document
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
@@ -44,6 +45,7 @@ from waraq.text_state import (
 )
 
 TocPosition = Literal["front", "back"]
+InlineAlignment = Literal["left", "center", "justify"]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -104,7 +106,9 @@ def _set_paragraph_rtl(paragraph: Any) -> None:
     text_direction.set(qn("w:val"), "rlTb")
 
 
-def _set_run_rtl(run: Any, *, font_name: str = ARABIC_FONT, font_size_pt: int | None = None) -> None:
+def _set_run_rtl(
+    run: Any, *, font_name: str = ARABIC_FONT, font_size_pt: int | None = None
+) -> None:
     """Mark a run right-to-left. Some Word renderers ignore paragraph-level
     `<w:bidi/>` unless runs are also RTL."""
     r_pr = run._r.get_or_add_rPr()
@@ -204,24 +208,72 @@ def _apply_arabic_layout(
         _set_run_rtl(
             run,
             font_name=str(profile["docx_arabic_font_family"]),
-            font_size_pt=_docx_font_size_for_block(
-                profile, block_type=block_type, source=True
-            ),
+            font_size_pt=_docx_font_size_for_block(profile, block_type=block_type, source=True),
         )
 
 
 def _apply_translation_layout(
-    paragraph: Any, config: TranslationDocxConfig, *, block_type: str | None = None
+    paragraph: Any,
+    config: TranslationDocxConfig,
+    *,
+    block_type: str | None = None,
+    alignment: InlineAlignment | None = None,
 ) -> None:
     profile = _effective_style_profile(config)
-    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+    paragraph.alignment = _docx_alignment(alignment)
     paragraph.paragraph_format.space_after = Pt(_docx_spacing_for_block(profile, block_type))
     paragraph.paragraph_format.line_spacing = float(profile["docx_line_spacing"])
     _apply_block_indent(paragraph, block_type)
     for run in paragraph.runs:
         run.font.name = str(profile["docx_translation_font_family"])
-        run.font.size = Pt(
-            _docx_font_size_for_block(profile, block_type=block_type, source=False)
+        run.font.size = Pt(_docx_font_size_for_block(profile, block_type=block_type, source=False))
+
+
+_ALIGNMENT_MARKER_RE = re.compile(
+    r"\[\[(left|center|justify)\]\](.*?)\[\[/\1\]\]",
+    flags=re.DOTALL,
+)
+
+
+def _docx_alignment(alignment: InlineAlignment | None) -> WD_PARAGRAPH_ALIGNMENT:
+    if alignment == "center":
+        return WD_PARAGRAPH_ALIGNMENT.CENTER
+    if alignment == "justify":
+        return WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+    return WD_PARAGRAPH_ALIGNMENT.LEFT
+
+
+def _iter_aligned_blocks(text: str) -> list[tuple[str, InlineAlignment | None]]:
+    blocks: list[tuple[str, InlineAlignment | None]] = []
+    last = 0
+    for match in _ALIGNMENT_MARKER_RE.finditer(text):
+        if match.start() > last:
+            blocks.append((text[last : match.start()], None))
+        blocks.append((match.group(2), cast(InlineAlignment, match.group(1))))
+        last = match.end()
+    if last < len(text):
+        blocks.append((text[last:], None))
+    return [(block, alignment) for block, alignment in blocks if block.strip()]
+
+
+def _add_translation_paragraphs(
+    document: Document,
+    text: str,
+    *,
+    style: str,
+    config: TranslationDocxConfig,
+    block_type: str | None,
+) -> None:
+    blocks = _iter_aligned_blocks(text)
+    if not blocks:
+        blocks = [(text, None)]
+    for block_text, alignment in blocks:
+        paragraph = document.add_paragraph(block_text, style=style)
+        _apply_translation_layout(
+            paragraph,
+            config,
+            block_type=block_type,
+            alignment=alignment,
         )
 
 
@@ -351,9 +403,7 @@ def _set_running_header(
     _apply_header_style(paragraph, config)
 
 
-def _sanitize_headers(
-    document: Any, *, project_title: str, config: TranslationDocxConfig
-) -> None:
+def _sanitize_headers(document: Any, *, project_title: str, config: TranslationDocxConfig) -> None:
     """Keep headers field-free so Word cannot render stale field errors."""
     for section in document.sections:
         section.different_first_page_header_footer = True
@@ -498,8 +548,13 @@ async def build_translation_docx(
             _apply_arabic_layout(ar_paragraph, config, block_type=block.block_type)
 
         if target.strip() or not source.strip():
-            de_paragraph = document.add_paragraph(target or "", style=style)
-            _apply_translation_layout(de_paragraph, config, block_type=block.block_type)
+            _add_translation_paragraphs(
+                document,
+                target or "",
+                style=style,
+                config=config,
+                block_type=block.block_type,
+            )
 
     _add_back_toc(document, config)
     _sanitize_headers(document, project_title=project_title, config=config)
@@ -615,8 +670,13 @@ async def build_translation_docx_from_snapshot(
             ar_paragraph = document.add_paragraph(source, style=style)
             _apply_arabic_layout(ar_paragraph, config, block_type=block.block_type)
         if target.strip() or not source.strip():
-            de_paragraph = document.add_paragraph(target or "", style=style)
-            _apply_translation_layout(de_paragraph, config, block_type=block.block_type)
+            _add_translation_paragraphs(
+                document,
+                target or "",
+                style=style,
+                config=config,
+                block_type=block.block_type,
+            )
 
     _add_back_toc(document, config)
     _sanitize_headers(document, project_title=project_title, config=config)

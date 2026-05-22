@@ -83,8 +83,8 @@ export function ReleaseGatePanel({ projectUuid }: ReleaseGatePanelProps): JSX.El
   });
 
   return (
-    <div className="px-3 py-3 border-b">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+    <div className="shrink-0 border-b px-3 py-2">
+      <div className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground mb-1">
         Release gate
       </div>
 
@@ -126,15 +126,15 @@ export function ReleaseGatePanel({ projectUuid }: ReleaseGatePanelProps): JSX.El
             </ul>
           )}
 
-          <div className="flex flex-col gap-2 mt-3">
+          <div className="flex flex-wrap gap-2 mt-2">
             {gateQ.data.requires_confirmation && (
-              <Button size="sm" onClick={() => setConfirmOpen(true)}>
+              <Button size="sm" className="h-8 text-xs" onClick={() => setConfirmOpen(true)}>
                 Confirm warnings
               </Button>
             )}
             {(gateQ.data.state === "uebersetzungsreif" ||
               gateQ.data.state === "uebersetzbar_mit_warnung") && (
-              <Button size="sm" variant="outline" onClick={() => setStartOpen(true)}>
+              <Button size="sm" className="h-8 text-xs" variant="outline" onClick={() => setStartOpen(true)}>
                 Start translation
               </Button>
             )}

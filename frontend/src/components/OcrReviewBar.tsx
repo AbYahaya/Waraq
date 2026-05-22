@@ -151,49 +151,50 @@ export function OcrReviewBar({
   });
 
   return (
-    <div className="sticky top-0 z-10 border-b border-border/80 bg-card px-4 py-4">
-      <div className="flex items-baseline justify-between gap-2 mb-2">
-        <div>
-          <div className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
+    <div className="sticky top-0 z-20 border-b border-border/80 bg-card/95 px-4 py-2.5 backdrop-blur">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
             Page {page.page_index}
           </div>
-          <div className="font-medium text-[#1d221d]">OCR review</div>
+          <div className="text-sm font-medium text-[#1d221d]">OCR review</div>
         </div>
-        <span
-          className={cn(
-            "text-xs px-2 py-0.5 rounded-full font-medium",
-            STATUS_TONE[page.ocr_status],
-          )}
-        >
-          {STATUS_LABEL[page.ocr_status]}
-        </span>
-      </div>
-
-      <div className="mt-2 inline-flex overflow-hidden rounded-xl border border-border/80 bg-background">
-        <button
-          type="button"
-          onClick={() => onViewModeChange("edit")}
-          className={cn(
-            "px-3 py-1 text-xs",
-            viewMode === "edit"
-              ? "bg-accent text-accent-foreground"
-              : "hover:bg-accent/50",
-          )}
-        >
-          Edit
-        </button>
-        <button
-          type="button"
-          onClick={() => onViewModeChange("compare")}
-          className={cn(
-            "px-3 py-1 text-xs border-l",
-            viewMode === "compare"
-              ? "bg-accent text-accent-foreground"
-              : "hover:bg-accent/50",
-          )}
-        >
-          Read
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={cn(
+              "text-xs px-2 py-0.5 rounded-full font-medium",
+              STATUS_TONE[page.ocr_status],
+            )}
+          >
+            {STATUS_LABEL[page.ocr_status]}
+          </span>
+          <div className="inline-flex overflow-hidden rounded-xl border border-border/80 bg-background">
+            <button
+              type="button"
+              onClick={() => onViewModeChange("edit")}
+              className={cn(
+                "px-3 py-1 text-xs",
+                viewMode === "edit"
+                  ? "bg-accent text-accent-foreground"
+                  : "hover:bg-accent/50",
+              )}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              onClick={() => onViewModeChange("compare")}
+              className={cn(
+                "px-3 py-1 text-xs border-l",
+                viewMode === "compare"
+                  ? "bg-accent text-accent-foreground"
+                  : "hover:bg-accent/50",
+              )}
+            >
+              Read
+            </button>
+          </div>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2 mt-2">

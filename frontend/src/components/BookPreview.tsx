@@ -12,6 +12,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   DEFAULT_STYLE_PROFILE,
   TranslationStyleControls,
+  splitAlignedText,
   styleKindForBlock,
   translationParagraphStyle,
   translationTextStyle,
@@ -252,23 +253,29 @@ function StyledTranslationPreview({
   paragraphStyle: CSSProperties;
 }): JSX.Element {
   const paragraphs = splitPreviewParagraphs(text);
+  const alignedBlocks = splitAlignedText(text);
+  const blocks =
+    alignedBlocks.length > 1 || alignedBlocks[0]?.alignment
+      ? alignedBlocks
+      : paragraphs.map((paragraph) => ({ text: paragraph, alignment: undefined }));
 
   return (
     <div
       className={stale ? "text-amber-950" : "text-[#252820]"}
       style={translationStyle}
     >
-      {paragraphs.map((paragraph, index) => (
+      {blocks.map((block, index) => (
         <p
-          key={`${index}-${paragraph.slice(0, 18)}`}
+          key={`${index}-${block.text.slice(0, 18)}`}
           className="whitespace-pre-line"
           style={{
             ...paragraphStyle,
+            textAlign: block.alignment,
             marginBottom:
-              index === paragraphs.length - 1 ? 0 : paragraphStyle.marginBottom,
+              index === blocks.length - 1 ? 0 : paragraphStyle.marginBottom,
           }}
         >
-          {paragraph}
+          {block.text}
         </p>
       ))}
     </div>
