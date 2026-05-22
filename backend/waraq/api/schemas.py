@@ -351,6 +351,10 @@ class OcrApplyFindingsRequest(BaseModel):
     findings: list[OcrFindingApply]
 
 
+class OcrApprovePageRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=2048)
+
+
 class OcrPageStatusResponse(BaseModel):
     page_uuid: _uuid.UUID
     ocr_status: str

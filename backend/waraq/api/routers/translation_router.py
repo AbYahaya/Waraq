@@ -19,6 +19,11 @@ from waraq.api._ownership import owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.api.schemas import JobResponse, TranslationStartRequest
 from waraq.db.session import _sessionmaker
+from waraq.notifications.events import (
+    notify_project_event,
+    project_audit_url,
+    project_workspace_url,
+)
 from waraq.schemas import Job, Project
 from waraq.schemas.enums import JobState
 from waraq.translation import (
@@ -135,6 +140,23 @@ async def _run_translation_in_background(job_uuid: _uuid.UUID) -> None:
                     "translation.background.job_missing", extra={"job_uuid": str(job_uuid)}
                 )
                 return
+            project: Project | None = await session.get(Project, job.project_uuid)
+            if project is None:
+                logger.warning(
+                    "translation.background.project_missing", extra={"job_uuid": str(job_uuid)}
+                )
+                return
+            await notify_project_event(
+                session=session,
+                project=project,
+                kind="translation_started",
+                severity="info",
+                title=f"Translation started — {project.name}",
+                body=f"Translation job {job.job_uuid} is running.",
+                target_url=project_workspace_url(project.project_uuid),
+                action_label="Open project",
+            )
+            await session.commit()
             await run_translation_job(
                 session=session,
                 job=job,
@@ -142,17 +164,69 @@ async def _run_translation_in_background(job_uuid: _uuid.UUID) -> None:
                 on_segment_translated=hook,
                 commit_per_chunk=True,
             )
+            await session.refresh(job)
+            await notify_project_event(
+                session=session,
+                project=project,
+                kind="translation_completed",
+                severity="success",
+                title=f"Translation completed — {project.name}",
+                body="Translation finished. You can now run preflight or export.",
+                target_url=project_workspace_url(project.project_uuid),
+                action_label="Open project",
+            )
             await session.commit()
         except TranslationJobCancelled:
             # Already persisted as failed with phase=user_cancelled by
             # _execute. Swallow here — it's the user's own action, not
             # an unexpected error.
             logger.info("translation.background.cancelled", extra={"job_uuid": str(job_uuid)})
+            async with _sessionmaker()() as notify_session:
+                job = await notify_session.get(Job, job_uuid)
+                project = (
+                    await notify_session.get(Project, job.project_uuid)
+                    if job is not None and job.project_uuid is not None
+                    else None
+                )
+                if project is not None:
+                    await notify_project_event(
+                        session=notify_session,
+                        project=project,
+                        kind="translation_cancelled",
+                        severity="warning",
+                        title=f"Translation cancelled — {project.name}",
+                        body="The translation job was cancelled before completion.",
+                        target_url=project_workspace_url(project.project_uuid),
+                        action_label="Open project",
+                    )
+                    await notify_session.commit()
         except Exception:
             # _execute already wrote the failure. Log + swallow so the
             # BackgroundTasks runner doesn't surface to uvicorn as an
             # unhandled exception.
             logger.exception("translation.background.failed", extra={"job_uuid": str(job_uuid)})
+            async with _sessionmaker()() as notify_session:
+                job = await notify_session.get(Job, job_uuid)
+                project = (
+                    await notify_session.get(Project, job.project_uuid)
+                    if job is not None and job.project_uuid is not None
+                    else None
+                )
+                if project is not None:
+                    await notify_project_event(
+                        session=notify_session,
+                        project=project,
+                        kind="translation_failed",
+                        severity="error",
+                        title=f"Translation failed — {project.name}",
+                        body=(
+                            "Translation stopped before completion. "
+                            "Open Audit or rerun translation after checking the page."
+                        ),
+                        target_url=project_audit_url(project.project_uuid),
+                        action_label="Open Audit",
+                    )
+                    await notify_session.commit()
 
 
 @router.post(

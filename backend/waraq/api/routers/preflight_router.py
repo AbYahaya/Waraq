@@ -27,6 +27,11 @@ from pydantic import BaseModel, Field
 
 from waraq.api._ownership import owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
+from waraq.notifications.events import (
+    notify_project_event,
+    project_audit_url,
+    project_workspace_url,
+)
 from waraq.preflight import (
     PFLICHTFRAGE_COUNT,
     PFLICHTFRAGEN,
@@ -194,7 +199,7 @@ async def open_preflight_run(
     session: DbSession,
     current: CurrentAccount,
 ) -> PreflightRunResponse:
-    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
     try:
         job = await start_preflight_run(
             session=session,
@@ -215,6 +220,16 @@ async def open_preflight_run(
                 "evidence": guard_result.evidence,
             },
         ) from exc
+    await notify_project_event(
+        session=session,
+        project=project,
+        kind="preflight_started",
+        severity="info",
+        title=f"Preflight started — {project.name}",
+        body="Export readiness checks have started.",
+        target_url=project_workspace_url(project.project_uuid),
+        action_label="Open project",
+    )
     return PreflightRunResponse(run_uuid=job.job_uuid, state=job.state)
 
 
@@ -350,10 +365,26 @@ async def evaluate_preflight_run(
     session: DbSession,
     current: CurrentAccount,
 ) -> PreflightEvaluateResponse:
-    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
     job = await _resolve_run_or_404(session=session, project_uuid=project_uuid, run_uuid=run_uuid)
     evaluation = await evaluate_preflight(
         session=session, project_uuid=project_uuid, preflight_run=job
+    )
+    blocker_count = len(evaluation.blocking_reasons)
+    warning_count = len(evaluation.open_warning_slots)
+    severity = "success" if blocker_count == 0 and warning_count == 0 else "action_required"
+    await notify_project_event(
+        session=session,
+        project=project,
+        kind="preflight_evaluated",
+        severity=severity,
+        title=f"Preflight {evaluation.state.value} — {project.name}",
+        body=(
+            f"{blocker_count} blocker(s), {warning_count} warning slot(s). "
+            "Open Audit if anything needs resolution."
+        ),
+        target_url=project_audit_url(project.project_uuid) if blocker_count else project_workspace_url(project.project_uuid),
+        action_label="Open Audit" if blocker_count else "Open project",
     )
     return PreflightEvaluateResponse(
         run_uuid=run_uuid,

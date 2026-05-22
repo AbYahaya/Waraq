@@ -20,18 +20,26 @@ from waraq.api._ownership import owned_page_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.api.schemas import (
     OcrApplyFindingsRequest,
+    OcrApprovePageRequest,
     OcrPageStatusResponse,
     OcrResolveNoGoRequest,
+)
+from waraq.notifications.events import (
+    notify_project_event,
+    project_audit_url,
+    project_workspace_url,
 )
 from waraq.ocr.error_classes import OcrErrorClass
 from waraq.ocr.review import (
     apply_findings_to_status,
+    approve_page_as_go,
+    approve_page_with_warning,
     enter_in_review,
     make_default_severity_weights,
     record_ocr_error_instance,
     resolve_no_go_to_go,
 )
-from waraq.schemas import OcrErrorInstance
+from waraq.schemas import OcrErrorInstance, Project
 from waraq.schemas.enums import OcrErrorState
 
 router = APIRouter(prefix="/pages/{page_uuid}/ocr-review", tags=["ocr-review"])
@@ -94,6 +102,82 @@ async def post_findings(
     )
 
 
+@router.post("/approve-go", response_model=OcrPageStatusResponse)
+async def approve_go(
+    page_uuid: _uuid.UUID,
+    req: OcrApprovePageRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> OcrPageStatusResponse:
+    page = await owned_page_or_404(session, page_uuid, current.account_uuid)
+    try:
+        await approve_page_as_go(
+            session=session,
+            page=page,
+            weights=make_default_severity_weights(),
+            actor_uuid=current.account_uuid,
+            note=req.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    project: Project | None = await session.get(Project, page.project_uuid)
+    if project is not None:
+        await notify_project_event(
+            session=session,
+            project=project,
+            kind="ocr_review_go",
+            severity="success",
+            title=f"OCR approved — page {page.page_index}",
+            body="The page was approved as GO and non-blocking OCR findings were resolved.",
+            target_url=project_workspace_url(project.project_uuid, page.page_uuid),
+            action_label="Open page",
+            page_uuid=page.page_uuid,
+        )
+    return OcrPageStatusResponse(
+        page_uuid=page.page_uuid,
+        ocr_status=page.ocr_status.value,
+        error_codes_open=await _open_codes(session, page_uuid),
+    )
+
+
+@router.post("/approve-warning", response_model=OcrPageStatusResponse)
+async def approve_warning(
+    page_uuid: _uuid.UUID,
+    req: OcrApprovePageRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> OcrPageStatusResponse:
+    page = await owned_page_or_404(session, page_uuid, current.account_uuid)
+    try:
+        await approve_page_with_warning(
+            session=session,
+            page=page,
+            weights=make_default_severity_weights(),
+            actor_uuid=current.account_uuid,
+            note=req.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    project: Project | None = await session.get(Project, page.project_uuid)
+    if project is not None:
+        await notify_project_event(
+            session=session,
+            project=project,
+            kind="ocr_review_go_with_warning",
+            severity="warning",
+            title=f"OCR approved with warning — page {page.page_index}",
+            body="The page was approved with warning. Open Audit to review remaining context.",
+            target_url=project_audit_url(project.project_uuid),
+            action_label="Open Audit",
+            page_uuid=page.page_uuid,
+        )
+    return OcrPageStatusResponse(
+        page_uuid=page.page_uuid,
+        ocr_status=page.ocr_status.value,
+        error_codes_open=await _open_codes(session, page_uuid),
+    )
+
+
 @router.post("/resolve-no-go", response_model=OcrPageStatusResponse)
 async def resolve_no_go(
     page_uuid: _uuid.UUID,
@@ -111,6 +195,19 @@ async def resolve_no_go(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    project: Project | None = await session.get(Project, page.project_uuid)
+    if project is not None:
+        await notify_project_event(
+            session=session,
+            project=project,
+            kind="ocr_review_no_go_resolved",
+            severity="success",
+            title=f"OCR no-go resolved — page {page.page_index}",
+            body="The page was moved back to GO after review.",
+            target_url=project_workspace_url(project.project_uuid, page.page_uuid),
+            action_label="Open page",
+            page_uuid=page.page_uuid,
+        )
     return OcrPageStatusResponse(
         page_uuid=page.page_uuid,
         ocr_status=page.ocr_status.value,

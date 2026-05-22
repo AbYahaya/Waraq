@@ -57,7 +57,7 @@ Status: validated in deployed app.
 
 ### 6. Project Style Profile And Export Integration
 
-Status: implemented locally, awaiting user validation.
+Status: validated in deployed app.
 
 - Introduce a project-level style/layout profile using canonical Waraq defaults plus saved overrides.
 - Expose global style controls in Solo Translation for core styles: body translation, Arabic source, headings, quotes, Quran/Hadith blocks, footnotes, spacing, page/header/TOC-related options where already supported.
@@ -71,51 +71,74 @@ Status: implemented locally, awaiting user validation.
 
 ### 7. OCR Review Approval And Attention List Sync
 
+Status: validated in deployed app.
+
 - Connect page-level OCR review decisions to Attention List state.
 - “Approve as GO” should resolve/accept non-blocking OCR findings for that page and remove them from active open attention items.
 - Block simple approval when unresolved blocking or decision-required issues remain; show “resolve required issues first” or “approve with warning”.
 - Re-entering review must not reopen accepted findings unless OCR is rerun, OCR text changes, user resets review, or new findings appear.
 - Public API change: add issue-level resolution/acceptance state for OCR attention findings if current decision events are insufficient.
+- Implemented page-level `approve-go` endpoint: writes an OCR-review Decision Event, resolves non-critical open OCR errors, refuses critical OCR errors/critical OCR confidence, and lets Audit hide accepted low-confidence/divergent OCR attention rows until fresh OCR appears.
 - User test: approve a page; confirm related Attention List items disappear from open list but remain available in resolved/history filter.
 
 ### 8. Expanded Attention Item Review
 
+Status: validated in deployed app.
+
 - Improve expanded OCR issue rows to show original scan/crop, current accepted OCR reading, Gemini/OpenAI alternatives, active reading marker, highlighted text differences, confidence/reason label, and decision buttons.
 - Add actions: accept current, accept alternative, approve with warning, mark unresolved, open page review, edit OCR text.
 - Public API change: extend attention detail response with original page/crop render metadata, OCR alternatives, active candidate, and resolved/open state.
+- Implemented expanded Audit row actions: original full-page preview, active OCR engine marker, highlighted non-current readings, accept current OCR, accept engine alternative, approve with warning, mark unresolved/re-enter review, and open page.
+- Added backend `approve-warning` review endpoint and exposed `is_current` on OCR engine readings. Region crop metadata/retry remains queued for fix 10 DPI Compare, where the crop tool belongs.
 - User test: open an OCR issue in Audit; confirm the difference and decision path are obvious without manually comparing full texts.
 
 ### 9. TOC/IVZ Workflow Clarification
+
+Status: implemented locally, awaiting user validation.
 
 - Make TOC panel explicitly distinguish `No TOC detected / page-by-page fallback`, `TOC detected`, `TOC requires attention`, and `Final TOC review`.
 - Fallback must be visually marked and explicitly confirmable; it must not look like real confirmed chapter structure.
 - Real TOC entries should show level, page, Arabic heading, German heading, ambiguity state, editing, and confirmation.
 - Connect TOC decisions to export/preflight settings: header heading level, chapter break level, TOC front/back, Arabic chapter heading display.
 - Public API change: extend TOC response with workflow state and confirmation state; add confirm/final-review endpoints.
+- Implemented TOC workflow state and final-review confirmation endpoint. The panel now shows fallback vs detected TOC, attention reasons for missing headings/translations, export preflight setting guidance, confirmation state, and a final confirmation action.
 - User test: open TOC before/after translation; confirm fallback vs real TOC is clear and export settings reflect decisions.
 
 ### 10. DPI Compare As OCR Recovery Tool
+
+Status: implemented locally, awaiting user validation.
 
 - Redesign DPI Compare as original reference left pane plus adjustable right pane.
 - Add zoom, crop/region selection, and retry OCR for selected region or full page.
 - Region retry must create a candidate and never silently replace full-page OCR.
 - After retry, show old OCR vs new candidate vs scan/crop with highlighted differences and accept/keep/edit/discard actions.
 - Public API change: add OCR retry endpoint accepting page UUID, DPI, crop coordinates, retry scope (`region` or `full_page`), and returning candidate result/version.
+- Implemented non-destructive retry candidates through `POST /pages/{page_uuid}/ocr-retry-candidate`; candidates can use OpenAI or Gemini and are only saved after explicit accept through the normal manual OCR edit path.
+- Updated DPI Compare into a recovery workspace with reference scan, adjustable retry scan, zoom, crop selection, region/full-page retry, editable candidate review, current-vs-candidate comparison, accept, and discard.
 - User test: open attention issue, retry OCR on crop, accept candidate, confirm Attention List updates.
 
 ### 11. Difficulty Badge And Report
 
+Status: implemented locally, awaiting user validation.
+
 - Keep Difficulty badge in workspace as summary/entry point.
 - Clicking it opens a compact page/project difficulty panel with reasons, confidence, engine agreement, layout/small-print/religious-text risks, and links to Audit, Attention List, and DPI Compare.
 - Move full Difficulty Report into Audit/OCR Review area as summary/prioritization, not a duplicate task list.
+- Implemented clickable Difficulty badge panel with score state, active segment count, main contributors, risk cards for OCR confidence, engine agreement, religious text, layout/small-print, consistency, and locks.
+- Added direct navigation from the page badge to Audit, workspace, and DPI recovery; `?panel=dpi` now opens the DPI recovery tool on the selected page.
 - User test: click Difficulty 0 and a higher-difficulty page; confirm reasons and navigation are useful.
 
 ### 12. Notifications Panel Wiring
+
+Status: implemented locally, awaiting user validation.
 
 - Connect notifications to workflow events: upload, OCR, OCR retry/review, translation, provider failure/restoration, preflight, export, TOC review, Quran/Hadith decisions, audit findings, account/access warnings.
 - Notifications should be typed: info, success, warning, error, action required.
 - Notifications should be project-linked and clickable to the relevant project/page/issue/export/review screen.
 - Public API change: standardize notification payload target links and severity/type fields if missing.
+- Added notification metadata fields for severity, target URL, action label, project/page/issue references, plus a migration for existing installations.
+- Wired workflow notifications for upload completion, OCR auto-run start/completion/failure/cancel, OCR retry candidate creation, OCR review approvals, translation start/completion/failure/cancel, preflight start/evaluation, OCR export, translation export, TOC final review, and the existing 30-minute translation failure watcher.
+- Updated the bell panel to show severity badges, workflow kind labels, email/read state, and clickable actions to the relevant project, page, Audit, or DPI recovery screen.
 - User test: trigger OCR/export/translation events and confirm bell panel shows actionable notifications.
 
 ### 13. Account Settings And Usage

@@ -31,8 +31,25 @@ class Notification(Base):
         index=True,
     )
     kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False, server_default="info")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    target_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    action_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    project_uuid: Mapped[_uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("projects.project_uuid", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    page_uuid: Mapped[_uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("pages.page_uuid", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    issue_uuid: Mapped[_uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    issue_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )

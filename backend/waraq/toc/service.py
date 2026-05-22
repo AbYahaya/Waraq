@@ -10,10 +10,11 @@ from typing import Final
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from waraq.decisions import create_decision_event
 from waraq.invariant.enums import OperationMode
 from waraq.revision.service import create_revision
-from waraq.schemas import Block, Page, Revision, Segment
-from waraq.schemas.enums import ChangeSource
+from waraq.schemas import Block, DecisionEvent, Page, Revision, Segment
+from waraq.schemas.enums import ChangeSource, DecisionSource, ScopeType
 from waraq.text_state import (
     join_source_target_text,
     resolve_segment_text_state,
@@ -35,6 +36,16 @@ class TocFallbackKind(StrEnum):
 
     NONE = "none"  # Headings detected — entries are real.
     PAGE_BY_PAGE = "page_by_page"  # No headings; canonical §2.1 fallback.
+
+
+class TocWorkflowState(StrEnum):
+    """UI-facing TOC workflow state."""
+
+    NO_PAGES = "no_pages"
+    NO_TOC_DETECTED = "no_toc_detected"
+    TOC_DETECTED = "toc_detected"
+    TOC_REQUIRES_ATTENTION = "toc_requires_attention"
+    FINAL_REVIEW_CONFIRMED = "final_review_confirmed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +83,13 @@ class TocResult:
     fallback_kind: TocFallbackKind
     detected_heading_count: int = 0
     page_count: int = 0
+    workflow_state: TocWorkflowState = TocWorkflowState.NO_PAGES
+    requires_attention: bool = False
+    attention_reasons: list[str] = field(default_factory=list)
+    confirmation_state: str = "unconfirmed"
+    confirmed_at: str | None = None
+    confirmed_by_decision_event_uuid: _uuid.UUID | None = None
+    export_settings_summary: dict[str, str | int | bool] = field(default_factory=dict)
 
 
 async def detect_toc(
@@ -118,11 +136,43 @@ async def detect_toc(
                     block_uuid=block.block_uuid,
                 )
             )
+        attention_reasons = _attention_reasons(entries)
+        confirmation = await _latest_toc_confirmation(
+            session=session, project_uuid=project_uuid
+        )
+        confirmed = _confirmation_applies(
+            confirmation,
+            fallback_kind=TocFallbackKind.NONE,
+            detected_heading_count=len(entries),
+            page_count=len(pages),
+            attention_reasons=attention_reasons,
+        )
         return TocResult(
             entries=entries,
             fallback_kind=TocFallbackKind.NONE,
             detected_heading_count=len(entries),
             page_count=len(pages),
+            workflow_state=(
+                TocWorkflowState.FINAL_REVIEW_CONFIRMED
+                if confirmed
+                else (
+                    TocWorkflowState.TOC_REQUIRES_ATTENTION
+                    if attention_reasons
+                    else TocWorkflowState.TOC_DETECTED
+                )
+            ),
+            requires_attention=bool(attention_reasons),
+            attention_reasons=attention_reasons,
+            confirmation_state="confirmed" if confirmed else "unconfirmed",
+            confirmed_at=(
+                confirmation.created_at.isoformat()
+                if confirmed and confirmation and confirmation.created_at
+                else None
+            ),
+            confirmed_by_decision_event_uuid=(
+                confirmation.decision_event_uuid if confirmed and confirmation else None
+            ),
+            export_settings_summary=_export_settings_summary(),
         )
 
     # Canonical §2.1 fallback: one entry per active page.
@@ -138,12 +188,123 @@ async def detect_toc(
         )
         for p in pages
     ]
+    confirmation = await _latest_toc_confirmation(session=session, project_uuid=project_uuid)
+    confirmed = _confirmation_applies(
+        confirmation,
+        fallback_kind=TocFallbackKind.PAGE_BY_PAGE,
+        detected_heading_count=0,
+        page_count=len(pages),
+        attention_reasons=[],
+    )
     return TocResult(
         entries=fallback_entries,
         fallback_kind=TocFallbackKind.PAGE_BY_PAGE,
         detected_heading_count=0,
         page_count=len(pages),
+        workflow_state=(
+            TocWorkflowState.NO_PAGES
+            if not pages
+            else (
+                TocWorkflowState.FINAL_REVIEW_CONFIRMED
+                if confirmed
+                else TocWorkflowState.NO_TOC_DETECTED
+            )
+        ),
+        requires_attention=False,
+        attention_reasons=[],
+        confirmation_state="confirmed" if confirmed else "unconfirmed",
+        confirmed_at=(
+            confirmation.created_at.isoformat()
+            if confirmed and confirmation and confirmation.created_at
+            else None
+        ),
+        confirmed_by_decision_event_uuid=(
+            confirmation.decision_event_uuid if confirmed and confirmation else None
+        ),
+        export_settings_summary=_export_settings_summary(),
     )
+
+
+async def confirm_toc_final_review(
+    *,
+    session: AsyncSession,
+    project_uuid: _uuid.UUID,
+    actor_uuid: _uuid.UUID | None = None,
+    note: str | None = None,
+) -> DecisionEvent:
+    """Record the user's final TOC/fallback review decision."""
+    result = await detect_toc(session=session, project_uuid=project_uuid)
+    decision = await create_decision_event(
+        session=session,
+        scope_type=ScopeType.PROJECT,
+        scope_uuid=project_uuid,
+        decision_type="toc_final_review_confirmed",
+        decision_source=DecisionSource.PREFLIGHT_CONFIRMATION,
+        actor_uuid=actor_uuid,
+        content={
+            "note": note,
+            "fallback_kind": result.fallback_kind.value,
+            "detected_heading_count": result.detected_heading_count,
+            "page_count": result.page_count,
+            "attention_reasons": result.attention_reasons,
+            "workflow_state_at_confirmation": result.workflow_state.value,
+        },
+    )
+    return decision
+
+
+def _attention_reasons(entries: list[TocEntry]) -> list[str]:
+    reasons: list[str] = []
+    missing_de = [entry for entry in entries if not entry.de_text.strip()]
+    missing_ar = [entry for entry in entries if not entry.ar_text.strip()]
+    if missing_de:
+        reasons.append(f"{len(missing_de)} heading(s) have no translated title yet.")
+    if missing_ar:
+        reasons.append(f"{len(missing_ar)} heading(s) have no Arabic title.")
+    return reasons
+
+
+async def _latest_toc_confirmation(
+    *, session: AsyncSession, project_uuid: _uuid.UUID
+) -> DecisionEvent | None:
+    result = await session.execute(
+        select(DecisionEvent)
+        .where(DecisionEvent.scope_type == ScopeType.PROJECT.value)
+        .where(DecisionEvent.scope_uuid == project_uuid)
+        .where(DecisionEvent.decision_source == DecisionSource.PREFLIGHT_CONFIRMATION.value)
+        .where(DecisionEvent.decision_type == "toc_final_review_confirmed")
+        .order_by(DecisionEvent.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def _confirmation_applies(
+    decision: DecisionEvent | None,
+    *,
+    fallback_kind: TocFallbackKind,
+    detected_heading_count: int,
+    page_count: int,
+    attention_reasons: list[str],
+) -> bool:
+    if decision is None:
+        return False
+    content = decision.content or {}
+    return (
+        content.get("fallback_kind") == fallback_kind.value
+        and content.get("detected_heading_count") == detected_heading_count
+        and content.get("page_count") == page_count
+        and content.get("attention_reasons") == attention_reasons
+    )
+
+
+def _export_settings_summary() -> dict[str, str | int | bool]:
+    return {
+        "toc_position": "Configured during Translate & export preflight.",
+        "header_heading_level": "Configured during Translate & export preflight.",
+        "chapter_break_heading_level": "Configured during Translate & export preflight.",
+        "display_arabic_chapter_headings": "Configured during Translate & export preflight.",
+    }
 
 
 async def edit_toc_entry_heading(
@@ -197,6 +358,8 @@ __all__ = [
     "TocEntry",
     "TocFallbackKind",
     "TocResult",
+    "TocWorkflowState",
+    "confirm_toc_final_review",
     "detect_toc",
     "edit_toc_entry_heading",
 ]

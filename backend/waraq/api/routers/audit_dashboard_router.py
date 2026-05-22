@@ -121,6 +121,7 @@ class EngineReadingResponse(BaseModel):
     text_chars: int
     confidence: float | None
     error_class: str | None
+    is_current: bool
 
 
 class BefundDetailResponse(BaseModel):
@@ -146,6 +147,9 @@ class SegmentAuditDetailResponse(BaseModel):
     translation_target_text: str | None
     translation_primary_engine: str | None
     translation_check_engine: str | None
+    translation_primary_output: str | None
+    translation_check_output: str | None
+    translation_check_error: str | None
     open_befunde: list[BefundDetailResponse]
     open_conflicts_count: int
 
@@ -306,6 +310,7 @@ async def get_segment_detail(
                 text_chars=e.text_chars,
                 confidence=e.confidence,
                 error_class=e.error_class,
+                is_current=e.is_current,
             )
             for e in detail.ocr_engines
         ],
@@ -314,6 +319,9 @@ async def get_segment_detail(
         translation_target_text=detail.translation_target_text,
         translation_primary_engine=detail.translation_primary_engine,
         translation_check_engine=detail.translation_check_engine,
+        translation_primary_output=detail.translation_primary_output,
+        translation_check_output=detail.translation_check_output,
+        translation_check_error=detail.translation_check_error,
         open_befunde=[
             BefundDetailResponse(
                 befund_uuid=b.befund_uuid,

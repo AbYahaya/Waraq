@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.notifications.email_resend import EmailSender
+from waraq.notifications.events import project_audit_url
 from waraq.notifications.service import notify
 from waraq.schemas import Job, Project
 from waraq.schemas.enums import JobState
@@ -89,6 +90,10 @@ async def fire_translation_failure_notifications(
                 f"Open the project to retry or inspect the failure (job "
                 f"{job.job_uuid})."
             ),
+            severity="action_required",
+            target_url=project_audit_url(project.project_uuid),
+            action_label="Open Audit",
+            project_uuid=project.project_uuid,
             email_sender=email_sender,
         )
         fired.append(project.name)

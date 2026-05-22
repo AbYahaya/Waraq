@@ -37,12 +37,13 @@ from waraq.schemas import (
     Befund,
     Block,
     ConflictInstance,
+    DecisionEvent,
     Page,
     ProvenanceObject,
     Segment,
 )
 from waraq.schemas.consistency import KonsistenzBefund
-from waraq.schemas.enums import OcrStatus, POType, ScopeType
+from waraq.schemas.enums import DecisionSource, OcrStatus, POType, ScopeType
 
 # ---------------------------------------------------------------------
 # Summary models
@@ -259,6 +260,10 @@ async def list_attention_segments(
     pages_by_uuid = {p.page_uuid: p for p in pages}
     blocks = await _project_blocks(session, project_uuid)
     blocks_by_uuid = {b.block_uuid: b for b in blocks}
+    page_acceptances = await _latest_ocr_review_acceptances(
+        session=session,
+        page_uuids=set(pages_by_uuid.keys()),
+    )
 
     active_filters = set(filters or list(AttentionFilter))
 
@@ -269,6 +274,9 @@ async def list_attention_segments(
     ):
         ocr_pos = await _latest_pos_for_segments(session, segment_uuids, POType.OCR)
         for satz_uuid, po in ocr_pos.items():
+            page_uuid = _page_uuid_for_segment(seg_by_uuid, blocks_by_uuid, satz_uuid)
+            if _ocr_attention_accepted(po, page_acceptances.get(page_uuid)):
+                continue
             payload: dict[str, Any] = po.payload or {}
             if AttentionFilter.LOW_CONFIDENCE in active_filters:
                 klass = payload.get("confidence_class")
@@ -440,6 +448,64 @@ async def _latest_pos_for_segments(
     return latest
 
 
+async def _latest_ocr_review_acceptances(
+    *,
+    session: AsyncSession,
+    page_uuids: set[_uuid.UUID],
+) -> dict[_uuid.UUID, DecisionEvent]:
+    """Latest page-level OCR approval decision per page.
+
+    Attention rows for OCR confidence/divergence are suppressed only when
+    the approval decision is newer than the OCR-PO that raised the row.
+    That means a fresh OCR run after approval naturally reopens attention.
+    """
+    if not page_uuids:
+        return {}
+    result = await session.execute(
+        select(DecisionEvent)
+        .where(DecisionEvent.scope_type == ScopeType.PAGE.value)
+        .where(DecisionEvent.scope_uuid.in_(page_uuids))
+        .where(DecisionEvent.decision_source == DecisionSource.OCR_REVIEW.value)
+        .where(
+            DecisionEvent.decision_type.in_(
+                (
+                    "ocr_review_approve_go",
+                    "ocr_review_approve_with_warning",
+                    "ocr_review_no_go_to_go",
+                )
+            )
+        )
+        .order_by(DecisionEvent.created_at.desc())
+    )
+    latest: dict[_uuid.UUID, DecisionEvent] = {}
+    for decision in result.scalars():
+        if decision.scope_uuid in latest:
+            continue
+        latest[decision.scope_uuid] = decision
+    return latest
+
+
+def _page_uuid_for_segment(
+    segments: dict[_uuid.UUID, Segment],
+    blocks: dict[_uuid.UUID, Block],
+    satz_uuid: _uuid.UUID,
+) -> _uuid.UUID | None:
+    segment = segments.get(satz_uuid)
+    if segment is None:
+        return None
+    block = blocks.get(segment.block_uuid)
+    return block.page_uuid if block is not None else None
+
+
+def _ocr_attention_accepted(
+    po: ProvenanceObject,
+    decision: DecisionEvent | None,
+) -> bool:
+    if decision is None or decision.created_at is None or po.created_at is None:
+        return False
+    return decision.created_at >= po.created_at
+
+
 def _confidence_distribution(
     segments: list[Segment],
     ocr_pos: dict[_uuid.UUID, ProvenanceObject],
@@ -593,6 +659,7 @@ class EngineReading:
     text_chars: int
     confidence: float | None
     error_class: str | None
+    is_current: bool = False
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -628,6 +695,9 @@ class SegmentAuditDetail:
     translation_target_text: str | None
     translation_primary_engine: str | None
     translation_check_engine: str | None
+    translation_primary_output: str | None
+    translation_check_output: str | None
+    translation_check_error: str | None
     # Open findings
     open_befunde: tuple[BefundDetail, ...]
     open_conflicts_count: int
@@ -682,6 +752,11 @@ async def segment_audit_detail(
                         if isinstance(entry.get("error_class"), str)
                         else None
                     ),
+                    is_current=(
+                        isinstance(text_val, str)
+                        and seg.text_content is not None
+                        and text_val.strip() == seg.text_content.strip()
+                    ),
                 )
             )
 
@@ -707,6 +782,17 @@ async def segment_audit_detail(
         trans_payload.get("translation_text")
         if isinstance(trans_payload.get("translation_text"), str)
         else None
+    )
+    primary_output = (
+        cross_check.get("primary_output")
+        if isinstance(cross_check.get("primary_output"), str)
+        else None
+    )
+    check_output = (
+        cross_check.get("check_output") if isinstance(cross_check.get("check_output"), str) else None
+    )
+    check_error = (
+        cross_check.get("check_error") if isinstance(cross_check.get("check_error"), str) else None
     )
 
     # Open Befunde for this segment
@@ -757,6 +843,9 @@ async def segment_audit_detail(
         translation_target_text=target_text,
         translation_primary_engine=primary_engine,
         translation_check_engine=check_engine,
+        translation_primary_output=primary_output,
+        translation_check_output=check_output,
+        translation_check_error=check_error,
         open_befunde=befunde,
         open_conflicts_count=open_conflicts_count,
     )

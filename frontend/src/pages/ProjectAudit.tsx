@@ -13,12 +13,13 @@
  * Per §2.6 "no new domain concepts": this surface NEVER writes — it
  * links to the canonical per-segment review pages for decisions.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, apiPath } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { useAuthStore } from "@/store/auth";
 
 interface OcrStatusDistribution {
   ausstehend: number;
@@ -95,6 +96,7 @@ interface EngineReading {
   text_chars: number;
   confidence: number | null;
   error_class: string | null;
+  is_current: boolean;
 }
 
 interface BefundDetailResponse {
@@ -120,6 +122,9 @@ interface SegmentAuditDetail {
   translation_target_text: string | null;
   translation_primary_engine: string | null;
   translation_check_engine: string | null;
+  translation_primary_output: string | null;
+  translation_check_output: string | null;
+  translation_check_error: string | null;
   open_befunde: BefundDetailResponse[];
   open_conflicts_count: number;
 }
@@ -499,6 +504,7 @@ function AttentionList({
           key={`${it.satz_uuid}-${it.filter_matched}-${idx}`}
           item={it}
           projectUuid={projectUuid}
+          activeFilterKey={[...activeFilters].sort().join(",")}
         />
       ))}
     </section>
@@ -508,9 +514,11 @@ function AttentionList({
 function AttentionRow({
   item,
   projectUuid,
+  activeFilterKey,
 }: {
   item: AttentionItem;
   projectUuid: string;
+  activeFilterKey: string;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const detailParts = describeDetail(item);
@@ -560,7 +568,14 @@ function AttentionRow({
             <p className="text-xs text-muted-foreground italic">Loading detail…</p>
           )}
           {detail.error && <ErrorBox error={detail.error} />}
-          {detail.data && <SegmentDetailPanel detail={detail.data} />}
+          {detail.data && (
+            <SegmentDetailPanel
+              detail={detail.data}
+              item={item}
+              projectUuid={projectUuid}
+              activeFilterKey={activeFilterKey}
+            />
+          )}
         </div>
       )}
     </div>
@@ -569,27 +584,135 @@ function AttentionRow({
 
 function SegmentDetailPanel({
   detail,
+  item,
+  projectUuid,
+  activeFilterKey,
 }: {
   detail: SegmentAuditDetail;
+  item: AttentionItem;
+  projectUuid: string;
+  activeFilterKey: string;
 }): JSX.Element {
+  const qc = useQueryClient();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const refreshAudit = async (): Promise<void> => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["audit", "attention", projectUuid, activeFilterKey] }),
+      qc.invalidateQueries({ queryKey: ["audit", "summary", projectUuid] }),
+      qc.invalidateQueries({ queryKey: ["audit", "segment-detail", projectUuid, item.satz_uuid] }),
+    ]);
+  };
+  const enterReview = async (): Promise<void> => {
+    await api.post(`/pages/${item.page_uuid}/ocr-review/enter`);
+  };
+  const acceptCurrent = useMutation({
+    mutationFn: async () => {
+      await enterReview();
+      await api.post(`/pages/${item.page_uuid}/ocr-review/approve-go`, {
+        note: "Accepted current OCR from Audit attention detail.",
+      });
+    },
+    onSuccess: refreshAudit,
+    onError: (err) => setActionError(err instanceof ApiError ? err.detail : String(err)),
+  });
+  const approveWarning = useMutation({
+    mutationFn: async () => {
+      await enterReview();
+      await api.post(`/pages/${item.page_uuid}/ocr-review/approve-warning`, {
+        note: "Approved OCR with warning from Audit attention detail.",
+      });
+    },
+    onSuccess: refreshAudit,
+    onError: (err) => setActionError(err instanceof ApiError ? err.detail : String(err)),
+  });
+  const markUnresolved = useMutation({
+    mutationFn: enterReview,
+    onSuccess: refreshAudit,
+    onError: (err) => setActionError(err instanceof ApiError ? err.detail : String(err)),
+  });
+  const acceptAlternative = useMutation({
+    mutationFn: async (text: string) => {
+      await api.put(`/segments/${item.satz_uuid}/text`, { after_text: text });
+      await enterReview();
+      await api.post(`/pages/${item.page_uuid}/ocr-review/approve-go`, {
+        note: "Accepted OCR engine alternative from Audit attention detail.",
+      });
+    },
+    onSuccess: refreshAudit,
+    onError: (err) => setActionError(err instanceof ApiError ? err.detail : String(err)),
+  });
+  const busy =
+    acceptCurrent.isPending ||
+    approveWarning.isPending ||
+    markUnresolved.isPending ||
+    acceptAlternative.isPending;
+  const isOcrAttention = item.filter_matched === "low_confidence" || item.filter_matched === "divergent_ocr";
+  const isTranslationAttention = item.filter_matched.startsWith("cross_check_");
+
   return (
     <div className="space-y-3 text-sm">
-      {detail.current_text !== null && (
-        <div>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
-            Current segment text
+      {isOcrAttention && (
+        <>
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_18rem]">
+            <div className="rounded-lg border bg-[#fffaf0] p-3">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
+                OCR review actions
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => acceptCurrent.mutate()} disabled={busy}>
+                  Accept current OCR
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => approveWarning.mutate()}
+                  disabled={busy}
+                >
+                  Approve with warning
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => markUnresolved.mutate()}
+                  disabled={busy}
+                >
+                  Mark unresolved
+                </Button>
+                <Button size="sm" variant="outline" asChild>
+                  <Link to={`/projects/${projectUuid}/pages/${item.page_uuid}`}>Open page</Link>
+                </Button>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Critical OCR confidence still blocks approval. Use Open page to edit OCR directly
+                or rerun OCR from the workspace.
+              </p>
+              {actionError && (
+                <p className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-900">
+                  {actionError}
+                </p>
+              )}
+            </div>
+            <PageScanReference pageUuid={item.page_uuid} pageIndex={item.page_index} />
           </div>
-          <div
-            dir="rtl"
-            lang="ar"
-            className="border rounded p-2 bg-muted/40 whitespace-pre-wrap leading-relaxed"
-          >
-            {detail.current_text}
-          </div>
-        </div>
+
+          {detail.current_text !== null && (
+            <div>
+              <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+                Current OCR text
+              </div>
+              <div
+                dir="rtl"
+                lang="ar"
+                className="border rounded p-2 bg-muted/40 whitespace-pre-wrap leading-relaxed"
+              >
+                {detail.current_text}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
-      {detail.ocr_engines.length > 0 && (
+      {isOcrAttention && detail.ocr_engines.length > 0 && (
         <div>
           <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
             OCR engines ({detail.ocr_engine_agreement ?? "no agreement label"}
@@ -608,29 +731,24 @@ function SegmentDetailPanel({
           )}
           <div className="grid md:grid-cols-2 gap-2">
             {detail.ocr_engines.map((e, i) => (
-              <EnginePanel key={`${e.engine}-${i}`} reading={e} />
+              <EnginePanel
+                key={`${e.engine}-${i}`}
+                reading={e}
+                currentText={detail.current_text}
+                onAccept={
+                  e.text
+                    ? () => acceptAlternative.mutate(e.text ?? "")
+                    : undefined
+                }
+                disabled={busy || !e.text || e.is_current}
+              />
             ))}
           </div>
         </div>
       )}
 
-      {detail.translation_situation && (
-        <div>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
-            Translation — cross-check: {detail.translation_situation}
-          </div>
-          {(detail.translation_primary_engine || detail.translation_check_engine) && (
-            <div className="mb-2 text-xs text-muted-foreground">
-              Primary: {detail.translation_primary_engine ?? "unknown"} · Check:{" "}
-              {detail.translation_check_engine ?? "unknown"}
-            </div>
-          )}
-          {detail.translation_target_text && (
-            <div className="border rounded p-2 bg-muted/40 whitespace-pre-wrap leading-relaxed">
-              {detail.translation_target_text}
-            </div>
-          )}
-        </div>
+      {isTranslationAttention && (
+        <TranslationCrossCheckPanel detail={detail} item={item} projectUuid={projectUuid} />
       )}
 
       {detail.open_befunde.length > 0 && (
@@ -677,32 +795,252 @@ function SegmentDetailPanel({
   );
 }
 
-function EnginePanel({ reading }: { reading: EngineReading }): JSX.Element {
+function PageScanReference({
+  pageUuid,
+  pageIndex,
+}: {
+  pageUuid: string;
+  pageIndex: number;
+}): JSX.Element {
+  const token = useAuthStore((s) => s.token);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let revoke: string | null = null;
+    let cancelled = false;
+    setBlobUrl(null);
+    setError(null);
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    fetch(apiPath(`/pages/${pageUuid}/render-png?dpi=120`), { headers })
+      .then(async (resp) => {
+        if (!resp.ok) throw new Error(await resp.text());
+        return resp.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        revoke = url;
+        setBlobUrl(url);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setError(err.message);
+      });
+    return () => {
+      cancelled = true;
+      if (revoke) URL.revokeObjectURL(revoke);
+    };
+  }, [pageUuid, token]);
+
+  return (
+    <div className="rounded-lg border bg-card p-2">
+      <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+        <span className="uppercase tracking-wide text-muted-foreground">
+          Original page #{pageIndex}
+        </span>
+        <Link
+          to={`/projects/${pageUuid}`}
+          className="hidden text-muted-foreground underline"
+        >
+          open
+        </Link>
+      </div>
+      {error && (
+        <p className="text-xs text-amber-800">
+          Original preview unavailable here. Open the page for the full scan.
+        </p>
+      )}
+      {!error && !blobUrl && (
+        <p className="text-xs text-muted-foreground">Loading page image…</p>
+      )}
+      {blobUrl && (
+        <a href={blobUrl} target="_blank" rel="noreferrer" title="Open rendered page image">
+          <img
+            src={blobUrl}
+            alt={`Original page ${pageIndex}`}
+            className="max-h-64 w-full rounded border object-contain"
+          />
+        </a>
+      )}
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        Region crop/retry is handled in the DPI Compare recovery tool.
+      </p>
+    </div>
+  );
+}
+
+function TranslationCrossCheckPanel({
+  detail,
+  item,
+  projectUuid,
+}: {
+  detail: SegmentAuditDetail;
+  item: AttentionItem;
+  projectUuid: string;
+}): JSX.Element {
+  const primaryText = detail.translation_primary_output ?? detail.translation_target_text;
+  const checkText = detail.translation_check_output;
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border bg-[#f8f4ea] p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              Translation cross-check
+            </div>
+            <div className="mt-1 text-sm font-medium">
+              {detail.translation_situation ?? item.filter_matched}
+            </div>
+          </div>
+          <Button size="sm" variant="outline" asChild>
+            <Link to={`/projects/${projectUuid}/pages/${item.page_uuid}`}>Open translation page</Link>
+          </Button>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          This section shows translated text only. OCR evidence is shown only under OCR confidence
+          and divergent-engine attention rows.
+        </p>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <TranslationOutputPanel
+          label="Primary translation"
+          engine={detail.translation_primary_engine}
+          text={primaryText}
+          active
+        />
+        <TranslationOutputPanel
+          label="Cross-check translation"
+          engine={detail.translation_check_engine}
+          text={checkText}
+          error={detail.translation_check_error}
+        />
+      </div>
+
+      {detail.translation_target_text && detail.translation_target_text !== primaryText && (
+        <div>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+            Saved translated text
+          </div>
+          <div className="rounded border bg-muted/40 p-3 leading-relaxed whitespace-pre-wrap">
+            {detail.translation_target_text}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TranslationOutputPanel({
+  label,
+  engine,
+  text,
+  error,
+  active = false,
+}: {
+  label: string;
+  engine: string | null;
+  text: string | null;
+  error?: string | null;
+  active?: boolean;
+}): JSX.Element {
+  return (
+    <div className={active ? "rounded border border-emerald-300 bg-emerald-50/40" : "rounded border bg-card"}>
+      <div className="flex items-center justify-between gap-2 border-b px-3 py-2 text-xs text-muted-foreground">
+        <span className="font-medium">{label}</span>
+        <span>{engine ?? "unknown engine"}</span>
+      </div>
+      {text ? (
+        <div className="max-h-80 overflow-auto whitespace-pre-wrap p-3 leading-relaxed">
+          {text}
+        </div>
+      ) : error ? (
+        <div className="p-3 text-xs text-red-800">
+          Cross-check failed: {error}
+        </div>
+      ) : (
+        <div className="p-3 text-xs italic text-muted-foreground">
+          No translated output recorded for this side.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EnginePanel({
+  reading,
+  currentText,
+  onAccept,
+  disabled,
+}: {
+  reading: EngineReading;
+  currentText: string | null;
+  onAccept?: () => void;
+  disabled?: boolean;
+}): JSX.Element {
   const titleParts: string[] = [reading.engine];
   if (reading.confidence !== null) {
     titleParts.push(`conf ${reading.confidence.toFixed(3)}`);
   }
   titleParts.push(`${reading.text_chars} chars`);
   return (
-    <div className="border rounded bg-card">
+    <div className={reading.is_current ? "rounded border border-emerald-300 bg-emerald-50/40" : "border rounded bg-card"}>
       <div className="px-2 py-1 text-xs border-b text-muted-foreground flex justify-between">
         <span className="font-medium">{titleParts.join(" · ")}</span>
-        {reading.error_class && (
-          <span className="text-red-700">{reading.error_class}</span>
-        )}
+        <span className="flex items-center gap-2">
+          {reading.is_current && (
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-emerald-800">
+              active
+            </span>
+          )}
+          {reading.error_class && (
+            <span className="text-red-700">{reading.error_class}</span>
+          )}
+        </span>
       </div>
       {reading.text ? (
-        <div
-          dir="rtl"
-          lang="ar"
-          className="p-2 whitespace-pre-wrap leading-relaxed max-h-48 overflow-auto"
-        >
-          {reading.text}
-        </div>
+        <>
+          <HighlightedArabicText text={reading.text} currentText={currentText} />
+          <div className="border-t px-2 py-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onAccept}
+              disabled={disabled}
+            >
+              {reading.is_current ? "Current OCR" : "Accept this reading"}
+            </Button>
+          </div>
+        </>
       ) : (
         <div className="p-2 text-xs italic text-muted-foreground">
           (text not persisted; legacy OCR-PO)
         </div>
+      )}
+    </div>
+  );
+}
+
+function HighlightedArabicText({
+  text,
+  currentText,
+}: {
+  text: string;
+  currentText: string | null;
+}): JSX.Element {
+  const changed = Boolean(currentText && currentText.trim() !== text.trim());
+  return (
+    <div
+      dir="rtl"
+      lang="ar"
+      className="max-h-48 overflow-auto whitespace-pre-wrap p-2 leading-relaxed"
+    >
+      {changed ? (
+        <mark className="rounded bg-amber-100 px-1 text-inherit">{text}</mark>
+      ) : (
+        text
       )}
     </div>
   );

@@ -34,6 +34,13 @@ async def notify(
     kind: str,
     title: str,
     body: str,
+    severity: str = "info",
+    target_url: str | None = None,
+    action_label: str | None = None,
+    project_uuid: _uuid.UUID | None = None,
+    page_uuid: _uuid.UUID | None = None,
+    issue_uuid: _uuid.UUID | None = None,
+    issue_kind: str | None = None,
     email_sender: EmailSender | None = None,
 ) -> Notification | None:
     """Dispatch a notification to one account across enabled channels.
@@ -79,8 +86,15 @@ async def notify(
         notification_uuid=new_uuid(),
         account_uuid=account_uuid,
         kind=kind,
+        severity=severity,
         title=title,
         body=body,
+        target_url=target_url,
+        action_label=action_label,
+        project_uuid=project_uuid,
+        page_uuid=page_uuid,
+        issue_uuid=issue_uuid,
+        issue_kind=issue_kind,
     )
     session.add(notification)
     await session.flush()

@@ -23,6 +23,7 @@ from waraq.api.schemas import (
     OcrExportPflichtfragenInput,
     OcrExportRunResponse,
 )
+from waraq.notifications.events import notify_project_event, project_workspace_url
 from waraq.ocr_export import (
     DocxArtefactFailed,
     GateMode,
@@ -116,7 +117,7 @@ async def run(
     session: DbSession,
     current: CurrentAccount,
 ) -> OcrExportRunResponse:
-    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
     config = _config_from_input(
         project_uuid=project_uuid,
         actor_uuid=current.account_uuid,
@@ -134,6 +135,16 @@ async def run(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"DOCX build failed: {exc!s}",
         ) from exc
+    await notify_project_event(
+        session=session,
+        project=project,
+        kind="ocr_export_completed",
+        severity="success",
+        title=f"OCR export ready — {project.name}",
+        body=f"Exported {artefact.n_pages_exported} page(s) and {artefact.n_segments_exported} segment(s).",
+        target_url=project_workspace_url(project.project_uuid),
+        action_label="Open project",
+    )
     return OcrExportRunResponse(
         job_uuid=job.job_uuid,
         job_state=job.state,

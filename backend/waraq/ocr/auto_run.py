@@ -38,6 +38,11 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from waraq.identity import new_uuid
 from waraq.jobs import complete_job, fail_job, start_job, write_checkpoint
+from waraq.notifications.events import (
+    notify_project_event,
+    project_audit_url,
+    project_workspace_url,
+)
 from waraq.ocr.exceptions import OcrError
 from waraq.ocr.page_runner import PageOcrError, run_ocr_for_page
 from waraq.schemas import Job, Page, Project
@@ -212,9 +217,23 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
                 flag is set between pages
     """
     assert job.project_uuid is not None
+    project: Project | None = await session.get(Project, job.project_uuid)
+    if project is None:
+        logger.warning("ocr_auto_run.project_missing", extra={"job_uuid": str(job.job_uuid)})
+        return
     # PENDING → RUNNING.
     if job.state == JobState.PENDING.value:
         await start_job(session=session, job=job)
+        await notify_project_event(
+            session=session,
+            project=project,
+            kind="ocr_auto_run_started",
+            severity="info",
+            title=f"OCR started — {project.name}",
+            body=f"Auto OCR started for {(job.payload or {}).get('total_pages', 0)} page(s).",
+            target_url=project_workspace_url(project.project_uuid),
+            action_label="Open project",
+        )
         await session.commit()
 
     pages = await _ausstehend_pages(session, job.project_uuid)
@@ -297,6 +316,16 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
                     "processed_count": processed,
                 },
             )
+            await notify_project_event(
+                session=session,
+                project=project,
+                kind="ocr_auto_run_cancelled",
+                severity="warning",
+                title=f"OCR cancelled — {project.name}",
+                body=f"Auto OCR was cancelled after {processed} processed page(s).",
+                target_url=project_workspace_url(project.project_uuid),
+                action_label="Open project",
+            )
             await session.commit()
             raise
         except TimeoutError:
@@ -320,6 +349,20 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
                     "processed_count": processed,
                 },
             )
+            await notify_project_event(
+                session=session,
+                project=project,
+                kind="ocr_auto_run_failed",
+                severity="error",
+                title=f"OCR stopped on page {page_index} — {project.name}",
+                body=(
+                    f"Page {page_index} exceeded the {PER_PAGE_TIMEOUT_SECONDS:.0f}s timeout. "
+                    "Open Audit or DPI recovery to inspect the page."
+                ),
+                target_url=project_audit_url(project.project_uuid),
+                action_label="Open Audit",
+                page_uuid=page.page_uuid,
+            )
             await session.commit()
             return
         except (PageOcrError, OcrError, SQLAlchemyError, Exception) as exc:
@@ -342,6 +385,17 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
                     "message": str(exc)[:300],
                     "processed_count": processed,
                 },
+            )
+            await notify_project_event(
+                session=session,
+                project=project,
+                kind="ocr_auto_run_failed",
+                severity="error",
+                title=f"OCR stopped on page {page_index} — {project.name}",
+                body=f"{type(exc).__name__}: {str(exc)[:220]}",
+                target_url=project_audit_url(project.project_uuid),
+                action_label="Open Audit",
+                page_uuid=page.page_uuid,
             )
             await session.commit()
             return
@@ -381,6 +435,16 @@ async def _execute(*, session: AsyncSession, job: Job) -> None:
             "skipped_page_uuids": [str(u) for u in skipped],
             "total_pages_at_start": (job.payload or {}).get("total_pages", processed),
         },
+    )
+    await notify_project_event(
+        session=session,
+        project=project,
+        kind="ocr_auto_run_completed",
+        severity="success",
+        title=f"OCR completed — {project.name}",
+        body=f"Processed {processed} page(s); skipped {len(skipped)} page(s).",
+        target_url=project_audit_url(project.project_uuid),
+        action_label="Review Audit",
     )
     logger.info(
         "ocr_auto_run.done",

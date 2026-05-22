@@ -142,6 +142,18 @@ export interface TocResponseDto {
   fallback_kind: "none" | "page_by_page";
   detected_heading_count: number;
   page_count: number;
+  workflow_state:
+    | "no_pages"
+    | "no_toc_detected"
+    | "toc_detected"
+    | "toc_requires_attention"
+    | "final_review_confirmed";
+  requires_attention: boolean;
+  attention_reasons: string[];
+  confirmation_state: "confirmed" | "unconfirmed";
+  confirmed_at: string | null;
+  confirmed_by_decision_event_uuid: string | null;
+  export_settings_summary: Record<string, string | number | boolean>;
 }
 
 /**

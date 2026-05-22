@@ -8,6 +8,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
@@ -16,8 +17,15 @@ import { cn } from "@/lib/utils";
 interface NotificationDto {
   notification_uuid: string;
   kind: string;
+  severity: "info" | "success" | "warning" | "error" | "action_required" | string;
   title: string;
   body: string;
+  target_url: string | null;
+  action_label: string | null;
+  project_uuid: string | null;
+  page_uuid: string | null;
+  issue_uuid: string | null;
+  issue_kind: string | null;
   created_at: string;
   read_at: string | null;
   email_sent_at: string | null;
@@ -144,37 +152,91 @@ export function NotificationPanel(): JSX.Element {
               <p className="text-sm text-muted-foreground p-3">No notifications.</p>
             )}
             {listQ.data?.items.map((n) => (
-              <div
+              <NotificationItem
                 key={n.notification_uuid}
-                className={cn(
-                  "px-3 py-2 hover:bg-accent/40 cursor-pointer",
-                  n.read_at === null && "bg-accent/20",
-                )}
-                onClick={() => {
+                notification={n}
+                onRead={() => {
                   if (n.read_at === null) markOneMut.mutate(n.notification_uuid);
                 }}
-              >
-                <div className="text-xs text-muted-foreground flex items-center gap-2">
-                  <span>{new Date(n.created_at).toLocaleString()}</span>
-                  {n.email_sent_at && (
-                    <span className="text-emerald-700" title="Email sent">
-                      ✉
-                    </span>
-                  )}
-                  {n.read_at === null && (
-                    <span className="text-destructive font-medium">●</span>
-                  )}
-                </div>
-                <div className="font-medium text-sm">{n.title}</div>
-                <div className="text-xs text-muted-foreground whitespace-pre-line">
-                  {n.body}
-                </div>
-              </div>
+              />
             ))}
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+function NotificationItem({
+  notification,
+  onRead,
+}: {
+  notification: NotificationDto;
+  onRead: () => void;
+}): JSX.Element {
+  const content = (
+    <div
+      className={cn(
+        "px-3 py-2 hover:bg-accent/40",
+        notification.target_url !== null && "cursor-pointer",
+        notification.read_at === null && "bg-accent/20",
+      )}
+      onClick={notification.target_url === null ? onRead : undefined}
+    >
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span>{new Date(notification.created_at).toLocaleString()}</span>
+        <SeverityBadge severity={notification.severity} />
+        {notification.email_sent_at && (
+          <span className="text-emerald-700" title="Email sent">
+            email
+          </span>
+        )}
+        {notification.read_at === null && (
+          <span className="font-medium text-destructive">unread</span>
+        )}
+      </div>
+      <div className="mt-1 text-sm font-medium">{notification.title}</div>
+      <div className="text-xs text-muted-foreground whitespace-pre-line">
+        {notification.body}
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+          {notification.kind.replaceAll("_", " ")}
+        </span>
+        {notification.action_label !== null && notification.target_url !== null ? (
+          <span className="text-[10px] font-medium text-primary">
+            {notification.action_label}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  if (notification.target_url === null) return content;
+  return (
+    <Link to={notification.target_url} onClick={onRead} className="block">
+      {content}
+    </Link>
+  );
+}
+
+function SeverityBadge({ severity }: { severity: string }): JSX.Element {
+  return (
+    <span
+      className={cn(
+        "rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+        severity === "success" && "border-emerald-200 bg-emerald-50 text-emerald-800",
+        severity === "warning" && "border-amber-200 bg-amber-50 text-amber-900",
+        severity === "error" && "border-destructive/20 bg-destructive/5 text-destructive",
+        severity === "action_required" &&
+          "border-destructive/20 bg-destructive/5 text-destructive",
+        severity === "info" && "border-blue-200 bg-blue-50 text-blue-800",
+        !["success", "warning", "error", "action_required", "info"].includes(severity) &&
+          "border-border bg-muted text-muted-foreground",
+      )}
+    >
+      {severity.replace("_", " ")}
+    </span>
   );
 }
 

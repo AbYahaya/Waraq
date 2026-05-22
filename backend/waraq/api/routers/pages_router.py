@@ -18,18 +18,22 @@ import shutil
 import subprocess
 import tempfile
 import uuid as _uuid
+from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
 from waraq.api._ownership import owned_page_or_404, owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.api.schemas import PageResponse
-from waraq.schemas import Page, ProvenanceObject
+from waraq.notifications.events import notify_project_event, page_dpi_url
+from waraq.schemas import Block, Page, Project, ProvenanceObject, Segment
 from waraq.schemas.enums import POType, ScopeType
+from waraq.text_state import resolve_segment_source_text
 
 router = APIRouter(tags=["pages"])
 
@@ -133,23 +137,50 @@ DPI_MIN = 50
 DPI_MAX = 600
 
 
-@router.get("/pages/{page_uuid}/render-png")
-async def render_page_png_at_dpi(
-    page_uuid: _uuid.UUID,
-    session: DbSession,
-    current: CurrentAccount,
-    dpi: int = Query(default=200, ge=DPI_MIN, le=DPI_MAX),
-) -> StreamingResponse:
-    """Render the page as PNG at the requested DPI.
+class NormalizedCropBox(BaseModel):
+    """Crop rectangle in normalized image coordinates."""
 
-    Phase 3 sub-batch D — backs the DPI comparison view. The frontend
-    requests two DPIs (low + high) and renders them side-by-side so
-    the user can see what the OCR engine sees at low vs high
-    fidelity.
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
 
-    503 if `pdftoppm` (poppler-utils) is not installed on the host.
-    """
-    page = await owned_page_or_404(session, page_uuid, current.account_uuid)
+    @model_validator(mode="after")
+    def _inside_image(self) -> NormalizedCropBox:
+        if self.x + self.width > 1.000001 or self.y + self.height > 1.000001:
+            raise ValueError("crop rectangle must stay inside the image")
+        return self
+
+
+class OcrRetryCandidateRequest(BaseModel):
+    dpi: int = Field(default=300, ge=DPI_MIN, le=DPI_MAX)
+    scope: Literal["region", "full_page"]
+    crop: NormalizedCropBox | None = None
+    engine: Literal["openai", "gemini"] = "openai"
+
+    @model_validator(mode="after")
+    def _region_requires_crop(self) -> OcrRetryCandidateRequest:
+        if self.scope == "region" and self.crop is None:
+            raise ValueError("region retry requires a crop rectangle")
+        return self
+
+
+class OcrRetryCandidateResponse(BaseModel):
+    candidate_uuid: _uuid.UUID
+    page_uuid: _uuid.UUID
+    segment_uuid: _uuid.UUID | None
+    scope: Literal["region", "full_page"]
+    engine: Literal["openai", "gemini"]
+    dpi: int
+    crop: NormalizedCropBox | None
+    text: str
+    text_chars: int
+    current_text: str | None
+    changed: bool
+    warning: str | None = None
+
+
+async def _latest_scan_po_for_page(session: DbSession, page: Page) -> ProvenanceObject:
     result = await session.execute(
         select(ProvenanceObject)
         .where(ProvenanceObject.po_type == POType.SCAN.value)
@@ -164,9 +195,12 @@ async def render_page_png_at_dpi(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No SCAN-PO for page (was the upload finalized?)",
         )
+    return scan_po
+
+
+def _scan_source_path(scan_po: ProvenanceObject) -> Path:
     payload: dict[str, Any] = scan_po.payload or {}
     source_path_str = payload.get("source_file_path")
-    page_index_in_source = payload.get("page_index_in_source") or page.page_index
     if not isinstance(source_path_str, str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -178,6 +212,16 @@ async def render_page_png_at_dpi(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Source file not found on disk",
         )
+    return source_path
+
+
+def _page_index_in_source(scan_po: ProvenanceObject, page: Page) -> int:
+    payload: dict[str, Any] = scan_po.payload or {}
+    page_index_in_source = payload.get("page_index_in_source") or page.page_index
+    return int(page_index_in_source)
+
+
+def _render_png_bytes(source_path: Path, page_index_in_source: int, dpi: int) -> bytes:
     if shutil.which("pdftoppm") is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -215,7 +259,80 @@ async def render_page_png_at_dpi(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="pdftoppm produced no PNG output",
             )
-        png_bytes = candidates[0].read_bytes()
+        return candidates[0].read_bytes()
+
+
+async def _render_page_png_bytes(session: DbSession, page: Page, dpi: int) -> bytes:
+    scan_po = await _latest_scan_po_for_page(session, page)
+    return _render_png_bytes(
+        source_path=_scan_source_path(scan_po),
+        page_index_in_source=_page_index_in_source(scan_po, page),
+        dpi=dpi,
+    )
+
+
+def _crop_png_bytes(image_bytes: bytes, crop: NormalizedCropBox) -> bytes:
+    from PIL import Image
+
+    with Image.open(BytesIO(image_bytes)) as img:
+        width, height = img.size
+        left = max(0, min(width - 1, round(crop.x * width)))
+        top = max(0, min(height - 1, round(crop.y * height)))
+        right = max(left + 1, min(width, round((crop.x + crop.width) * width)))
+        bottom = max(top + 1, min(height, round((crop.y + crop.height) * height)))
+        region = img.crop((left, top, right, bottom))
+        out = BytesIO()
+        region.save(out, format="PNG")
+        return out.getvalue()
+
+
+async def _first_active_segment_for_page(session: DbSession, page_uuid: _uuid.UUID) -> Segment | None:
+    result = await session.execute(
+        select(Segment)
+        .join(Block, Block.block_uuid == Segment.block_uuid)
+        .where(Block.page_uuid == page_uuid, Segment.active.is_(True))
+        .order_by(Block.block_index.asc(), Segment.satz_index.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _extract_retry_candidate_text(
+    image_bytes: bytes,
+    engine: Literal["openai", "gemini"],
+) -> str:
+    try:
+        if engine == "gemini":
+            from waraq.ocr.gemini import extract_text
+        else:
+            from waraq.ocr.openai_ocr import extract_text
+
+        return await extract_text(image_bytes, "image/png")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"{engine} OCR retry failed: {exc}",
+        ) from exc
+
+
+@router.get("/pages/{page_uuid}/render-png")
+async def render_page_png_at_dpi(
+    page_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+    dpi: int = Query(default=200, ge=DPI_MIN, le=DPI_MAX),
+) -> StreamingResponse:
+    """Render the page as PNG at the requested DPI.
+
+    Phase 3 sub-batch D — backs the DPI comparison view. The frontend
+    requests two DPIs (low + high) and renders them side-by-side so
+    the user can see what the OCR engine sees at low vs high
+    fidelity.
+
+    503 if `pdftoppm` (poppler-utils) is not installed on the host.
+    """
+    page = await owned_page_or_404(session, page_uuid, current.account_uuid)
+    png_bytes = await _render_page_png_bytes(session, page, dpi)
 
     import io
 
@@ -224,3 +341,63 @@ async def render_page_png_at_dpi(
         "X-Waraq-DPI": str(dpi),
     }
     return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png", headers=headers)
+
+
+@router.post("/pages/{page_uuid}/ocr-retry-candidate", response_model=OcrRetryCandidateResponse)
+async def create_ocr_retry_candidate(
+    page_uuid: _uuid.UUID,
+    req: OcrRetryCandidateRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> OcrRetryCandidateResponse:
+    """Run OCR again for a page/crop and return an unsaved candidate.
+
+    This endpoint is intentionally non-destructive: it never replaces the
+    current page OCR. The workspace must explicitly accept the returned
+    candidate through the existing manual edit endpoint.
+    """
+    page = await owned_page_or_404(session, page_uuid, current.account_uuid)
+    png_bytes = await _render_page_png_bytes(session, page, req.dpi)
+    image_for_ocr = _crop_png_bytes(png_bytes, req.crop) if req.crop is not None else png_bytes
+    candidate_text = await _extract_retry_candidate_text(image_for_ocr, req.engine)
+
+    segment = await _first_active_segment_for_page(session, page_uuid)
+    current_text = (
+        await resolve_segment_source_text(session=session, segment=segment)
+        if segment is not None
+        else None
+    )
+    warning = None
+    if segment is None:
+        warning = "No active OCR segment exists yet, so this candidate cannot be accepted directly."
+    project: Project | None = await session.get(Project, page.project_uuid)
+    if project is not None:
+        await notify_project_event(
+            session=session,
+            project=project,
+            kind="ocr_retry_candidate_created",
+            severity="info",
+            title=f"OCR retry candidate created — page {page.page_index}",
+            body=(
+                f"{req.engine} generated a {req.scope.replace('_', ' ')} candidate "
+                f"at {req.dpi} DPI. It is not saved until accepted."
+            ),
+            target_url=page_dpi_url(project.project_uuid, page.page_uuid),
+            action_label="Open DPI recovery",
+            page_uuid=page.page_uuid,
+        )
+
+    return OcrRetryCandidateResponse(
+        candidate_uuid=_uuid.uuid4(),
+        page_uuid=page_uuid,
+        segment_uuid=segment.satz_uuid if segment is not None else None,
+        scope=req.scope,
+        engine=req.engine,
+        dpi=req.dpi,
+        crop=req.crop,
+        text=candidate_text,
+        text_chars=len(candidate_text),
+        current_text=current_text,
+        changed=(current_text or "").strip() != candidate_text.strip(),
+        warning=warning,
+    )

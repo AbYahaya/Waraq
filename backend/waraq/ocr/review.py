@@ -44,12 +44,13 @@ from waraq.decisions import create_decision_event
 from waraq.eventing import log_event
 from waraq.identity.service import new_uuid
 from waraq.ocr.error_classes import OcrErrorClass
-from waraq.schemas import DecisionEvent, OcrErrorInstance, Page
+from waraq.schemas import Block, DecisionEvent, OcrErrorInstance, Page, ProvenanceObject, Segment
 from waraq.schemas.enums import (
     DecisionSource,
     OcrErrorState,
     OcrSeverity,
     OcrStatus,
+    POType,
     ScopeType,
 )
 
@@ -207,6 +208,62 @@ async def resolve_ocr_error_instance(
     instance.state = OcrErrorState.AUFGELOEST.value
     instance.resolved_at = datetime.now(UTC)
     await session.flush()
+
+
+async def _open_error_instances_for_page(
+    session: AsyncSession, *, page_uuid: _uuid.UUID
+) -> list[OcrErrorInstance]:
+    result = await session.execute(
+        select(OcrErrorInstance)
+        .where(OcrErrorInstance.page_uuid == page_uuid)
+        .where(OcrErrorInstance.state == OcrErrorState.OFFEN.value)
+        .order_by(OcrErrorInstance.detected_at.asc())
+    )
+    return list(result.scalars())
+
+
+async def _critical_ocr_po_findings_for_page(
+    session: AsyncSession, *, page_uuid: _uuid.UUID
+) -> list[dict[str, Any]]:
+    """Latest OCR-PO critical-confidence rows for a page.
+
+    These surface in the Attention List even when no `ocr_error_instance`
+    exists, so the page-approval path must treat them as decision-required
+    blockers rather than silently accepting them.
+    """
+    result = await session.execute(
+        select(Segment.satz_uuid, ProvenanceObject)
+        .join(Block, Block.block_uuid == Segment.block_uuid)
+        .join(
+            ProvenanceObject,
+            (ProvenanceObject.scope_type == ScopeType.SEGMENT.value)
+            & (ProvenanceObject.scope_uuid == Segment.satz_uuid)
+            & (ProvenanceObject.po_type == POType.OCR.value),
+        )
+        .where(Block.page_uuid == page_uuid)
+        .where(Segment.active.is_(True))
+        .where(Block.active.is_(True))
+        .order_by(Segment.satz_uuid.asc(), ProvenanceObject.created_at.desc())
+    )
+    latest_by_segment: dict[_uuid.UUID, ProvenanceObject] = {}
+    for satz_uuid, po in result.all():
+        if satz_uuid in latest_by_segment:
+            continue
+        latest_by_segment[satz_uuid] = po
+
+    findings: list[dict[str, Any]] = []
+    for satz_uuid, po in latest_by_segment.items():
+        payload = po.payload or {}
+        if payload.get("confidence_class") == "critical":
+            findings.append(
+                {
+                    "satz_uuid": str(satz_uuid),
+                    "po_uuid": str(po.po_uuid),
+                    "confidence_class": "critical",
+                    "confidence_score": payload.get("confidence_score"),
+                }
+            )
+    return findings
 
 
 # --- state machine ---------------------------------------------------------
@@ -371,6 +428,178 @@ async def resolve_no_go_to_go(
             "prior": prior.value,
             "new": OcrStatus.GO.value,
             "decision_event_uuid": str(de.decision_event_uuid),
+        },
+    )
+    return de
+
+
+async def approve_page_as_go(
+    *,
+    session: AsyncSession,
+    page: Page,
+    weights: SeverityWeights,
+    actor_uuid: _uuid.UUID | None = None,
+    note: str | None = None,
+) -> DecisionEvent:
+    """Explicitly approve an OCR-reviewed page as GO.
+
+    This is the user-facing "Approve as GO" action. It accepts/resolves
+    non-blocking open OCR error instances, records a page-scoped OCR-review
+    Decision Event, and moves the page to GO. Critical/blocking findings are
+    refused so the UI can direct the user to resolve them first.
+    """
+    if page.ocr_status != OcrStatus.IN_REVIEW:
+        raise ValueError(
+            f"approve_page_as_go requires page in IN_REVIEW; got {page.ocr_status.value}"
+        )
+
+    critical_po_findings = await _critical_ocr_po_findings_for_page(
+        session, page_uuid=page.page_uuid
+    )
+    if critical_po_findings:
+        raise ValueError(
+            "Cannot approve as GO while critical OCR confidence findings remain open; "
+            "review or rerun OCR for the affected page first."
+        )
+
+    open_instances = await _open_error_instances_for_page(session, page_uuid=page.page_uuid)
+    blocking: list[OcrErrorInstance] = []
+    accepted_nonblocking: list[OcrErrorInstance] = []
+    for instance in open_instances:
+        code = OcrErrorClass(instance.error_code)
+        if weights.severity(code) == OcrSeverity.KRITISCH:
+            blocking.append(instance)
+        else:
+            accepted_nonblocking.append(instance)
+
+    if blocking:
+        codes = sorted({instance.error_code for instance in blocking})
+        raise ValueError(
+            "Cannot approve as GO while blocking OCR findings remain open: "
+            + ", ".join(codes)
+        )
+
+    for instance in accepted_nonblocking:
+        instance.state = OcrErrorState.AUFGELOEST.value
+        instance.resolved_at = datetime.now(UTC)
+
+    content: dict[str, Any] = {
+        "note": note,
+        "accepted_nonblocking_error_count": len(accepted_nonblocking),
+        "accepted_nonblocking_error_codes": [
+            instance.error_code for instance in accepted_nonblocking
+        ],
+        "resolved_ocr_error_instance_uuids": [
+            str(instance.ocr_error_instance_uuid) for instance in accepted_nonblocking
+        ],
+        "accepted_attention_categories": ["low_confidence", "divergent_ocr"],
+    }
+    de = await create_decision_event(
+        session=session,
+        scope_type=ScopeType.PAGE,
+        scope_uuid=page.page_uuid,
+        decision_type="ocr_review_approve_go",
+        decision_source=DecisionSource.OCR_REVIEW,
+        actor_uuid=actor_uuid,
+        content=content,
+    )
+
+    prior = page.ocr_status
+    page.ocr_status = OcrStatus.GO
+    await session.flush()
+    await log_event(
+        session=session,
+        operation_type="ocr_status_approve_as_go",
+        scope_type=ScopeType.PAGE,
+        scope_uuid=page.page_uuid,
+        result={
+            "prior": prior.value,
+            "new": OcrStatus.GO.value,
+            "decision_event_uuid": str(de.decision_event_uuid),
+            "accepted_nonblocking_error_count": len(accepted_nonblocking),
+        },
+    )
+    return de
+
+
+async def approve_page_with_warning(
+    *,
+    session: AsyncSession,
+    page: Page,
+    weights: SeverityWeights,
+    actor_uuid: _uuid.UUID | None = None,
+    note: str | None = None,
+) -> DecisionEvent:
+    """Explicitly accept non-blocking OCR findings and keep page warning state."""
+    if page.ocr_status != OcrStatus.IN_REVIEW:
+        raise ValueError(
+            "approve_page_with_warning requires page in IN_REVIEW; "
+            f"got {page.ocr_status.value}"
+        )
+
+    critical_po_findings = await _critical_ocr_po_findings_for_page(
+        session, page_uuid=page.page_uuid
+    )
+    if critical_po_findings:
+        raise ValueError(
+            "Cannot approve with warning while critical OCR confidence findings remain open; "
+            "review or rerun OCR for the affected page first."
+        )
+
+    open_instances = await _open_error_instances_for_page(session, page_uuid=page.page_uuid)
+    blocking: list[OcrErrorInstance] = []
+    accepted_nonblocking: list[OcrErrorInstance] = []
+    for instance in open_instances:
+        code = OcrErrorClass(instance.error_code)
+        if weights.severity(code) == OcrSeverity.KRITISCH:
+            blocking.append(instance)
+        else:
+            accepted_nonblocking.append(instance)
+
+    if blocking:
+        codes = sorted({instance.error_code for instance in blocking})
+        raise ValueError(
+            "Cannot approve with warning while blocking OCR findings remain open: "
+            + ", ".join(codes)
+        )
+
+    for instance in accepted_nonblocking:
+        instance.state = OcrErrorState.AUFGELOEST.value
+        instance.resolved_at = datetime.now(UTC)
+
+    de = await create_decision_event(
+        session=session,
+        scope_type=ScopeType.PAGE,
+        scope_uuid=page.page_uuid,
+        decision_type="ocr_review_approve_with_warning",
+        decision_source=DecisionSource.OCR_REVIEW,
+        actor_uuid=actor_uuid,
+        content={
+            "note": note,
+            "accepted_nonblocking_error_count": len(accepted_nonblocking),
+            "accepted_nonblocking_error_codes": [
+                instance.error_code for instance in accepted_nonblocking
+            ],
+            "resolved_ocr_error_instance_uuids": [
+                str(instance.ocr_error_instance_uuid) for instance in accepted_nonblocking
+            ],
+            "accepted_attention_categories": ["low_confidence", "divergent_ocr"],
+        },
+    )
+
+    prior = page.ocr_status
+    page.ocr_status = OcrStatus.GO_WITH_WARNING
+    await session.flush()
+    await log_event(
+        session=session,
+        operation_type="ocr_status_approve_with_warning",
+        scope_type=ScopeType.PAGE,
+        scope_uuid=page.page_uuid,
+        result={
+            "prior": prior.value,
+            "new": OcrStatus.GO_WITH_WARNING.value,
+            "decision_event_uuid": str(de.decision_event_uuid),
+            "accepted_nonblocking_error_count": len(accepted_nonblocking),
         },
     )
     return de

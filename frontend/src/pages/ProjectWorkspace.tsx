@@ -9,7 +9,7 @@
  * comparison panes broadcasts a cross-pane scroll-sync event.
  */
 
-import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
@@ -48,6 +48,7 @@ export function ProjectWorkspacePage(): JSX.Element {
     pageUuid?: string;
   }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   if (projectUuid === undefined) {
     return <Navigate to="/" replace />;
@@ -84,6 +85,13 @@ export function ProjectWorkspacePage(): JSX.Element {
       });
     }
   }, [pageUuid, logicalPages, projectUuid, navigate]);
+
+  useEffect(() => {
+    if (searchParams.get("panel") !== "dpi") return;
+    setDpiCompareOpen(true);
+    setTocOpen(false);
+    setBookPreviewOpen(false);
+  }, [searchParams]);
 
   const panes = useMemo<PaneConfig[]>(() => {
     if (pageUuid === undefined || pageQ.data === undefined) return [];
@@ -152,7 +160,7 @@ export function ProjectWorkspacePage(): JSX.Element {
             {projectQ.data?.name ?? "Loading…"}
           </div>
           <div className="mt-3">
-            <DifficultyBadge scope="project" uuid={projectUuid} />
+            <DifficultyBadge scope="project" uuid={projectUuid} projectUuid={projectUuid} />
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setUploadOpen(true)}>
@@ -290,7 +298,7 @@ export function ProjectWorkspacePage(): JSX.Element {
               >
                 {bookPreviewOpen ? "Close book preview" : "Book preview"}
               </Button>
-              <DifficultyBadge scope="page" uuid={pageUuid} />
+              <DifficultyBadge scope="page" uuid={pageUuid} projectUuid={projectUuid} />
               <PageTranslationPanel projectUuid={projectUuid} pageUuid={pageUuid} />
               <span className="text-[10px] text-muted-foreground ml-auto">
                 {editMode ? "Edit mode" : "Read mode"} ·{" "}
@@ -304,7 +312,7 @@ export function ProjectWorkspacePage(): JSX.Element {
                   projectName={projectQ.data?.name ?? "Waraq Export"}
                 />
               ) : dpiCompareOpen ? (
-                <DpiCompareView pageUuid={pageUuid} />
+                <DpiCompareView pageUuid={pageUuid} projectUuid={projectUuid} />
               ) : tocOpen ? (
                 <TocPanel projectUuid={projectUuid} />
               ) : (

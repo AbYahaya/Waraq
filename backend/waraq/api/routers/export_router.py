@@ -45,6 +45,7 @@ from waraq.export.exceptions import (
 )
 from waraq.export.pdf_print import PdfPrintError, docx_to_pdf_print
 from waraq.identity import new_uuid
+from waraq.notifications.events import notify_project_event, project_workspace_url
 from waraq.preflight import PdfFormatChoice
 from waraq.preflight.service import JOB_TYPE as PREFLIGHT_JOB_TYPE
 from waraq.schemas import Job, ProvenanceObject
@@ -134,7 +135,7 @@ async def run_translation_export(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="project_uuid in path and body must match",
         )
-    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
     preflight_job: Job | None = await session.get(Job, req.preflight_run_uuid)
     if (
         preflight_job is None
@@ -166,6 +167,17 @@ async def run_translation_export(
                 ],
             },
         ) from exc
+
+    await notify_project_event(
+        session=session,
+        project=project,
+        kind="translation_export_completed",
+        severity="success",
+        title=f"Export ready — {project.name}",
+        body=f"Exported {len(result.revision_snapshot)} translated segment(s).",
+        target_url=project_workspace_url(project.project_uuid),
+        action_label="Open project",
+    )
 
     return ExportRunResponse(
         job_uuid=result.job.job_uuid,

@@ -35,8 +35,15 @@ router = APIRouter(tags=["notifications"])
 class NotificationDto(BaseModel):
     notification_uuid: _uuid.UUID
     kind: str
+    severity: str
     title: str
     body: str
+    target_url: str | None
+    action_label: str | None
+    project_uuid: _uuid.UUID | None
+    page_uuid: _uuid.UUID | None
+    issue_uuid: _uuid.UUID | None
+    issue_kind: str | None
     created_at: str
     read_at: str | None
     email_sent_at: str | None
@@ -72,8 +79,15 @@ async def my_notifications(
             NotificationDto(
                 notification_uuid=r.notification_uuid,
                 kind=r.kind,
+                severity=r.severity,
                 title=r.title,
                 body=r.body,
+                target_url=r.target_url,
+                action_label=r.action_label,
+                project_uuid=r.project_uuid,
+                page_uuid=r.page_uuid,
+                issue_uuid=r.issue_uuid,
+                issue_kind=r.issue_kind,
                 created_at=r.created_at.isoformat(),
                 read_at=r.read_at.isoformat() if r.read_at is not None else None,
                 email_sent_at=(

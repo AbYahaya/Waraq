@@ -16,7 +16,8 @@ from waraq.api._ownership import owned_project_or_404, owned_segment_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.canon_rules import apply_all as apply_canon_rules
 from waraq.invariant.exceptions import H1H2Violation
-from waraq.toc import detect_toc, edit_toc_entry_heading
+from waraq.notifications.events import notify_project_event, project_workspace_url
+from waraq.toc import confirm_toc_final_review, detect_toc, edit_toc_entry_heading
 
 router = APIRouter(tags=["toc"])
 
@@ -36,6 +37,13 @@ class TocResponse(BaseModel):
     fallback_kind: str
     detected_heading_count: int
     page_count: int
+    workflow_state: str
+    requires_attention: bool
+    attention_reasons: list[str]
+    confirmation_state: str
+    confirmed_at: str | None
+    confirmed_by_decision_event_uuid: _uuid.UUID | None
+    export_settings_summary: dict[str, str | int | bool]
 
 
 @router.get("/projects/{project_uuid}/toc", response_model=TocResponse)
@@ -62,6 +70,56 @@ async def get_project_toc(
         fallback_kind=result.fallback_kind.value,
         detected_heading_count=result.detected_heading_count,
         page_count=result.page_count,
+        workflow_state=result.workflow_state.value,
+        requires_attention=result.requires_attention,
+        attention_reasons=result.attention_reasons,
+        confirmation_state=result.confirmation_state,
+        confirmed_at=result.confirmed_at,
+        confirmed_by_decision_event_uuid=result.confirmed_by_decision_event_uuid,
+        export_settings_summary=result.export_settings_summary,
+    )
+
+
+class TocConfirmRequest(BaseModel):
+    note: str | None = None
+
+
+class TocConfirmResponse(BaseModel):
+    decision_event_uuid: _uuid.UUID
+    workflow_state: str
+
+
+@router.post(
+    "/projects/{project_uuid}/toc/confirm",
+    response_model=TocConfirmResponse,
+)
+async def confirm_project_toc(
+    project_uuid: _uuid.UUID,
+    req: TocConfirmRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> TocConfirmResponse:
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
+    decision = await confirm_toc_final_review(
+        session=session,
+        project_uuid=project_uuid,
+        actor_uuid=current.account_uuid,
+        note=req.note,
+    )
+    result = await detect_toc(session=session, project_uuid=project_uuid)
+    await notify_project_event(
+        session=session,
+        project=project,
+        kind="toc_final_review_confirmed",
+        severity="success",
+        title=f"TOC review confirmed — {project.name}",
+        body="The table-of-contents workflow has been confirmed for export.",
+        target_url=project_workspace_url(project.project_uuid),
+        action_label="Open project",
+    )
+    return TocConfirmResponse(
+        decision_event_uuid=decision.decision_event_uuid,
+        workflow_state=result.workflow_state.value,
     )
 
 

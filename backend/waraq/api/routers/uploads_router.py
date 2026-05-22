@@ -16,6 +16,7 @@ from waraq.api.schemas import (
     UploadStartResponse,
     UploadStatusResponse,
 )
+from waraq.notifications.events import notify_project_event, project_workspace_url
 from waraq.schemas import Job, Project
 from waraq.upload import (
     ArchiveCorrupted,
@@ -268,11 +269,22 @@ async def finalize(
     # `UUID | None` — assert defensively.
     source_sha256: str = job.result["source_sha256"]
     assert job.project_uuid is not None
+    project = await _project_or_404(session, job.project_uuid, current.account_uuid)
     sha256_matches = await find_sha256_matches(
         session=session,
         project_uuid=job.project_uuid,
         sha256=source_sha256,
         exclude_job_uuid=job.job_uuid,
+    )
+    await notify_project_event(
+        session=session,
+        project=project,
+        kind="upload_finalized",
+        severity="success",
+        title=f"Upload processed — {project.name}",
+        body=f"{job.result['page_count']} page(s) are ready for OCR review.",
+        target_url=project_workspace_url(project.project_uuid, pages[0].page_uuid if pages else None),
+        action_label="Open project",
     )
     return UploadFinalizeResponse(
         job_uuid=job.job_uuid,

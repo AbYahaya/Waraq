@@ -73,6 +73,13 @@ export function OcrReviewBar({
       prev ? { ...prev, ocr_status: next.ocr_status } : prev,
     );
     void qc.invalidateQueries({ queryKey: qk.projectPages(projectUuid) });
+    void qc.invalidateQueries({ queryKey: qk.releaseGate(projectUuid) });
+    void qc.invalidateQueries({ queryKey: qk.guidedReviewQueue(projectUuid) });
+    void qc.invalidateQueries({
+      predicate: (query) =>
+        Array.isArray(query.queryKey) &&
+        (query.queryKey[0] === "audit" || query.queryKey[0] === "difficulty"),
+    });
   };
 
   const enterMutation = useMutation({
@@ -122,8 +129,8 @@ export function OcrReviewBar({
 
   const approveAsGoMutation = useMutation({
     mutationFn: () =>
-      api.post<OcrPageStatus>(`/pages/${page.page_uuid}/ocr-review/findings`, {
-        findings: [],
+      api.post<OcrPageStatus>(`/pages/${page.page_uuid}/ocr-review/approve-go`, {
+        note: "Approved from project workspace.",
       }),
     onSuccess,
     onError: (err) => setError(err instanceof ApiError ? err.detail : "Approval failed"),

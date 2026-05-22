@@ -34,6 +34,8 @@ from waraq.toc.service import (
     TocEntry,
     TocFallbackKind,
     TocResult,
+    TocWorkflowState,
+    confirm_toc_final_review,
     detect_toc,
     edit_toc_entry_heading,
 )
@@ -43,6 +45,8 @@ __all__ = [
     "TocEntry",
     "TocFallbackKind",
     "TocResult",
+    "TocWorkflowState",
+    "confirm_toc_final_review",
     "detect_toc",
     "edit_toc_entry_heading",
 ]
