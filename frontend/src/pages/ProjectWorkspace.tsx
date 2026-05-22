@@ -1,9 +1,9 @@
 /**
  * Project workspace — sidebar (pages) + mode-driven main area.
  *
- * Per Dokument 1 §3.7 the main area honors the 5 canonical comparison
- * modes (`<ComparisonModeSelector>`) wired to the `<MultiPaneView>`
- * primitive. The previous "Edit" workspace mode is preserved as a
+ * The main area uses a grouped Triple / Double / Solo selector while
+ * still honoring the canonical comparison panes behind the scenes.
+ * The previous "Edit" workspace mode is preserved as a
  * separate toggle that replaces the comparison area with the
  * existing per-segment editor — clicking a sentence ID in the
  * comparison panes broadcasts a cross-pane scroll-sync event.
@@ -14,9 +14,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import {
-  COMPARISON_MODES,
   ComparisonModeSelector,
+  comparisonModeLabel,
   type ComparisonMode,
+  type SinglePane,
 } from "@/components/ComparisonModeSelector";
 import { DeleteProjectDialog } from "@/components/DeleteProjectDialog";
 import { DifficultyBadge } from "@/components/DifficultyBadge";
@@ -39,9 +40,6 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ApiError } from "@/lib/api";
 import { queries } from "@/lib/queries";
-import { cn } from "@/lib/utils";
-
-type SinglePane = "original" | "ocr" | "translation";
 
 export function ProjectWorkspacePage(): JSX.Element {
   const { projectUuid, pageUuid } = useParams<{
@@ -56,6 +54,7 @@ export function ProjectWorkspacePage(): JSX.Element {
 
   const projectQ = useQuery(queries.project(projectUuid));
   const pagesQ = useQuery(queries.projectPages(projectUuid));
+  const logicalPages = useMemo(() => dedupePagesByIndex(pagesQ.data ?? []), [pagesQ.data]);
   const pageQ = useQuery({
     ...queries.page(pageUuid ?? ""),
     enabled: pageUuid !== undefined,
@@ -77,12 +76,12 @@ export function ProjectWorkspacePage(): JSX.Element {
 
   // Auto-redirect to first page when none is selected.
   useEffect(() => {
-    if (pageUuid === undefined && pagesQ.data && pagesQ.data.length > 0) {
-      navigate(`/projects/${projectUuid}/pages/${pagesQ.data[0].page_uuid}`, {
+    if (pageUuid === undefined && logicalPages.length > 0) {
+      navigate(`/projects/${projectUuid}/pages/${logicalPages[0].page_uuid}`, {
         replace: true,
       });
     }
-  }, [pageUuid, pagesQ.data, projectUuid, navigate]);
+  }, [pageUuid, logicalPages, projectUuid, navigate]);
 
   const panes = useMemo<PaneConfig[]>(() => {
     if (pageUuid === undefined || pageQ.data === undefined) return [];
@@ -177,7 +176,7 @@ export function ProjectWorkspacePage(): JSX.Element {
         open={exportOpen}
         onOpenChange={setExportOpen}
         projectUuid={projectUuid}
-        defaultPageRange={(pagesQ.data ?? []).map((p) => p.page_index)}
+        defaultPageRange={logicalPages.map((p) => p.page_index)}
       />
       <TranslationExportDialog
         open={translateExportOpen}
@@ -197,7 +196,7 @@ export function ProjectWorkspacePage(): JSX.Element {
           <div className="flex h-full items-center justify-center text-center p-12">
             <div className="max-w-md space-y-2">
               <h2 className="text-lg font-medium">No page selected</h2>
-              {pagesQ.data && pagesQ.data.length === 0 && (
+              {pagesQ.data && logicalPages.length === 0 && (
                 <p className="text-sm text-muted-foreground">
                   Upload a PDF to this project to materialize pages.
                 </p>
@@ -224,49 +223,45 @@ export function ProjectWorkspacePage(): JSX.Element {
               onViewModeChange={(m) => setEditMode(m === "edit")}
             />
             <div className="flex flex-wrap items-center gap-3 border-b border-border/80 bg-muted/20 px-4 py-3">
-                <ComparisonModeSelector
-                  mode={comparisonMode}
-                  onModeChange={setComparisonMode}
-                />
-                {comparisonMode === "single_fullscreen" && (
-                  <SinglePaneSubSelector
-                    value={singlePaneSelection}
-                    onChange={setSinglePaneSelection}
-                  />
-                )}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={dpiCompareOpen ? "default" : "outline"}
-                  onClick={() => {
-                    setDpiCompareOpen((v) => !v);
-                    if (tocOpen) setTocOpen(false);
-                  }}
-                  className="text-xs"
-                  title="Render this page at low + high DPI side-by-side"
-                >
-                  {dpiCompareOpen ? "Close DPI compare" : "DPI compare"}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={tocOpen ? "default" : "outline"}
-                  onClick={() => {
-                    setTocOpen((v) => !v);
-                    if (dpiCompareOpen) setDpiCompareOpen(false);
-                  }}
-                  className="text-xs"
-                  title="Show the project's auto-detected table of contents"
-                >
-                  {tocOpen ? "Close TOC" : "TOC"}
-                </Button>
-                <DifficultyBadge scope="page" uuid={pageUuid} />
-                <PageTranslationPanel projectUuid={projectUuid} pageUuid={pageUuid} />
-                <span className="text-[10px] text-muted-foreground ml-auto">
-                  {editMode ? "Edit mode" : "Read mode"} ·{" "}
-                  {COMPARISON_MODES.find((m) => m.id === comparisonMode)?.label}
-                </span>
-              </div>
+              <ComparisonModeSelector
+                mode={comparisonMode}
+                onModeChange={setComparisonMode}
+                singlePane={singlePaneSelection}
+                onSinglePaneChange={setSinglePaneSelection}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant={dpiCompareOpen ? "default" : "outline"}
+                onClick={() => {
+                  setDpiCompareOpen((v) => !v);
+                  if (tocOpen) setTocOpen(false);
+                }}
+                className="text-xs"
+                title="Render this page at low + high DPI side-by-side"
+              >
+                {dpiCompareOpen ? "Close DPI compare" : "DPI compare"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={tocOpen ? "default" : "outline"}
+                onClick={() => {
+                  setTocOpen((v) => !v);
+                  if (dpiCompareOpen) setDpiCompareOpen(false);
+                }}
+                className="text-xs"
+                title="Show the project's auto-detected table of contents"
+              >
+                {tocOpen ? "Close TOC" : "TOC"}
+              </Button>
+              <DifficultyBadge scope="page" uuid={pageUuid} />
+              <PageTranslationPanel projectUuid={projectUuid} pageUuid={pageUuid} />
+              <span className="text-[10px] text-muted-foreground ml-auto">
+                {editMode ? "Edit mode" : "Read mode"} ·{" "}
+                {comparisonModeLabel(comparisonMode, singlePaneSelection)}
+              </span>
+            </div>
             <div className="flex-1 min-h-0">
               {dpiCompareOpen ? (
                 <DpiCompareView pageUuid={pageUuid} />
@@ -283,38 +278,11 @@ export function ProjectWorkspacePage(): JSX.Element {
   );
 }
 
-interface SinglePaneSubSelectorProps {
-  value: SinglePane;
-  onChange: (v: SinglePane) => void;
-}
-
-function SinglePaneSubSelector({
-  value,
-  onChange,
-}: SinglePaneSubSelectorProps): JSX.Element {
-  const opts: ReadonlyArray<{ id: SinglePane; label: string }> = [
-    { id: "original", label: "Original" },
-    { id: "ocr", label: "OCR" },
-    { id: "translation", label: "Translation" },
-  ];
-  return (
-    <div className="inline-flex overflow-hidden rounded-xl border border-border/80 bg-background" role="tablist">
-      {opts.map((o, i) => (
-        <button
-          key={o.id}
-          type="button"
-          role="tab"
-          aria-selected={value === o.id}
-          onClick={() => onChange(o.id)}
-          className={cn(
-            "px-2 py-1 text-xs",
-            i > 0 && "border-l",
-            value === o.id ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
-          )}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
+function dedupePagesByIndex<T extends { page_index: number }>(pages: T[]): T[] {
+  const seen = new Set<number>();
+  return pages.filter((page) => {
+    if (seen.has(page.page_index)) return false;
+    seen.add(page.page_index);
+    return true;
+  });
 }

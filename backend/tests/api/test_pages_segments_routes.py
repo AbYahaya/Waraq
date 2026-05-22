@@ -31,6 +31,20 @@ class TestPagesAndSegments:
         assert len(rows) == 1
         assert rows[0]["page_uuid"] == str(f.page_uuid)
 
+    async def test_list_pages_deduplicates_logical_page_indices(
+        self, auth_client: httpx.AsyncClient
+    ) -> None:
+        project_uuid = await self._project(auth_client)
+        await make_page_block_segment(project_uuid, page_index=1, text="older")
+        await make_page_block_segment(project_uuid, page_index=1, text="newer")
+        await make_page_block_segment(project_uuid, page_index=2)
+
+        r = await auth_client.get(f"/projects/{project_uuid}/pages")
+
+        assert r.status_code == 200
+        rows = r.json()
+        assert [row["page_index"] for row in rows] == [1, 2]
+
     async def test_list_segments_in_page(self, auth_client: httpx.AsyncClient) -> None:
         project_uuid = await self._project(auth_client)
         f = await make_page_block_segment(project_uuid)

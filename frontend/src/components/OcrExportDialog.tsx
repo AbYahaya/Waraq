@@ -74,7 +74,7 @@ export function OcrExportDialog({
   // Re-derive default page range when caller updates it.
   useEffect(() => {
     if (defaultPageRange && defaultPageRange.length > 0 && pageRangeText === "") {
-      setPageRangeText(defaultPageRange.join(","));
+      setPageRangeText(formatRange(defaultPageRange));
     }
   }, [defaultPageRange, pageRangeText]);
 
@@ -328,14 +328,42 @@ function parseRange(input: string): number[] {
     if (trimmed.includes("-")) {
       const [a, b] = trimmed.split("-", 2).map((s) => parseInt(s.trim(), 10));
       if (Number.isFinite(a) && Number.isFinite(b)) {
-        const lo = Math.min(a, b);
+        const lo = Math.max(1, Math.min(a, b));
         const hi = Math.max(a, b);
         for (let i = lo; i <= hi; i++) out.add(i);
       }
     } else {
       const n = parseInt(trimmed, 10);
-      if (Number.isFinite(n)) out.add(n);
+      if (Number.isFinite(n) && n > 0) out.add(n);
     }
   }
   return [...out].sort((a, b) => a - b);
+}
+
+function normalizeRangeValues(values: number[]): number[] {
+  return [...new Set(values.filter((n) => Number.isFinite(n) && n > 0))].sort(
+    (a, b) => a - b,
+  );
+}
+
+function formatRange(values: number[]): string {
+  const normalized = normalizeRangeValues(values);
+  if (normalized.length === 0) return "";
+
+  const pieces: string[] = [];
+  let start = normalized[0];
+  let previous = normalized[0];
+
+  for (const current of normalized.slice(1)) {
+    if (current === previous + 1) {
+      previous = current;
+      continue;
+    }
+    pieces.push(start === previous ? String(start) : `${start}-${previous}`);
+    start = current;
+    previous = current;
+  }
+
+  pieces.push(start === previous ? String(start) : `${start}-${previous}`);
+  return pieces.join(",");
 }

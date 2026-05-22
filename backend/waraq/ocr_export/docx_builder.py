@@ -153,16 +153,26 @@ async def _load_pages_in_range(
     `page_number IN export_config.page_range` with `project_uuid`
     filter and `active=true` — no direct UUID comparison against
     export_config."""
-    if not page_range:
+    normalized_page_range = sorted(
+        {page_number for page_number in page_range if page_number > 0}
+    )
+    if not normalized_page_range:
         return []
     result = await session.execute(
         select(Page)
         .where(Page.project_uuid == project_uuid)
-        .where(Page.page_index.in_(page_range))
+        .where(Page.page_index.in_(normalized_page_range))
         .where(Page.active.is_(True))
-        .order_by(Page.page_index.asc())
+        .order_by(Page.page_index.asc(), Page.created_at.desc())
     )
-    return list(result.scalars())
+    pages: list[Page] = []
+    seen: set[int] = set()
+    for page in result.scalars():
+        if page.page_index in seen:
+            continue
+        seen.add(page.page_index)
+        pages.append(page)
+    return pages
 
 
 async def _load_segments_for_pages(
@@ -210,8 +220,11 @@ async def build_ocr_docx(
     creating an OCR_EXPORT_EVENT.
     """
     try:
+        normalized_page_range = sorted(
+            {page_number for page_number in page_range if page_number > 0}
+        )
         pages = await _load_pages_in_range(
-            session=session, project_uuid=project_uuid, page_range=page_range
+            session=session, project_uuid=project_uuid, page_range=normalized_page_range
         )
         page_uuids = [p.page_uuid for p in pages]
         rows = await _load_segments_for_pages(
@@ -253,7 +266,7 @@ async def build_ocr_docx(
 
         # Export protocol — always produced (Export-Protokoll-Immer-Test).
         protocol = {
-            "page_range": list(page_range),
+            "page_range": normalized_page_range,
             "mode": mode,
             "block_types_enabled": list(block_types_enabled),
             "markings_enabled": markings_enabled,

@@ -407,6 +407,55 @@ class TestDocxBuilder:
         assert "MT" in artefact.block_types_present
         assert "QR" not in artefact.block_types_present
 
+    async def test_docx_export_deduplicates_active_logical_pages(
+        self, db_session: AsyncSession
+    ) -> None:
+        project, _, _, _ = await _seed_project(
+            db_session, n_segments=1, block_type="MT", initial_text="FIRST_PAGE_ROW"
+        )
+        duplicate_page = Page(
+            page_uuid=new_uuid(),
+            project_uuid=project.project_uuid,
+            page_index=1,
+            ocr_status=OcrStatus.GO,
+        )
+        db_session.add(duplicate_page)
+        await db_session.flush()
+        duplicate_block = Block(
+            block_uuid=new_uuid(),
+            page_uuid=duplicate_page.page_uuid,
+            block_type="MT",
+            block_index=1,
+        )
+        db_session.add(duplicate_block)
+        await db_session.flush()
+        db_session.add(
+            Segment(
+                satz_uuid=new_uuid(),
+                block_uuid=duplicate_block.block_uuid,
+                satz_index=1,
+                lock_flag=LockFlag.NONE,
+                text_content="SECOND_PAGE_ROW",
+            )
+        )
+        await db_session.flush()
+
+        artefact = await build_ocr_docx(
+            session=db_session,
+            project_uuid=project.project_uuid,
+            page_range=[1, 1],
+            block_types_enabled=["MT"],
+            markings_enabled=False,
+            mode="arbeitsstand",
+        )
+        doc = Document(io.BytesIO(artefact.bytes_))
+        all_text = " ".join(p.text for p in doc.paragraphs)
+
+        assert artefact.protocol["page_range"] == [1]
+        assert artefact.n_pages_exported == 1
+        assert artefact.n_segments_exported == 1
+        assert ("FIRST_PAGE_ROW" in all_text) != ("SECOND_PAGE_ROW" in all_text)
+
     async def test_vocalization_preserved_as_present(self, db_session: AsyncSession) -> None:
         """Vokalisation-Wie-Vorliegend-Test: harakāt characters are
         carried verbatim (no addition, no suppression)."""

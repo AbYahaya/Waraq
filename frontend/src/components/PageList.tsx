@@ -33,6 +33,7 @@ export interface PageListProps {
 
 export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.Element {
   const q = useQuery(queries.projectPages(projectUuid));
+  const pages = dedupePagesByIndex(q.data ?? []);
 
   if (q.isLoading) {
     return <p className="text-sm text-muted-foreground p-3">Loading pages…</p>;
@@ -40,7 +41,7 @@ export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.El
   if (q.isError) {
     return <p className="text-sm text-destructive p-3">Failed to load pages.</p>;
   }
-  if (!q.data || q.data.length === 0) {
+  if (pages.length === 0) {
     return (
       <p className="text-sm text-muted-foreground p-3">
         No pages yet. Upload a PDF to get started.
@@ -50,7 +51,7 @@ export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.El
 
   return (
     <ul className="space-y-2 px-3 pb-3">
-      {q.data.map((p) => {
+      {pages.map((p) => {
         const isActive = p.page_uuid === activePageUuid;
         return (
           <li key={p.page_uuid}>
@@ -73,4 +74,13 @@ export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.El
       })}
     </ul>
   );
+}
+
+function dedupePagesByIndex(pages: Page[]): Page[] {
+  const seen = new Set<number>();
+  return pages.filter((page) => {
+    if (seen.has(page.page_index)) return false;
+    seen.add(page.page_index);
+    return true;
+  });
 }

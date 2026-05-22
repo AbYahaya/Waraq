@@ -34,6 +34,24 @@ from waraq.schemas.enums import POType, ScopeType
 router = APIRouter(tags=["pages"])
 
 
+def _dedupe_pages_by_index(pages: list[Page]) -> list[Page]:
+    """Return one active logical page per page number.
+
+    Older OCR/upload paths can leave more than one active Page row with
+    the same `page_index`. The workspace is page-number based, so exposing
+    those duplicate rows makes the sidebar and export ranges look doubled.
+    The caller orders newest rows first within each page_index.
+    """
+    seen: set[int] = set()
+    logical_pages: list[Page] = []
+    for page in pages:
+        if page.page_index in seen:
+            continue
+        seen.add(page.page_index)
+        logical_pages.append(page)
+    return logical_pages
+
+
 @router.get("/projects/{project_uuid}/pages", response_model=list[PageResponse])
 async def list_pages(
     project_uuid: _uuid.UUID,
@@ -44,9 +62,10 @@ async def list_pages(
     result = await session.execute(
         select(Page)
         .where(Page.project_uuid == project_uuid, Page.active.is_(True))
-        .order_by(Page.page_index.asc())
+        .order_by(Page.page_index.asc(), Page.created_at.desc())
     )
-    return [PageResponse.model_validate(p) for p in result.scalars()]
+    pages = _dedupe_pages_by_index(list(result.scalars()))
+    return [PageResponse.model_validate(p) for p in pages]
 
 
 @router.get("/pages/{page_uuid}", response_model=PageResponse)

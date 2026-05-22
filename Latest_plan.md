@@ -8,7 +8,7 @@ We will fix the issues sequentially, with one user-testable checkpoint after eac
 
 ### 1. Export Formatting Regression: DOCX/PDF Header And Arabic RTL
 
-Status: implemented locally, awaiting user validation.
+Status: validated in deployed app.
 
 - Remove `STYLEREF` from generated DOCX headers completely; header should be plain project/book title only.
 - Make Arabic DOCX paragraphs explicitly RTL/right-aligned at paragraph and run XML level, with Arabic complex-script font applied.
@@ -18,12 +18,16 @@ Status: implemented locally, awaiting user validation.
 
 ### 2. Duplicate Logical Pages And OCR Export Range
 
+Status: validated in deployed app.
+
 - Fix `/projects/{project_uuid}/pages` consumer behavior so the workspace sidebar displays one active logical page per `page_index`.
 - Add frontend dedupe safeguard in `PageList` and OCR export default range.
 - Normalize OCR export range display from duplicated values into compact ranges like `1-16`.
 - User test: reload project; confirm page list has no duplicates and OCR export page range is clean.
 
 ### 3. Workspace View Mode Restructure
+
+Status: validated in deployed app.
 
 - Replace the flat toolbar with three primary modes: `Triple`, `Double`, `Solo`.
 - Add second-level selector for `Double`: `Original / OCR`, `Original / Translation`, `OCR / Translation`.
@@ -33,6 +37,8 @@ Status: implemented locally, awaiting user validation.
 
 ### 4. Page-Based OCR Read/Edit View
 
+Status: validated in deployed app.
+
 - Replace the compressed per-segment OCR display with a page-like OCR document pane.
 - Render OCR as full-page Arabic text with preserved paragraph breaks, empty lines, RTL direction, readable Arabic typography, and stable page padding.
 - In edit mode, show a large full-pane OCR editor by default, not a small manually-resized textarea.
@@ -40,6 +46,8 @@ Status: implemented locally, awaiting user validation.
 - User test: open Solo OCR, Double Original/OCR, Double OCR/Translation, and Triple; confirm OCR view/edit feels like a full page.
 
 ### 5. Page-Based Translation Editor MVP
+
+Status: implemented locally, awaiting user validation.
 
 - Make translation read/edit view page-like rather than primarily row/segment-like.
 - In Double and Triple views, support simple plain-text/paragraph editing with segment preservation.
