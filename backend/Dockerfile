@@ -86,4 +86,4 @@ EXPOSE 8080
 
 # Fly runs Alembic as a release command before switching traffic to the
 # new image, so the web process only has to start the ASGI server.
-CMD ["sh", "-lc", "python scripts/ensure_camel_data.py & exec uvicorn waraq.api.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips '*'"]
+CMD ["sh", "-c", "/opt/venv/bin/python scripts/ensure_camel_data.py & exec /opt/venv/bin/uvicorn waraq.api.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips '*'"]
