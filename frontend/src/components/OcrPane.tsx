@@ -126,7 +126,7 @@ function OcrPageReadView({
   const textStyle = arabicTextStyle(styleProfile);
 
   return (
-    <div className="h-full overflow-auto bg-[#f4efe6] px-3 py-4">
+    <div className="h-full overflow-y-scroll bg-[#f4efe6] px-3 py-4">
       <article
         className="mx-auto min-h-full rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-6 py-8 shadow-sm sm:px-10 sm:py-12"
         style={{ maxWidth: `${styleProfile.page_max_width_rem}rem` }}
@@ -215,7 +215,7 @@ function OcrPageEditor({
   const textStyle = arabicTextStyle(styleProfile);
 
   return (
-    <div className="h-full overflow-auto bg-[#f4efe6] px-3 py-4">
+    <div className="h-full overflow-y-scroll bg-[#f4efe6] px-3 py-4">
       <article
         className="mx-auto flex min-h-full flex-col rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-4 py-5 shadow-sm sm:px-8 sm:py-8"
         style={{ maxWidth: `${styleProfile.page_max_width_rem}rem` }}

@@ -131,13 +131,13 @@ interface PaneProps {
 function Pane({ label, children, className, style }: PaneProps): JSX.Element {
   return (
     <div
-      className={cn("flex flex-col h-full overflow-hidden", className)}
+      className={cn("flex flex-col h-full min-h-0 overflow-hidden", className)}
       style={style}
     >
       <div className="px-3 py-1.5 border-b text-[10px] uppercase tracking-wide text-muted-foreground bg-muted/40">
         {label}
       </div>
-      <div className="flex-1 min-h-0 overflow-auto">{children}</div>
+      <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
     </div>
   );
 }

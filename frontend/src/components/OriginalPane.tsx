@@ -11,5 +11,5 @@
 import { ScanViewer, type ScanViewerProps } from "@/components/ScanViewer";
 
 export function OriginalPane(props: ScanViewerProps): JSX.Element {
-  return <ScanViewer {...props} />;
+  return <ScanViewer {...props} mode="png" />;
 }

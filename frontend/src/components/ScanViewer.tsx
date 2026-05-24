@@ -16,9 +16,16 @@ import { useAuthStore } from "@/store/auth";
 export interface ScanViewerProps {
   pageUuid: string;
   pageIndex: number;
+  mode?: "pdf" | "png";
+  renderDpi?: number;
 }
 
-export function ScanViewer({ pageUuid, pageIndex }: ScanViewerProps): JSX.Element {
+export function ScanViewer({
+  pageUuid,
+  pageIndex,
+  mode = "pdf",
+  renderDpi = 150,
+}: ScanViewerProps): JSX.Element {
   const token = useAuthStore((s) => s.token);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +39,12 @@ export function ScanViewer({ pageUuid, pageIndex }: ScanViewerProps): JSX.Elemen
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    fetch(apiPath(`/pages/${pageUuid}/source-pdf`), { headers })
+    const path =
+      mode === "png"
+        ? `/pages/${pageUuid}/render-png?dpi=${renderDpi}`
+        : `/pages/${pageUuid}/source-pdf`;
+
+    fetch(apiPath(path), { headers })
       .then(async (resp) => {
         if (!resp.ok) {
           const text = await resp.text();
@@ -70,6 +82,18 @@ export function ScanViewer({ pageUuid, pageIndex }: ScanViewerProps): JSX.Elemen
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
         Loading scan…
+      </div>
+    );
+  }
+
+  if (mode === "png") {
+    return (
+      <div className="h-full w-full overflow-auto bg-[#f4efe6]">
+        <img
+          src={blobUrl}
+          alt={`Scan page ${pageIndex}`}
+          className="block w-full h-auto"
+        />
       </div>
     );
   }

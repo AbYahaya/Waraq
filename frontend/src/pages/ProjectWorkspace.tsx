@@ -150,8 +150,8 @@ export function ProjectWorkspacePage(): JSX.Element {
   }, [comparisonMode, editMode, singlePaneSelection, pageUuid, pageQ.data, projectUuid]);
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-[18rem_minmax(0,1fr)]">
-      <aside className="flex min-h-0 flex-col overflow-hidden rounded-[2rem] border border-border/80 bg-card/95 shadow-sm">
+    <div className="grid h-full min-h-0 overflow-y-auto grid-cols-1 gap-4 xl:grid-cols-[18rem_minmax(0,1fr)]">
+      <aside className="flex min-h-0 h-[calc(100vh-8rem)] flex-col overflow-hidden rounded-[2rem] border border-border/80 bg-card/95 shadow-sm">
         <div className="shrink-0 border-b border-border/80 px-3 py-3">
           <div className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
             Project
@@ -307,7 +307,7 @@ export function ProjectWorkspacePage(): JSX.Element {
                 {comparisonModeLabel(comparisonMode, singlePaneSelection)}
               </span>
             </div>
-            <div className="flex-1 min-h-0">
+            <div className="flex-1 min-h-0 overflow-hidden">
               {bookPreviewOpen ? (
                 <BookPreview
                   projectUuid={projectUuid}
@@ -318,7 +318,7 @@ export function ProjectWorkspacePage(): JSX.Element {
               ) : tocOpen ? (
                 <TocPanel projectUuid={projectUuid} />
               ) : (
-                <MultiPaneView panes={panes} />
+                <MultiPaneView panes={panes} className="h-full min-h-0" />
               )}
             </div>
           </>
