@@ -14,7 +14,7 @@
  * links to the canonical per-segment review pages for decisions.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, api, apiPath } from "@/lib/api";
@@ -90,6 +90,41 @@ interface AttentionListResponse {
   items: AttentionItem[];
 }
 
+interface OcrReviewDecisionItem {
+  decision_event_uuid: string;
+  page_uuid: string;
+  page_index: number;
+  satz_uuid: string | null;
+  decision_type: string;
+  content: Record<string, unknown>;
+  created_at: string;
+}
+
+interface OcrReviewDecisionListResponse {
+  items: OcrReviewDecisionItem[];
+}
+
+interface OcrDifferenceExplanation {
+  provider: string;
+  model: string;
+  summary: string;
+  recommended_reading: string;
+  confidence: number;
+  normalization_notes: string[];
+  line_differences: {
+    line_number: number;
+    gemini_line: string;
+    openai_line: string;
+    differences: string[];
+  }[];
+  character_differences: {
+    gemini: string;
+    openai: string;
+    explanation: string;
+    severity: string;
+  }[];
+}
+
 interface EngineReading {
   engine: string;
   text: string | null;
@@ -143,9 +178,17 @@ const FILTER_LABEL: Record<string, string> = Object.fromEntries(
   FILTER_OPTIONS.map((o) => [o.value, o.label]),
 );
 
+type AuditTab = "active" | "resolved";
+type ResolvedDecisionFilter = "all" | "accepted" | "warning" | "superseded" | "ignored_deleted";
+
 export function ProjectAuditPage(): JSX.Element {
   const { projectUuid } = useParams<{ projectUuid: string }>();
+  const [searchParams] = useSearchParams();
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
+  const [auditTab, setAuditTab] = useState<AuditTab>(
+    searchParams.get("tab") === "resolved" ? "resolved" : "active",
+  );
+  const [resolvedFilter, setResolvedFilter] = useState<ResolvedDecisionFilter>("all");
 
   const summary = useQuery<ProjectAuditSummary>({
     queryKey: ["audit", "summary", projectUuid],
@@ -166,7 +209,16 @@ export function ProjectAuditPage(): JSX.Element {
   const attention = useQuery<AttentionListResponse>({
     queryKey: ["audit", "attention", projectUuid, [...activeFilters].sort().join(",")],
     queryFn: () => api.get<AttentionListResponse>(attentionUrl),
-    enabled: !!projectUuid,
+    enabled: !!projectUuid && auditTab === "active",
+  });
+
+  const ocrReviewDecisions = useQuery<OcrReviewDecisionListResponse>({
+    queryKey: ["audit", "ocr-review-decisions", projectUuid],
+    queryFn: () =>
+      api.get<OcrReviewDecisionListResponse>(
+        `/projects/${projectUuid}/audit/ocr-review-decisions`,
+      ),
+    enabled: !!projectUuid && auditTab === "resolved",
   });
 
   const toggleFilter = (value: string): void => {
@@ -205,18 +257,42 @@ export function ProjectAuditPage(): JSX.Element {
       )}
       {summary.data && <SummaryCard summary={summary.data} />}
 
-      <FilterChips active={activeFilters} onToggle={toggleFilter} />
+      <AuditTabs active={auditTab} onChange={setAuditTab} />
 
-      {attention.isLoading && (
-        <div className="text-sm text-muted-foreground">Loading attention list…</div>
+      {auditTab === "active" && (
+        <>
+          <FilterChips active={activeFilters} onToggle={toggleFilter} />
+
+          {attention.isLoading && (
+            <div className="text-sm text-muted-foreground">Loading attention list…</div>
+          )}
+          {attention.error && <ErrorBox error={attention.error} />}
+          {attention.data && (
+            <AttentionList
+              items={attention.data.items}
+              projectUuid={projectUuid}
+              activeFilters={activeFilters}
+              focusKey={searchParams.get("focus")}
+            />
+          )}
+        </>
       )}
-      {attention.error && <ErrorBox error={attention.error} />}
-      {attention.data && (
-        <AttentionList
-          items={attention.data.items}
-          projectUuid={projectUuid}
-          activeFilters={activeFilters}
-        />
+
+      {auditTab === "resolved" && (
+        <>
+          {ocrReviewDecisions.isLoading && (
+            <div className="text-sm text-muted-foreground">Loading resolved OCR decisions…</div>
+          )}
+          {ocrReviewDecisions.error && <ErrorBox error={ocrReviewDecisions.error} />}
+          {ocrReviewDecisions.data && (
+            <ResolvedOcrDecisionList
+              items={ocrReviewDecisions.data.items}
+              projectUuid={projectUuid}
+              filter={resolvedFilter}
+              onFilterChange={setResolvedFilter}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -475,16 +551,59 @@ function FilterChips({
   );
 }
 
+function AuditTabs({
+  active,
+  onChange,
+}: {
+  active: AuditTab;
+  onChange: (tab: AuditTab) => void;
+}): JSX.Element {
+  return (
+    <section className="rounded-lg border bg-card p-2">
+      <div className="grid grid-cols-2 gap-2">
+        <Button
+          type="button"
+          variant={active === "active" ? "default" : "outline"}
+          onClick={() => onChange("active")}
+        >
+          Active attention
+        </Button>
+        <Button
+          type="button"
+          variant={active === "resolved" ? "default" : "outline"}
+          onClick={() => onChange("resolved")}
+        >
+          Resolved OCR decisions
+        </Button>
+      </div>
+      <p className="mt-2 px-1 text-xs text-muted-foreground">
+        Active attention shows unresolved work only. Resolved OCR decisions show where
+        accepted OCR findings move after page approval or approval with warning.
+      </p>
+    </section>
+  );
+}
+
+interface AttentionGroup {
+  key: string;
+  primary: AttentionItem;
+  reasons: AttentionItem[];
+}
+
 function AttentionList({
   items,
   projectUuid,
   activeFilters,
+  focusKey,
 }: {
   items: AttentionItem[];
   projectUuid: string;
   activeFilters: Set<string>;
+  focusKey: string | null;
 }): JSX.Element {
-  if (items.length === 0) {
+  const groups = useMemo(() => groupAttentionItems(items), [items]);
+
+  if (groups.length === 0) {
     return (
       <section className="border rounded-lg p-4 bg-card text-sm text-muted-foreground italic">
         {activeFilters.size === 0
@@ -497,14 +616,16 @@ function AttentionList({
   return (
     <section className="border rounded-lg bg-card divide-y">
       <div className="px-4 py-2 text-xs uppercase tracking-wide text-muted-foreground">
-        Attention list ({items.length})
+        Attention list ({groups.length}
+        {groups.length === items.length ? "" : ` groups from ${items.length} signals`})
       </div>
-      {items.map((it, idx) => (
+      {groups.map((group) => (
         <AttentionRow
-          key={`${it.satz_uuid}-${it.filter_matched}-${idx}`}
-          item={it}
+          key={group.key}
+          group={group}
           projectUuid={projectUuid}
           activeFilterKey={[...activeFilters].sort().join(",")}
+          autoExpand={focusKey === attentionFocusKey(group)}
         />
       ))}
     </section>
@@ -512,16 +633,19 @@ function AttentionList({
 }
 
 function AttentionRow({
-  item,
+  group,
   projectUuid,
   activeFilterKey,
+  autoExpand,
 }: {
-  item: AttentionItem;
+  group: AttentionGroup;
   projectUuid: string;
   activeFilterKey: string;
+  autoExpand: boolean;
 }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const detailParts = describeDetail(item);
+  const item = group.primary;
+  const [expanded, setExpanded] = useState(autoExpand);
+  const detailParts = group.reasons.map(describeDetail).filter(Boolean).join(" · ");
   const detail = useQuery<SegmentAuditDetail>({
     queryKey: ["audit", "segment-detail", projectUuid, item.satz_uuid],
     queryFn: () =>
@@ -530,6 +654,9 @@ function AttentionRow({
       ),
     enabled: expanded,
   });
+  useEffect(() => {
+    if (autoExpand) setExpanded(true);
+  }, [autoExpand]);
   return (
     <div>
       <div className="px-4 py-3 flex items-center gap-3 text-sm">
@@ -544,7 +671,20 @@ function AttentionRow({
         <span
           className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${chipTone(item.filter_matched)}`}
         >
-          {FILTER_LABEL[item.filter_matched] ?? item.filter_matched}
+          {group.reasons.length > 1
+            ? `${group.reasons.length} active signals`
+            : FILTER_LABEL[item.filter_matched] ?? item.filter_matched}
+        </span>
+        <span className="flex flex-wrap gap-1">
+          {group.reasons.map((reason) => (
+            <span
+              key={reason.filter_matched}
+              className={`rounded px-1.5 py-0.5 text-[10px] ${chipTone(reason.filter_matched)}`}
+              title={reasonDefinition(reason.filter_matched)}
+            >
+              {FILTER_LABEL[reason.filter_matched] ?? reason.filter_matched}
+            </span>
+          ))}
         </span>
         <span className="text-muted-foreground text-xs whitespace-nowrap">
           page #{item.page_index} · block #{item.block_index} · seg #{item.satz_index}
@@ -556,7 +696,7 @@ function AttentionRow({
         )}
         <span className="flex-1" />
         <Link
-          to={`/projects/${projectUuid}/pages/${item.page_uuid}`}
+          to={`/projects/${projectUuid}/pages/${item.page_uuid}?from=attention&focus=${attentionFocusKey(group)}`}
           className="text-xs underline text-muted-foreground hover:text-foreground"
         >
           Open page
@@ -571,7 +711,7 @@ function AttentionRow({
           {detail.data && (
             <SegmentDetailPanel
               detail={detail.data}
-              item={item}
+              group={group}
               projectUuid={projectUuid}
               activeFilterKey={activeFilterKey}
             />
@@ -584,22 +724,29 @@ function AttentionRow({
 
 function SegmentDetailPanel({
   detail,
-  item,
+  group,
   projectUuid,
   activeFilterKey,
 }: {
   detail: SegmentAuditDetail;
-  item: AttentionItem;
+  group: AttentionGroup;
   projectUuid: string;
   activeFilterKey: string;
 }): JSX.Element {
+  const item = group.primary;
   const qc = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [explanation, setExplanation] = useState<OcrDifferenceExplanation | null>(null);
+  const [explanationError, setExplanationError] = useState<string | null>(null);
+  const geminiReading = detail.ocr_engines.find((reading) => isGeminiEngine(reading.engine));
+  const openaiReading = detail.ocr_engines.find((reading) => isOpenAiEngine(reading.engine));
   const refreshAudit = async (): Promise<void> => {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ["audit", "attention", projectUuid, activeFilterKey] }),
       qc.invalidateQueries({ queryKey: ["audit", "summary", projectUuid] }),
       qc.invalidateQueries({ queryKey: ["audit", "segment-detail", projectUuid, item.satz_uuid] }),
+      qc.invalidateQueries({ queryKey: ["audit", "ocr-review-decisions", projectUuid] }),
     ]);
   };
   const enterReview = async (): Promise<void> => {
@@ -612,8 +759,15 @@ function SegmentDetailPanel({
         note: "Accepted current OCR from Audit attention detail.",
       });
     },
-    onSuccess: refreshAudit,
-    onError: (err) => setActionError(err instanceof ApiError ? err.detail : String(err)),
+    onSuccess: async () => {
+      setActionError(null);
+      setActionMessage("Finding accepted and moved out of Active attention.");
+      await refreshAudit();
+    },
+    onError: (err) => {
+      setActionMessage(null);
+      setActionError(err instanceof ApiError ? err.detail : String(err));
+    },
   });
   const approveWarning = useMutation({
     mutationFn: async () => {
@@ -622,13 +776,37 @@ function SegmentDetailPanel({
         note: "Approved OCR with warning from Audit attention detail.",
       });
     },
-    onSuccess: refreshAudit,
-    onError: (err) => setActionError(err instanceof ApiError ? err.detail : String(err)),
+    onSuccess: async () => {
+      setActionError(null);
+      setActionMessage("Finding accepted with warning and moved to OCR decision history.");
+      await refreshAudit();
+    },
+    onError: (err) => {
+      setActionMessage(null);
+      setActionError(err instanceof ApiError ? err.detail : String(err));
+    },
   });
   const markUnresolved = useMutation({
-    mutationFn: enterReview,
-    onSuccess: refreshAudit,
-    onError: (err) => setActionError(err instanceof ApiError ? err.detail : String(err)),
+    mutationFn: async () => {
+      await enterReview();
+      await api.post(
+        `/projects/${projectUuid}/audit/segments/${item.satz_uuid}/ocr-attention-decision`,
+        {
+          action: "mark_unresolved",
+          filter_matched: group.reasons.map((reason) => reason.filter_matched).join(","),
+          reason: "Marked unresolved from Audit attention detail.",
+        },
+      );
+    },
+    onSuccess: async () => {
+      setActionError(null);
+      setActionMessage("Finding remains active and the page is back in OCR review.");
+      await refreshAudit();
+    },
+    onError: (err) => {
+      setActionMessage(null);
+      setActionError(err instanceof ApiError ? err.detail : String(err));
+    },
   });
   const acceptAlternative = useMutation({
     mutationFn: async (text: string) => {
@@ -638,26 +816,105 @@ function SegmentDetailPanel({
         note: "Accepted OCR engine alternative from Audit attention detail.",
       });
     },
-    onSuccess: refreshAudit,
-    onError: (err) => setActionError(err instanceof ApiError ? err.detail : String(err)),
+    onSuccess: async () => {
+      setActionError(null);
+      setActionMessage("Alternative OCR reading accepted and linked findings were resolved.");
+      await refreshAudit();
+    },
+    onError: (err) => {
+      setActionMessage(null);
+      setActionError(err instanceof ApiError ? err.detail : String(err));
+    },
+  });
+  const ignoreFinding = useMutation({
+    mutationFn: async () => {
+      await api.post(
+        `/projects/${projectUuid}/audit/segments/${item.satz_uuid}/ocr-attention-decision`,
+        {
+          action: "ignore",
+          filter_matched: group.reasons.map((reason) => reason.filter_matched).join(","),
+          reason: "Ignored from Audit attention detail.",
+        },
+      );
+    },
+    onSuccess: async () => {
+      setActionError(null);
+      setActionMessage("Finding ignored and moved to the Ignored / deleted filter.");
+      await refreshAudit();
+    },
+    onError: (err) => {
+      setActionMessage(null);
+      setActionError(err instanceof ApiError ? err.detail : String(err));
+    },
+  });
+  const deleteFinding = useMutation({
+    mutationFn: async () => {
+      await api.post(
+        `/projects/${projectUuid}/audit/segments/${item.satz_uuid}/ocr-attention-decision`,
+        {
+          action: "delete",
+          filter_matched: group.reasons.map((reason) => reason.filter_matched).join(","),
+          reason: "Deleted/hidden from Audit attention detail.",
+        },
+      );
+    },
+    onSuccess: async () => {
+      setActionError(null);
+      setActionMessage("Finding hidden and moved to the Ignored / deleted filter.");
+      await refreshAudit();
+    },
+    onError: (err) => {
+      setActionMessage(null);
+      setActionError(err instanceof ApiError ? err.detail : String(err));
+    },
+  });
+  const explainDifference = useMutation({
+    mutationFn: async () => {
+      if (!geminiReading?.text || !openaiReading?.text) {
+        throw new Error("Both Gemini and OpenAI OCR readings must be available before differences can be explained.");
+      }
+      return api.post<OcrDifferenceExplanation>(
+        `/projects/${projectUuid}/audit/segments/${item.satz_uuid}/ocr-difference-explanation`,
+        {
+          gemini_text: geminiReading.text,
+          openai_text: openaiReading.text,
+        },
+      );
+    },
+    onSuccess: (resp) => {
+      setExplanationError(null);
+      setExplanation(resp);
+    },
+    onError: (err) => {
+      setExplanation(null);
+      setExplanationError(err instanceof ApiError ? err.detail : String(err));
+    },
   });
   const busy =
     acceptCurrent.isPending ||
     approveWarning.isPending ||
     markUnresolved.isPending ||
-    acceptAlternative.isPending;
-  const isOcrAttention = item.filter_matched === "low_confidence" || item.filter_matched === "divergent_ocr";
+    acceptAlternative.isPending ||
+    ignoreFinding.isPending ||
+    deleteFinding.isPending ||
+    explainDifference.isPending;
+  const isOcrAttention = group.reasons.some(
+    (reason) =>
+      reason.filter_matched === "low_confidence" ||
+      reason.filter_matched === "divergent_ocr",
+  );
   const isTranslationAttention = item.filter_matched.startsWith("cross_check_");
 
   return (
     <div className="space-y-3 text-sm">
       {isOcrAttention && (
         <>
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(24rem,1.05fr)]">
             <div className="rounded-lg border bg-[#fffaf0] p-3">
               <div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
-                OCR review actions
+                OCR review actions · {group.reasons.length} active signal{group.reasons.length === 1 ? "" : "s"}
               </div>
+              <ReasonSummary reasons={group.reasons} />
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" onClick={() => acceptCurrent.mutate()} disabled={busy}>
                   Accept current OCR
@@ -679,7 +936,25 @@ function SegmentDetailPanel({
                   Mark unresolved
                 </Button>
                 <Button size="sm" variant="outline" asChild>
-                  <Link to={`/projects/${projectUuid}/pages/${item.page_uuid}`}>Open page</Link>
+                  <Link to={`/projects/${projectUuid}/pages/${item.page_uuid}?from=attention&focus=${attentionFocusKey(group)}`}>Open page</Link>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => ignoreFinding.mutate()}
+                  disabled={busy}
+                  title="Hide this OCR attention item from the active list while keeping it in the explicit ignored/deleted history filter."
+                >
+                  Ignore finding
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => deleteFinding.mutate()}
+                  disabled={busy}
+                  title="Hide this OCR attention item as deleted/ignored history. No OCR text or evidence is physically deleted."
+                >
+                  Mark deleted
                 </Button>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">
@@ -689,6 +964,11 @@ function SegmentDetailPanel({
               {actionError && (
                 <p className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-900">
                   {actionError}
+                </p>
+              )}
+              {actionMessage && (
+                <p className="mt-2 rounded border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-900">
+                  {actionMessage}
                 </p>
               )}
             </div>
@@ -714,14 +994,45 @@ function SegmentDetailPanel({
 
       {isOcrAttention && detail.ocr_engines.length > 0 && (
         <div>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
-            OCR engines ({detail.ocr_engine_agreement ?? "no agreement label"}
-            {detail.ocr_confidence_score !== null
-              ? ` · confidence ${detail.ocr_confidence_score.toFixed(3)}`
-              : ""}
-            {detail.ocr_confidence_class
-              ? ` · ${detail.ocr_confidence_class}`
-              : ""})
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              OCR engines ({detail.ocr_engine_agreement ?? "no agreement label"}
+              {detail.ocr_confidence_score !== null
+                ? ` · confidence ${detail.ocr_confidence_score.toFixed(3)}`
+                : ""}
+              {detail.ocr_confidence_class
+                ? ` · ${detail.ocr_confidence_class}`
+                : ""})
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto"
+              onClick={() => {
+                if (explanation) {
+                  setExplanation(null);
+                  setExplanationError(null);
+                } else if (!geminiReading?.text || !openaiReading?.text) {
+                  const missing = [
+                    !geminiReading?.text ? "Gemini" : null,
+                    !openaiReading?.text ? "OpenAI" : null,
+                  ].filter(Boolean);
+                  setExplanationError(
+                    `${missing.join(" and ")} OCR text is missing from this audit record. Re-run OCR with both engines to explain differences.`,
+                  );
+                } else {
+                  explainDifference.mutate();
+                }
+              }}
+              disabled={explainDifference.isPending}
+              title={
+                geminiReading?.text && openaiReading?.text
+                  ? "Compare the displayed OpenAI OCR against the displayed Gemini OCR."
+                  : "Click to see which OCR engine text is missing."
+              }
+            >
+              {explanation ? "Hide differences" : "Explain differences"}
+            </Button>
           </div>
           {!detail.ocr_engines_have_text && (
             <p className="text-xs italic text-amber-700 mb-1">
@@ -734,9 +1045,9 @@ function SegmentDetailPanel({
               <EnginePanel
                 key={`${e.engine}-${i}`}
                 reading={e}
-                currentText={detail.current_text}
+                currentText={geminiReading?.text ?? detail.current_text}
                 onAccept={
-                  e.text
+                  !e.is_current && e.text
                     ? () => acceptAlternative.mutate(e.text ?? "")
                     : undefined
                 }
@@ -744,6 +1055,12 @@ function SegmentDetailPanel({
               />
             ))}
           </div>
+          {explanationError && (
+            <p className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-900">
+              {explanationError}
+            </p>
+          )}
+          {explanation && <OcrDifferenceExplanationPanel explanation={explanation} />}
         </div>
       )}
 
@@ -834,7 +1151,7 @@ function PageScanReference({
   }, [pageUuid, token]);
 
   return (
-    <div className="rounded-lg border bg-card p-2">
+    <div className="rounded-lg border bg-card p-3">
       <div className="mb-2 flex items-center justify-between gap-2 text-xs">
         <span className="uppercase tracking-wide text-muted-foreground">
           Original page #{pageIndex}
@@ -859,7 +1176,7 @@ function PageScanReference({
           <img
             src={blobUrl}
             alt={`Original page ${pageIndex}`}
-            className="max-h-64 w-full rounded border object-contain"
+            className="max-h-[42rem] min-h-[24rem] w-full rounded border bg-[#f8f4ea] object-contain"
           />
         </a>
       )}
@@ -973,11 +1290,17 @@ function EnginePanel({
   reading,
   currentText,
   onAccept,
+  onExplain,
+  explainLabel = "Explain differences",
+  explainDisabled,
   disabled,
 }: {
   reading: EngineReading;
   currentText: string | null;
   onAccept?: () => void;
+  onExplain?: () => void;
+  explainLabel?: string;
+  explainDisabled?: boolean;
   disabled?: boolean;
 }): JSX.Element {
   const titleParts: string[] = [reading.engine];
@@ -1004,20 +1327,112 @@ function EnginePanel({
         <>
           <HighlightedArabicText text={reading.text} currentText={currentText} />
           <div className="border-t px-2 py-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={onAccept}
-              disabled={disabled}
-            >
-              {reading.is_current ? "Current OCR" : "Accept this reading"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onAccept}
+                disabled={disabled}
+              >
+                {reading.is_current ? "Current OCR" : "Accept this reading"}
+              </Button>
+              {onExplain && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onExplain}
+                  disabled={explainDisabled ?? disabled}
+                >
+                  {explainLabel}
+                </Button>
+              )}
+            </div>
           </div>
         </>
       ) : (
         <div className="p-2 text-xs italic text-muted-foreground">
           (text not persisted; legacy OCR-PO)
         </div>
+      )}
+    </div>
+  );
+}
+
+function OcrDifferenceExplanationPanel({
+  explanation,
+}: {
+  explanation: OcrDifferenceExplanation;
+}): JSX.Element {
+  return (
+    <div className="mt-2 rounded-lg border bg-[#f8fbf7] p-3 text-xs">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="font-medium text-foreground">OpenAI OCR comparison</span>
+        <span className="text-muted-foreground">
+          {explanation.model} · confidence {explanation.confidence.toFixed(2)}
+        </span>
+      </div>
+      <p className="text-muted-foreground">{explanation.summary}</p>
+      {explanation.line_differences.length > 0 && (
+        <div className="mt-2">
+          <div className="mb-1 font-medium">Line-by-line differences</div>
+          <ul className="space-y-2">
+            {explanation.line_differences.map((line) => (
+              <li key={line.line_number} className="rounded border bg-background p-2">
+                <div className="mb-1 font-medium">Line {line.line_number}</div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <div>
+                    <div className="mb-1 text-muted-foreground">Gemini</div>
+                    <div dir="rtl" lang="ar" className="rounded bg-muted/40 p-2 leading-relaxed">
+                      {line.gemini_line || "(empty)"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-muted-foreground">OpenAI</div>
+                    <div dir="rtl" lang="ar" className="rounded bg-muted/40 p-2 leading-relaxed">
+                      {line.openai_line || "(empty)"}
+                    </div>
+                  </div>
+                </div>
+                {line.differences.length > 0 && (
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-muted-foreground">
+                    {line.differences.map((diff, index) => (
+                      <li key={`${line.line_number}-${index}`}>{diff}</li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {explanation.recommended_reading.trim() && (
+        <div className="mt-2">
+          <div className="mb-1 font-medium">Recommended reading</div>
+          <div dir="rtl" lang="ar" className="rounded border bg-background p-2 leading-relaxed">
+            {explanation.recommended_reading}
+          </div>
+        </div>
+      )}
+      {explanation.character_differences.length > 0 && (
+        <div className="mt-2">
+          <div className="mb-1 font-medium">Character differences</div>
+          <ul className="space-y-1">
+            {explanation.character_differences.map((diff, index) => (
+              <li key={`${diff.gemini}-${diff.openai}-${index}`} className="rounded border bg-background p-2">
+                <span dir="rtl" lang="ar" className="font-medium">
+                  {diff.gemini || "(none)"} -&gt; {diff.openai || "(none)"}
+                </span>
+                <span className="text-muted-foreground"> · {diff.severity}</span>
+                <div className="mt-1 text-muted-foreground">{diff.explanation}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {explanation.normalization_notes.length > 0 && (
+        <p className="mt-2 text-muted-foreground">
+          Notes: {explanation.normalization_notes.join("; ")}
+        </p>
       )}
     </div>
   );
@@ -1030,20 +1445,207 @@ function HighlightedArabicText({
   text: string;
   currentText: string | null;
 }): JSX.Element {
-  const changed = Boolean(currentText && currentText.trim() !== text.trim());
+  const parts = diffInlineText(text, currentText);
   return (
     <div
       dir="rtl"
       lang="ar"
       className="max-h-48 overflow-auto whitespace-pre-wrap p-2 leading-relaxed"
     >
-      {changed ? (
-        <mark className="rounded bg-amber-100 px-1 text-inherit">{text}</mark>
-      ) : (
-        text
+      {parts.map((part, index) =>
+        part.changed ? (
+          <mark key={index} className="rounded bg-amber-100 px-0.5 text-inherit">
+            {part.text}
+          </mark>
+        ) : (
+          <span key={index}>{part.text}</span>
+        ),
       )}
     </div>
   );
+}
+
+function ReasonSummary({ reasons }: { reasons: AttentionItem[] }): JSX.Element {
+  return (
+    <ul className="mb-3 space-y-1 text-xs text-muted-foreground">
+      {reasons.map((reason) => (
+        <li key={reason.filter_matched}>
+          <span className="font-medium text-foreground">
+            {FILTER_LABEL[reason.filter_matched] ?? reason.filter_matched}:
+          </span>{" "}
+          {reasonDefinition(reason.filter_matched)}
+          {describeDetail(reason) ? ` (${describeDetail(reason)})` : ""}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ResolvedOcrDecisionList({
+  items,
+  projectUuid,
+  filter,
+  onFilterChange,
+}: {
+  items: OcrReviewDecisionItem[];
+  projectUuid: string;
+  filter: ResolvedDecisionFilter;
+  onFilterChange: (filter: ResolvedDecisionFilter) => void;
+}): JSX.Element {
+  const filteredItems = items.filter((item) => decisionMatchesFilter(item, filter));
+
+  if (items.length === 0) {
+    return (
+      <section className="border rounded-lg p-4 bg-card text-sm text-muted-foreground italic">
+        No OCR review decisions have been recorded yet.
+      </section>
+    );
+  }
+
+  return (
+    <section className="border rounded-lg bg-card">
+      <div className="border-b px-4 py-3">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          Resolved OCR decisions ({filteredItems.length} of {items.length})
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {[
+            ["all", "All"],
+            ["accepted", "Accepted / resolved"],
+            ["warning", "Accepted with warning"],
+            ["superseded", "Superseded by retry"],
+            ["ignored_deleted", "Ignored / deleted"],
+          ].map(([value, label]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={filter === value ? "default" : "outline"}
+              onClick={() => onFilterChange(value as ResolvedDecisionFilter)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      </div>
+      {filteredItems.length === 0 && (
+        <div className="p-4 text-sm italic text-muted-foreground">
+          No OCR decisions match this filter.
+        </div>
+      )}
+      {filteredItems.map((item) => {
+        const acceptedCount = Number(item.content.accepted_nonblocking_error_count ?? 0);
+        const codes = Array.isArray(item.content.accepted_nonblocking_error_codes)
+          ? item.content.accepted_nonblocking_error_codes.map(String)
+          : [];
+        return (
+          <div key={item.decision_event_uuid} className="px-4 py-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`rounded px-2 py-0.5 text-xs font-medium ${decisionTone(item.decision_type)}`}>
+                {decisionLabel(item.decision_type)}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                page #{item.page_index}
+                {item.satz_uuid ? " · segment-level" : " · page-level"} ·{" "}
+                {new Date(item.created_at).toLocaleString()}
+              </span>
+              <span className="flex-1" />
+              <Link
+                to={`/projects/${projectUuid}/pages/${item.page_uuid}`}
+                className="text-xs underline text-muted-foreground hover:text-foreground"
+              >
+                Open page
+              </Link>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {item.decision_type === "ocr_attention_superseded_by_rerun"
+                ? "OCR retry acceptance superseded this active attention item."
+                : acceptedCount > 0
+                ? `${acceptedCount} non-blocking OCR finding${acceptedCount === 1 ? "" : "s"} accepted/resolved.`
+                : "Page-level OCR review decision recorded."}
+              {codes.length > 0 ? ` Codes: ${codes.join(", ")}.` : ""}
+            </p>
+            {item.decision_type === "ocr_attention_superseded_by_rerun" && (
+              <RetryDecisionDetails content={item.content} />
+            )}
+            {typeof item.content.note === "string" && item.content.note.trim() && (
+              <p className="mt-1 rounded bg-muted/50 px-2 py-1 text-xs">
+                {item.content.note}
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function groupAttentionItems(items: AttentionItem[]): AttentionGroup[] {
+  const groups = new Map<string, AttentionGroup>();
+  for (const item of items) {
+    const isOcr =
+      item.filter_matched === "low_confidence" || item.filter_matched === "divergent_ocr";
+    const key = isOcr
+      ? `ocr:${item.page_uuid}:${item.block_uuid}:${item.satz_uuid}`
+      : `${item.filter_matched}:${item.page_uuid}:${item.block_uuid}:${item.satz_uuid}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.reasons.push(item);
+    } else {
+      groups.set(key, { key, primary: item, reasons: [item] });
+    }
+  }
+  return [...groups.values()];
+}
+
+function attentionFocusKey(group: AttentionGroup): string {
+  const item = group.primary;
+  return encodeURIComponent(`${item.page_uuid}:${item.block_uuid}:${item.satz_uuid}`);
+}
+
+function isGeminiEngine(engine: string): boolean {
+  return engine.toLowerCase().includes("gemini");
+}
+
+function isOpenAiEngine(engine: string): boolean {
+  return engine.toLowerCase().includes("openai") || engine.toLowerCase().includes("gpt");
+}
+
+function diffInlineText(
+  text: string,
+  currentText: string | null,
+): { text: string; changed: boolean }[] {
+  if (!currentText || currentText.trim() === text.trim()) {
+    return [{ text, changed: false }];
+  }
+
+  const candidate = [...text];
+  const current = [...currentText];
+  let prefix = 0;
+  while (
+    prefix < candidate.length &&
+    prefix < current.length &&
+    candidate[prefix] === current[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < candidate.length - prefix &&
+    suffix < current.length - prefix &&
+    candidate[candidate.length - 1 - suffix] === current[current.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const parts: { text: string; changed: boolean }[] = [];
+  const before = candidate.slice(0, prefix).join("");
+  const changed = candidate.slice(prefix, candidate.length - suffix).join("");
+  const after = suffix > 0 ? candidate.slice(candidate.length - suffix).join("") : "";
+  if (before) parts.push({ text: before, changed: false });
+  if (changed) parts.push({ text: changed, changed: true });
+  if (after) parts.push({ text: after, changed: false });
+  return parts.length > 0 ? parts : [{ text, changed: true }];
 }
 
 function describeDetail(item: AttentionItem): string | null {
@@ -1064,6 +1666,106 @@ function describeDetail(item: AttentionItem): string | null {
     default:
       return null;
   }
+}
+
+function reasonDefinition(filter: string): string {
+  switch (filter) {
+    case "low_confidence":
+      return "The OCR result was scored below the accepted confidence band.";
+    case "divergent_ocr":
+      return "OCR engines produced different readings for the same segment.";
+    case "cross_check_substantive":
+      return "The translation cross-check found a substantive mismatch.";
+    case "cross_check_ambiguity":
+      return "The translation cross-check found an ambiguity requiring review.";
+    case "cross_check_failed":
+      return "The translation cross-check could not complete successfully.";
+    case "open_audit_finding":
+      return "A translation audit rule still has an unresolved finding.";
+    case "open_conflict":
+      return "A rule or terminology conflict still needs a decision.";
+    default:
+      return "This item needs review before it can leave active attention.";
+  }
+}
+
+function decisionLabel(decisionType: string): string {
+  switch (decisionType) {
+    case "ocr_review_approve_go":
+      return "Accepted / resolved";
+    case "ocr_review_approve_with_warning":
+      return "Accepted with warning";
+    case "ocr_review_no_go_to_go":
+      return "No-go resolved";
+    case "ocr_attention_ignored":
+      return "Ignored";
+    case "ocr_attention_deleted":
+      return "Deleted / hidden";
+    case "ocr_attention_mark_unresolved":
+      return "Marked unresolved";
+    case "ocr_attention_superseded_by_rerun":
+      return "Superseded by OCR retry";
+    default:
+      return decisionType;
+  }
+}
+
+function decisionTone(decisionType: string): string {
+  if (decisionType === "ocr_review_approve_with_warning") {
+    return "bg-amber-100 text-amber-900";
+  }
+  if (decisionType === "ocr_attention_superseded_by_rerun") {
+    return "bg-blue-100 text-blue-900";
+  }
+  if (decisionType === "ocr_attention_ignored" || decisionType === "ocr_attention_deleted") {
+    return "bg-slate-100 text-slate-800";
+  }
+  return "bg-emerald-100 text-emerald-900";
+}
+
+function decisionMatchesFilter(
+  item: OcrReviewDecisionItem,
+  filter: ResolvedDecisionFilter,
+): boolean {
+  if (filter === "all") return true;
+  if (filter === "accepted") {
+    return item.decision_type === "ocr_review_approve_go" ||
+      item.decision_type === "ocr_review_no_go_to_go";
+  }
+  if (filter === "warning") {
+    return item.decision_type === "ocr_review_approve_with_warning";
+  }
+  if (filter === "superseded") {
+    return item.decision_type === "ocr_attention_superseded_by_rerun";
+  }
+  return item.decision_type === "ocr_attention_ignored" ||
+    item.decision_type === "ocr_attention_deleted";
+}
+
+function RetryDecisionDetails({ content }: { content: Record<string, unknown> }): JSX.Element | null {
+  const details = content.details;
+  if (typeof details !== "object" || details === null || Array.isArray(details)) {
+    return null;
+  }
+  const retry = details as Record<string, unknown>;
+  const crop = retry.crop;
+  const cropText =
+    typeof crop === "object" && crop !== null && !Array.isArray(crop)
+      ? Object.entries(crop as Record<string, unknown>)
+          .map(([key, value]) =>
+            typeof value === "number" ? `${key} ${(value * 100).toFixed(1)}%` : null,
+          )
+          .filter(Boolean)
+          .join(", ")
+      : null;
+  return (
+    <p className="mt-1 rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
+      Retry: {String(retry.engine ?? "unknown engine")} at {String(retry.dpi ?? "?")} DPI
+      {retry.scope ? ` · ${String(retry.scope)}` : ""}
+      {cropText ? ` · crop ${cropText}` : ""}
+      {retry.candidate_uuid ? ` · candidate ${String(retry.candidate_uuid)}` : ""}
+    </p>
+  );
 }
 
 function chipTone(filter: string): string {

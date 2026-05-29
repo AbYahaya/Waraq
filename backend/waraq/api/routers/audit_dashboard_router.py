@@ -23,15 +23,25 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from waraq.api._ownership import owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.audit_dashboard import (
     AttentionFilter,
     list_attention_segments,
+    list_ocr_review_decisions,
     segment_audit_detail,
     summarize_project,
 )
+from waraq.decisions import create_decision_event
+from waraq.ocr.diff_explainer import (
+    OcrDifferenceExplainerError,
+    OcrDifferenceExplainerUnconfigured,
+    explain_ocr_difference_with_openai,
+)
+from waraq.schemas import Block, Page, Segment
+from waraq.schemas.enums import DecisionSource, ScopeType
 
 router = APIRouter(prefix="/projects", tags=["audit-dashboard"])
 
@@ -108,6 +118,48 @@ class AttentionItemResponse(BaseModel):
 
 class AttentionListResponse(BaseModel):
     items: list[AttentionItemResponse]
+
+
+class OcrReviewDecisionResponse(BaseModel):
+    decision_event_uuid: _uuid.UUID
+    page_uuid: _uuid.UUID
+    page_index: int
+    satz_uuid: _uuid.UUID | None = None
+    decision_type: str
+    content: dict[str, Any]
+    created_at: Any
+
+
+class OcrReviewDecisionListResponse(BaseModel):
+    items: list[OcrReviewDecisionResponse]
+
+
+class OcrAttentionDecisionRequest(BaseModel):
+    action: str
+    reason: str | None = None
+    filter_matched: str | None = None
+    details: dict[str, Any] | None = None
+
+
+class OcrAttentionDecisionResponse(BaseModel):
+    decision_event_uuid: _uuid.UUID
+    decision_type: str
+
+
+class OcrDifferenceExplanationRequest(BaseModel):
+    gemini_text: str
+    openai_text: str
+
+
+class OcrDifferenceExplanationResponse(BaseModel):
+    provider: str
+    model: str
+    summary: str
+    recommended_reading: str
+    confidence: float
+    normalization_notes: list[str]
+    line_differences: list[dict[str, Any]]
+    character_differences: list[dict[str, str]]
 
 
 # ---------------------------------------------------------------------
@@ -260,6 +312,145 @@ async def get_attention_list(
             for it in items
         ]
     )
+
+
+@router.get(
+    "/{project_uuid}/audit/ocr-review-decisions",
+    response_model=OcrReviewDecisionListResponse,
+)
+async def get_ocr_review_decisions(
+    project_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> OcrReviewDecisionListResponse:
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
+    items = await list_ocr_review_decisions(
+        session=session,
+        project_uuid=project.project_uuid,
+        limit=limit,
+    )
+    return OcrReviewDecisionListResponse(
+        items=[
+            OcrReviewDecisionResponse(
+                decision_event_uuid=it.decision_event_uuid,
+                page_uuid=it.page_uuid,
+                page_index=it.page_index,
+                satz_uuid=it.satz_uuid,
+                decision_type=it.decision_type,
+                content=it.content,
+                created_at=it.created_at,
+            )
+            for it in items
+        ]
+    )
+
+
+@router.post(
+    "/{project_uuid}/audit/segments/{satz_uuid}/ocr-attention-decision",
+    response_model=OcrAttentionDecisionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def decide_ocr_attention_item(
+    project_uuid: _uuid.UUID,
+    satz_uuid: _uuid.UUID,
+    req: OcrAttentionDecisionRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> OcrAttentionDecisionResponse:
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
+    result = await session.execute(
+        select(Segment, Block, Page)
+        .join(Block, Block.block_uuid == Segment.block_uuid)
+        .join(Page, Page.page_uuid == Block.page_uuid)
+        .where(Segment.satz_uuid == satz_uuid)
+        .where(Page.project_uuid == project.project_uuid)
+        .where(Page.active.is_(True))
+        .where(Block.active.is_(True))
+        .where(Segment.active.is_(True))
+    )
+    row = result.first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Segment not found in this project",
+        )
+
+    action_to_decision = {
+        "ignore": "ocr_attention_ignored",
+        "delete": "ocr_attention_deleted",
+        "mark_unresolved": "ocr_attention_mark_unresolved",
+        "supersede": "ocr_attention_superseded_by_rerun",
+    }
+    decision_type = action_to_decision.get(req.action)
+    if decision_type is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="action must be one of: ignore, delete, mark_unresolved, supersede",
+        )
+
+    _segment, _block, page = row
+    de = await create_decision_event(
+        session=session,
+        scope_type=ScopeType.SEGMENT,
+        scope_uuid=satz_uuid,
+        decision_type=decision_type,
+        decision_source=DecisionSource.OCR_REVIEW,
+        actor_uuid=current.account_uuid,
+        content={
+            "reason": req.reason,
+            "filter_matched": req.filter_matched,
+            "page_uuid": str(page.page_uuid),
+            "page_index": page.page_index,
+            "details": req.details or {},
+        },
+    )
+    return OcrAttentionDecisionResponse(
+        decision_event_uuid=de.decision_event_uuid,
+        decision_type=de.decision_type,
+    )
+
+
+@router.post(
+    "/{project_uuid}/audit/segments/{satz_uuid}/ocr-difference-explanation",
+    response_model=OcrDifferenceExplanationResponse,
+)
+async def explain_ocr_difference(
+    project_uuid: _uuid.UUID,
+    satz_uuid: _uuid.UUID,
+    req: OcrDifferenceExplanationRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> OcrDifferenceExplanationResponse:
+    project = await owned_project_or_404(session, project_uuid, current.account_uuid)
+    result = await session.execute(
+        select(Segment, Block, Page)
+        .join(Block, Block.block_uuid == Segment.block_uuid)
+        .join(Page, Page.page_uuid == Block.page_uuid)
+        .where(Segment.satz_uuid == satz_uuid)
+        .where(Page.project_uuid == project.project_uuid)
+        .where(Page.active.is_(True))
+        .where(Block.active.is_(True))
+        .where(Segment.active.is_(True))
+    )
+    if result.first() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Segment not found in this project",
+        )
+    try:
+        explanation = await explain_ocr_difference_with_openai(
+            gemini_text=req.gemini_text,
+            openai_text=req.openai_text,
+        )
+    except OcrDifferenceExplainerUnconfigured as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except OcrDifferenceExplainerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"OpenAI OCR difference explanation failed: {exc}",
+        )
+    return OcrDifferenceExplanationResponse(**explanation)
 
 
 @router.get(

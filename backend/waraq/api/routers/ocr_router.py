@@ -245,15 +245,12 @@ async def auto_run_page(
     separately via `/pages/{u}/ocr-review/...`.
     """
     page = await owned_page_or_404(session, page_uuid, current.account_uuid)
-    # §H-5 / data-integrity gate: only `ausstehend` pages may be OCR'd.
-    # The project-wide auto-run already enforces this; the per-page
-    # endpoint enforces it here so a second click while the first run
-    # is still in flight (or after it has produced rows) cannot
-    # silently create a duplicate Block. Re-running OCR on an already
-    # OCR'd page is a deliberate user action that goes through an
-    # explicit reset path (not yet wired — this is the canonical
-    # refusal until that lands).
-    if page.ocr_status != OcrStatus.AUSSTEHEND:
+    # §H-5 / data-integrity gate: only `ausstehend` pages are included
+    # in project-wide OCR. The per-page endpoint allows re-running OCR
+    # while a page is `in_review` so reviewers can recover from a bad
+    # run without leaving review mode. Other statuses still refuse until
+    # a dedicated reset flow is wired.
+    if page.ocr_status not in (OcrStatus.AUSSTEHEND, OcrStatus.IN_REVIEW):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={

@@ -182,6 +182,19 @@ class AttentionItem:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OcrReviewDecisionItem:
+    """Resolved/accepted OCR-review decision shown in the Audit history tab."""
+
+    decision_event_uuid: _uuid.UUID
+    page_uuid: _uuid.UUID
+    page_index: int
+    satz_uuid: _uuid.UUID | None
+    decision_type: str
+    content: dict[str, Any]
+    created_at: Any
+
+
 # ---------------------------------------------------------------------
 # summarize_project
 # ---------------------------------------------------------------------
@@ -264,6 +277,10 @@ async def list_attention_segments(
         session=session,
         page_uuids=set(pages_by_uuid.keys()),
     )
+    segment_suppressions = await _latest_ocr_attention_suppressions(
+        session=session,
+        segment_uuids=segment_uuids,
+    )
 
     active_filters = set(filters or list(AttentionFilter))
 
@@ -276,6 +293,8 @@ async def list_attention_segments(
         for satz_uuid, po in ocr_pos.items():
             page_uuid = _page_uuid_for_segment(seg_by_uuid, blocks_by_uuid, satz_uuid)
             if _ocr_attention_accepted(po, page_acceptances.get(page_uuid)):
+                continue
+            if _ocr_attention_accepted(po, segment_suppressions.get(satz_uuid)):
                 continue
             payload: dict[str, Any] = po.payload or {}
             if AttentionFilter.LOW_CONFIDENCE in active_filters:
@@ -382,6 +401,97 @@ async def list_attention_segments(
     return items[:limit]
 
 
+async def list_ocr_review_decisions(
+    *,
+    session: AsyncSession,
+    project_uuid: _uuid.UUID,
+    limit: int = 200,
+) -> list[OcrReviewDecisionItem]:
+    """Return page-level OCR review decisions for the resolved/history tab.
+
+    This is a read path over the canonical Decision Event table. It does not
+    create a second finding system; it lets Audit show where accepted or
+    resolved OCR findings moved after page approval.
+    """
+    page_result = await session.execute(
+        select(DecisionEvent, Page)
+        .join(
+            Page,
+            (Page.page_uuid == DecisionEvent.scope_uuid)
+            & (DecisionEvent.scope_type == ScopeType.PAGE.value),
+        )
+        .where(Page.project_uuid == project_uuid)
+        .where(Page.active.is_(True))
+        .where(DecisionEvent.decision_source == DecisionSource.OCR_REVIEW.value)
+        .where(
+            DecisionEvent.decision_type.in_(
+                (
+                    "ocr_review_approve_go",
+                    "ocr_review_approve_with_warning",
+                    "ocr_review_no_go_to_go",
+                )
+            )
+        )
+        .order_by(DecisionEvent.created_at.desc())
+        .limit(limit)
+    )
+    page_items = [
+        OcrReviewDecisionItem(
+            decision_event_uuid=decision.decision_event_uuid,
+            page_uuid=page.page_uuid,
+            page_index=page.page_index,
+            satz_uuid=None,
+            decision_type=decision.decision_type,
+            content=decision.content or {},
+            created_at=decision.created_at,
+        )
+        for decision, page in page_result.all()
+    ]
+
+    segment_result = await session.execute(
+        select(DecisionEvent, Segment, Block, Page)
+        .join(
+            Segment,
+            (Segment.satz_uuid == DecisionEvent.scope_uuid)
+            & (DecisionEvent.scope_type == ScopeType.SEGMENT.value),
+        )
+        .join(Block, Block.block_uuid == Segment.block_uuid)
+        .join(Page, Page.page_uuid == Block.page_uuid)
+        .where(Page.project_uuid == project_uuid)
+        .where(Page.active.is_(True))
+        .where(Block.active.is_(True))
+        .where(Segment.active.is_(True))
+        .where(DecisionEvent.decision_source == DecisionSource.OCR_REVIEW.value)
+        .where(
+            DecisionEvent.decision_type.in_(
+                (
+                    "ocr_attention_ignored",
+                    "ocr_attention_deleted",
+                    "ocr_attention_mark_unresolved",
+                    "ocr_attention_superseded_by_rerun",
+                )
+            )
+        )
+        .order_by(DecisionEvent.created_at.desc())
+        .limit(limit)
+    )
+    segment_items = [
+        OcrReviewDecisionItem(
+            decision_event_uuid=decision.decision_event_uuid,
+            page_uuid=page.page_uuid,
+            page_index=page.page_index,
+            satz_uuid=segment.satz_uuid,
+            decision_type=decision.decision_type,
+            content=decision.content or {},
+            created_at=decision.created_at,
+        )
+        for decision, segment, _block, page in segment_result.all()
+    ]
+    items = [*page_items, *segment_items]
+    items.sort(key=lambda item: item.created_at, reverse=True)
+    return items[:limit]
+
+
 # ---------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------
@@ -472,6 +582,43 @@ async def _latest_ocr_review_acceptances(
                     "ocr_review_approve_go",
                     "ocr_review_approve_with_warning",
                     "ocr_review_no_go_to_go",
+                )
+            )
+        )
+        .order_by(DecisionEvent.created_at.desc())
+    )
+    latest: dict[_uuid.UUID, DecisionEvent] = {}
+    for decision in result.scalars():
+        if decision.scope_uuid in latest:
+            continue
+        latest[decision.scope_uuid] = decision
+    return latest
+
+
+async def _latest_ocr_attention_suppressions(
+    *,
+    session: AsyncSession,
+    segment_uuids: set[_uuid.UUID],
+) -> dict[_uuid.UUID, DecisionEvent]:
+    """Latest segment-level OCR attention suppression per segment.
+
+    Ignored/deleted OCR attention is hidden from Active attention only when
+    the decision is newer than the OCR-PO. A later OCR run naturally reopens
+    the item because the new PO is newer than the suppression decision.
+    """
+    if not segment_uuids:
+        return {}
+    result = await session.execute(
+        select(DecisionEvent)
+        .where(DecisionEvent.scope_type == ScopeType.SEGMENT.value)
+        .where(DecisionEvent.scope_uuid.in_(segment_uuids))
+        .where(DecisionEvent.decision_source == DecisionSource.OCR_REVIEW.value)
+        .where(
+            DecisionEvent.decision_type.in_(
+                (
+                    "ocr_attention_ignored",
+                    "ocr_attention_deleted",
+                    "ocr_attention_superseded_by_rerun",
                 )
             )
         )

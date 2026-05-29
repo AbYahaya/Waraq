@@ -114,6 +114,27 @@ export function DpiCompareView({
       await api.put(`/segments/${candidate.segment_uuid}/text`, {
         after_text: candidateDraft,
       });
+      if (projectUuid !== undefined) {
+        await api.post(
+          `/projects/${projectUuid}/audit/segments/${candidate.segment_uuid}/ocr-attention-decision`,
+          {
+            action: "supersede",
+            filter_matched: "ocr_retry",
+            reason: "OCR retry candidate accepted.",
+            details: {
+              candidate_uuid: candidate.candidate_uuid,
+              page_uuid: candidate.page_uuid,
+              segment_uuid: candidate.segment_uuid,
+              scope: candidate.scope,
+              engine: candidate.engine,
+              dpi: candidate.dpi,
+              crop: candidate.crop,
+              changed: candidate.changed,
+              text_chars: candidate.text_chars,
+            },
+          },
+        );
+      }
       await queryClient.invalidateQueries({ queryKey: qk.pageSegments(pageUuid) });
       await queryClient.invalidateQueries({ queryKey: qk.page(pageUuid) });
       if (projectUuid !== undefined) {

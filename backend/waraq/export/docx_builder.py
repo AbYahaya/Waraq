@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -105,6 +106,66 @@ def _set_paragraph_rtl(paragraph: Any) -> None:
         p_pr.append(text_direction)
     text_direction.set(qn("w:val"), "rlTb")
 
+    rtl = p_pr.find(qn("w:rtl"))
+    if rtl is None:
+        rtl = OxmlElement("w:rtl")
+        p_pr.append(rtl)
+    rtl.set(qn("w:val"), "1")
+
+
+def _set_document_rtl(document: Any) -> None:
+    settings = document.settings
+    element = settings.element
+    rtl = element.find(qn("w:rtl"))
+    if rtl is None:
+        rtl = OxmlElement("w:rtl")
+        element.append(rtl)
+    rtl.set(qn("w:val"), "1")
+
+    lang = element.find(qn("w:themeFontLang"))
+    if lang is None:
+        lang = OxmlElement("w:themeFontLang")
+        element.append(lang)
+    lang.set(qn("w:val"), "ar-SA")
+    lang.set(qn("w:bidi"), "ar-SA")
+
+
+def _ensure_arabic_style(document: Any, base_style_name: str) -> str:
+    name = f"Waraq Arabic {base_style_name}"
+    try:
+        document.styles[name]
+        return name
+    except KeyError:
+        pass
+
+    style = document.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+    try:
+        style.base_style = document.styles[base_style_name]
+    except KeyError:
+        style.base_style = document.styles["Normal"]
+    style.paragraph_format.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+
+    p_pr = style._element.get_or_add_pPr()
+    bidi = p_pr.find(qn("w:bidi"))
+    if bidi is None:
+        bidi = OxmlElement("w:bidi")
+        p_pr.append(bidi)
+    bidi.set(qn("w:val"), "1")
+
+    text_direction = p_pr.find(qn("w:textDirection"))
+    if text_direction is None:
+        text_direction = OxmlElement("w:textDirection")
+        p_pr.append(text_direction)
+    text_direction.set(qn("w:val"), "rlTb")
+
+    rtl = p_pr.find(qn("w:rtl"))
+    if rtl is None:
+        rtl = OxmlElement("w:rtl")
+        p_pr.append(rtl)
+    rtl.set(qn("w:val"), "1")
+
+    return name
+
 
 def _set_run_rtl(
     run: Any, *, font_name: str = ARABIC_FONT, font_size_pt: int | None = None
@@ -136,6 +197,7 @@ def _set_run_rtl(
     if lang is None:
         lang = OxmlElement("w:lang")
         r_pr.append(lang)
+    lang.set(qn("w:val"), "ar-SA")
     lang.set(qn("w:bidi"), "ar-SA")
 
     run.font.name = font_name
@@ -506,6 +568,7 @@ async def build_translation_docx(
     rows = (await session.execute(stmt)).all()
 
     document = Document()
+    _set_document_rtl(document)
     style_profile = _effective_style_profile(config)
 
     # Page setup per Formatvorlagen-Baseline v1.1 §7.2.
@@ -542,9 +605,10 @@ async def build_translation_docx(
         source, target = text_state.source_text, text_state.target_text
 
         style = _style_for_block(block.block_type, config)
+        arabic_style = _ensure_arabic_style(document, style)
 
         if source.strip() and _include_source_for_block(block.block_type, config):
-            ar_paragraph = document.add_paragraph(source, style=style)
+            ar_paragraph = document.add_paragraph(source, style=arabic_style)
             _apply_arabic_layout(ar_paragraph, config, block_type=block.block_type)
 
         if target.strip() or not source.strip():
@@ -625,6 +689,7 @@ async def build_translation_docx_from_snapshot(
     ).all()
 
     document = Document()
+    _set_document_rtl(document)
     style_profile = _effective_style_profile(config)
     section = document.sections[0]
     section.page_height = Cm(29.7)
@@ -666,8 +731,9 @@ async def build_translation_docx_from_snapshot(
         if embedded_source and not source:
             source = embedded_source
         style = _style_for_block(block.block_type, config)
+        arabic_style = _ensure_arabic_style(document, style)
         if source.strip() and _include_source_for_block(block.block_type, config):
-            ar_paragraph = document.add_paragraph(source, style=style)
+            ar_paragraph = document.add_paragraph(source, style=arabic_style)
             _apply_arabic_layout(ar_paragraph, config, block_type=block.block_type)
         if target.strip() or not source.strip():
             _add_translation_paragraphs(

@@ -7,7 +7,7 @@
  * to work.
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ClickableArabic } from "@/components/MorphologyPopover";
@@ -122,14 +122,17 @@ function OcrPageReadView({
   entries,
   styleProfile,
 }: OcrPageViewProps): JSX.Element {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const containerWidth = useElementWidth(containerRef);
+  const pageMetrics = ocrPageMetrics(styleProfile, containerWidth);
   const staleCount = entries.filter((entry) => entry.stale).length;
-  const textStyle = arabicTextStyle(styleProfile);
+  const textStyle = arabicTextStyle(styleProfile, pageMetrics.scale);
 
   return (
-    <div className="h-full overflow-y-scroll bg-[#f4efe6] px-3 py-4">
+    <div ref={containerRef} className="h-full overflow-y-auto overflow-x-hidden bg-[#f4efe6] px-3 py-4">
       <article
-        className="mx-auto min-h-full rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-6 py-8 shadow-sm sm:px-10 sm:py-12"
-        style={{ maxWidth: `${styleProfile.page_max_width_rem}rem` }}
+        className="mx-auto min-h-full rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] shadow-sm"
+        style={ocrPageFrameStyle(pageMetrics)}
       >
         <OcrPageHeader
           pageIndex={pageIndex}
@@ -148,8 +151,8 @@ function OcrPageReadView({
               entry={entry}
               pageIndex={pageIndex}
             >
-              <span style={arabicBlockTextStyle(styleProfile, entry.segment.block_type)}>
-                <ClickableArabic text={entry.source} />
+              <span style={arabicBlockTextStyle(styleProfile, entry.segment.block_type, pageMetrics.scale)}>
+                <OcrTextBlocks text={entry.source} />
               </span>
             </OcrPageAnchor>
           ))}
@@ -172,6 +175,9 @@ function OcrPageEditor({
   entries,
   styleProfile,
 }: OcrPageEditorProps): JSX.Element {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const containerWidth = useElementWidth(containerRef);
+  const pageMetrics = ocrPageMetrics(styleProfile, containerWidth);
   const qc = useQueryClient();
   const pageText = useMemo(() => entries.map((entry) => entry.source).join("\n\n"), [entries]);
   const staleCount = entries.filter((entry) => entry.stale).length;
@@ -212,13 +218,13 @@ function OcrPageEditor({
   });
 
   const isLegacyMultiSegment = entries.length > 1;
-  const textStyle = arabicTextStyle(styleProfile);
+  const textStyle = arabicTextStyle(styleProfile, pageMetrics.scale);
 
   return (
-    <div className="h-full overflow-y-scroll bg-[#f4efe6] px-3 py-4">
+    <div ref={containerRef} className="h-full overflow-y-auto overflow-x-hidden bg-[#f4efe6] px-3 py-4">
       <article
-        className="mx-auto flex min-h-full flex-col rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-4 py-5 shadow-sm sm:px-8 sm:py-8"
-        style={{ maxWidth: `${styleProfile.page_max_width_rem}rem` }}
+        className="mx-auto flex min-h-full flex-col rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] shadow-sm"
+        style={ocrPageFrameStyle(pageMetrics)}
       >
         <OcrPageHeader
           pageIndex={pageIndex}
@@ -373,6 +379,120 @@ function splitDraftForSegments(draft: string, expectedCount: number): string[] {
   return chunks;
 }
 
+interface OcrAlignedTextBlock {
+  text: string;
+  alignment: CSSProperties["textAlign"];
+}
+
+function OcrTextBlocks({ text }: { text: string }): JSX.Element {
+  const blocks = splitOcrAlignedText(text);
+
+  if (blocks.length === 1 && !blocks[0]?.alignment) {
+    return <ClickableArabic text={text} />;
+  }
+
+  return (
+    <>
+      {blocks.map((block, index) => (
+        <p
+          key={`${index}-${block.text.slice(0, 18)}`}
+          className="whitespace-pre-line"
+          style={{ textAlign: block.alignment }}
+        >
+          <ClickableArabic text={block.text} />
+        </p>
+      ))}
+    </>
+  );
+}
+
+function splitOcrAlignedText(text: string): OcrAlignedTextBlock[] {
+  const markerPattern = /\[\[(left|center|right|justify)\]\]([\s\S]*?)\[\[\/\1\]\]/g;
+  const blocks: OcrAlignedTextBlock[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = markerPattern.exec(text)) !== null) {
+    if (match.index > last) {
+      blocks.push({ text: text.slice(last, match.index), alignment: undefined });
+    }
+    blocks.push({
+      text: match[2] ?? "",
+      alignment: markerAlignmentToCss(match[1]),
+    });
+    last = markerPattern.lastIndex;
+  }
+
+  if (last < text.length) {
+    blocks.push({ text: text.slice(last), alignment: undefined });
+  }
+
+  return blocks.filter((block) => block.text.length > 0);
+}
+
+function markerAlignmentToCss(marker: string | undefined): CSSProperties["textAlign"] {
+  if (marker === "left" || marker === "center" || marker === "right" || marker === "justify") {
+    return marker;
+  }
+  return undefined;
+}
+
+interface OcrPageMetrics {
+  scale: number;
+  maxWidthPx: number;
+  paddingX: number;
+  paddingY: number;
+}
+
+function useElementWidth(ref: RefObject<HTMLElement | null>): number | null {
+  const [width, setWidth] = useState<number | null>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    const update = (): void => {
+      setWidth(element.getBoundingClientRect().width);
+    };
+
+    update();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", update);
+      return () => window.removeEventListener("resize", update);
+    }
+
+    const observer = new ResizeObserver(([entry]) => {
+      setWidth(entry.contentRect.width);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return width;
+}
+
+function ocrPageMetrics(profile: ProjectStyleProfile, containerWidth: number | null): OcrPageMetrics {
+  const maxWidthPx = profile.page_max_width_rem * 16;
+  const availableWidth = Math.max((containerWidth ?? maxWidthPx) - 24, 1);
+  const scale = Math.min(1, availableWidth / maxWidthPx);
+
+  return {
+    scale,
+    maxWidthPx,
+    paddingX: Math.max(12, 40 * scale),
+    paddingY: Math.max(16, 48 * scale),
+  };
+}
+
+function ocrPageFrameStyle(metrics: OcrPageMetrics): CSSProperties {
+  return {
+    maxWidth: `${metrics.maxWidthPx}px`,
+    padding: `${metrics.paddingY}px ${metrics.paddingX}px`,
+    width: "100%",
+  };
+}
+
 const DEFAULT_STYLE_PROFILE: ProjectStyleProfile = {
   translation_font_family: "Iowan Old Style",
   translation_font_size_px: 17,
@@ -407,10 +527,10 @@ const DEFAULT_STYLE_PROFILE: ProjectStyleProfile = {
   docx_header_font_size_pt: 9,
 };
 
-function arabicTextStyle(profile: ProjectStyleProfile): CSSProperties {
+function arabicTextStyle(profile: ProjectStyleProfile, scale = 1): CSSProperties {
   return {
     fontFamily: `"${profile.arabic_font_family}", "Noto Naskh Arabic", serif`,
-    fontSize: `${profile.arabic_font_size_px}px`,
+    fontSize: `${profile.arabic_font_size_px * scale}px`,
     lineHeight: profile.arabic_line_height,
   };
 }
@@ -418,30 +538,31 @@ function arabicTextStyle(profile: ProjectStyleProfile): CSSProperties {
 function arabicBlockTextStyle(
   profile: ProjectStyleProfile,
   blockType?: string | null,
+  scale = 1,
 ): CSSProperties {
   const kind = styleKindForBlock(blockType);
   if (kind === "heading") {
     return {
-      fontSize: `${Math.max(profile.arabic_font_size_px, profile.heading_font_size_px)}px`,
+      fontSize: `${Math.max(profile.arabic_font_size_px, profile.heading_font_size_px) * scale}px`,
       fontWeight: 700,
       lineHeight: profile.heading_line_height,
     };
   }
   if (kind === "quote") {
     return {
-      fontSize: `${profile.quote_font_size_px}px`,
+      fontSize: `${profile.quote_font_size_px * scale}px`,
       lineHeight: profile.quote_line_height,
     };
   }
   if (kind === "footnote") {
     return {
-      fontSize: `${profile.footnote_font_size_px}px`,
+      fontSize: `${profile.footnote_font_size_px * scale}px`,
       lineHeight: profile.footnote_line_height,
     };
   }
   if (kind === "protected") {
     return {
-      fontSize: `${profile.protected_font_size_px}px`,
+      fontSize: `${profile.protected_font_size_px * scale}px`,
       lineHeight: profile.protected_line_height,
     };
   }

@@ -148,9 +148,8 @@ class TestAutoRunPage:
     ) -> None:
         """Per the OCR duplicate-Block fix (migration 0023): the
         per-page auto-run endpoint refuses 409 when the page is past
-        the `ausstehend` state. Re-running OCR on an already-OCR'd
-        page must go through an explicit reset path, not silently
-        produce a duplicate Block."""
+        review. Re-running OCR during review is allowed so reviewers
+        can recover from a bad run without leaving review mode."""
         from sqlalchemy.ext.asyncio import (
             AsyncSession,
             async_sessionmaker,
@@ -178,7 +177,7 @@ class TestAutoRunPage:
                         page_uuid=page_uuid,
                         project_uuid=_uuid.UUID(project_uuid),
                         page_index=1,
-                        ocr_status=OcrStatus.IN_REVIEW,
+                        ocr_status=OcrStatus.GO,
                     )
                 )
         finally:

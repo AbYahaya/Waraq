@@ -93,6 +93,15 @@ export function ProjectWorkspacePage(): JSX.Element {
     setBookPreviewOpen(false);
   }, [searchParams]);
 
+  const attentionReturnUrl = useMemo(() => {
+    if (searchParams.get("from") !== "attention") return null;
+    const focus = searchParams.get("focus");
+    const params = new URLSearchParams();
+    params.set("tab", "active");
+    if (focus) params.set("focus", focus);
+    return `/projects/${projectUuid}/audit?${params.toString()}`;
+  }, [projectUuid, searchParams]);
+
   const panes = useMemo<PaneConfig[]>(() => {
     if (pageUuid === undefined || pageQ.data === undefined) return [];
     const idx = pageQ.data.page_index;
@@ -250,6 +259,7 @@ export function ProjectWorkspacePage(): JSX.Element {
               projectUuid={projectUuid}
               viewMode={editMode ? "edit" : "compare"}
               onViewModeChange={(m) => setEditMode(m === "edit")}
+              attentionReturnUrl={attentionReturnUrl}
             />
             <div className="flex flex-wrap items-center gap-3 border-b border-border/80 bg-muted/20 px-4 py-3">
               <ComparisonModeSelector
@@ -301,7 +311,11 @@ export function ProjectWorkspacePage(): JSX.Element {
                 {bookPreviewOpen ? "Close book preview" : "Book preview"}
               </Button>
               <DifficultyBadge scope="page" uuid={pageUuid} projectUuid={projectUuid} />
-              <PageTranslationPanel projectUuid={projectUuid} pageUuid={pageUuid} />
+              <PageTranslationPanel
+                projectUuid={projectUuid}
+                pageUuid={pageUuid}
+                pageOcrStatus={pageQ.data?.ocr_status}
+              />
               <span className="text-[10px] text-muted-foreground ml-auto">
                 {editMode ? "Edit mode" : "Read mode"} ·{" "}
                 {comparisonModeLabel(comparisonMode, singlePaneSelection)}

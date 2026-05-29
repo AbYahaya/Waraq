@@ -13,10 +13,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import {
-  OCR_PAGE_AUTO_RUN_MUTATION_KEY,
-  useProjectOcrAutoRunActive,
-} from "@/components/OcrAutoRunPanel";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -55,6 +51,7 @@ export interface OcrReviewBarProps {
   projectUuid: string;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
+  attentionReturnUrl?: string | null;
 }
 
 export function OcrReviewBar({
@@ -62,6 +59,7 @@ export function OcrReviewBar({
   projectUuid,
   viewMode,
   onViewModeChange,
+  attentionReturnUrl,
 }: OcrReviewBarProps): JSX.Element {
   const qc = useQueryClient();
   const [resolveOpen, setResolveOpen] = useState(false);
@@ -88,44 +86,6 @@ export function OcrReviewBar({
     onSuccess,
     onError: (err) => setError(err instanceof ApiError ? err.detail : "Failed"),
   });
-
-  // Shared mutationKey lets `OcrAutoRunPanel` detect that a per-page
-  // Run-OCR is in flight (via `useIsMutating`) and disable its bulk
-  // Start button while this is running.
-  const ocrAutoRunMutation = useMutation({
-    mutationKey: [...OCR_PAGE_AUTO_RUN_MUTATION_KEY],
-    mutationFn: () =>
-      api.post<{
-        page_uuid: string;
-        text: string;
-        text_chars: number;
-      }>(`/ocr/pages/${page.page_uuid}/auto-run`),
-    onSuccess: async () => {
-      // Status doesn't change here — page stays `ausstehend` per the
-      // canonical separation between OCR run and review state machine.
-      // Refresh both the segment list and the per-segment history. The
-      // OCR pane resolves source text from history first, so only
-      // invalidating `/pages/{u}/segments` can leave the UI showing the
-      // previous OCR/source revision even after a successful run.
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: qk.pageSegments(page.page_uuid) }),
-        qc.invalidateQueries({
-          predicate: (query) =>
-            Array.isArray(query.queryKey) &&
-            query.queryKey[0] === "segments" &&
-            query.queryKey[2] === "history",
-        }),
-      ]);
-    },
-    onError: (err) => setError(err instanceof ApiError ? err.detail : "OCR failed"),
-  });
-
-  // Is the project-wide bulk auto-run active? If so, refuse the
-  // per-page Run-OCR click — the runner row-locks each Page row, so
-  // a concurrent per-page click would block at the DB level and just
-  // hang the UI. Surfacing the conflict in the button state is
-  // clearer than letting the request stall.
-  const bulkAutoRunActive = useProjectOcrAutoRunActive(projectUuid);
 
   const approveAsGoMutation = useMutation({
     mutationFn: () =>
@@ -199,34 +159,17 @@ export function OcrReviewBar({
 
       <div className="flex flex-wrap gap-2 mt-2">
         {page.ocr_status === "ausstehend" && (
-          <>
-            <Button
-              size="sm"
-              onClick={() => {
-                setError(null);
-                ocrAutoRunMutation.mutate();
-              }}
-              disabled={ocrAutoRunMutation.isPending || bulkAutoRunActive}
-              title={
-                bulkAutoRunActive
-                  ? "Project-wide Auto-OCR is running. Wait or cancel it before running OCR on a single page."
-                  : undefined
-              }
-            >
-              {ocrAutoRunMutation.isPending ? "Running OCR…" : "Run OCR"}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setError(null);
-                enterMutation.mutate();
-              }}
-              disabled={enterMutation.isPending}
-            >
-              {enterMutation.isPending ? "Entering…" : "Enter review"}
-            </Button>
-          </>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setError(null);
+              enterMutation.mutate();
+            }}
+            disabled={enterMutation.isPending}
+          >
+            {enterMutation.isPending ? "Entering…" : "Enter review"}
+          </Button>
         )}
         {page.ocr_status === "in_review" && (
           <Button
@@ -259,6 +202,11 @@ export function OcrReviewBar({
             onClick={() => setResolveOpen(true)}
           >
             Resolve no-go → go
+          </Button>
+        )}
+        {attentionReturnUrl && (
+          <Button size="sm" variant="outline" asChild>
+            <a href={attentionReturnUrl}>Back to attention item</a>
           </Button>
         )}
       </div>
