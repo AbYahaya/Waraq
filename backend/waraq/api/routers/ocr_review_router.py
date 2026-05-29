@@ -24,6 +24,7 @@ from waraq.api.schemas import (
     OcrPageStatusResponse,
     OcrResolveNoGoRequest,
 )
+from waraq.audit_dashboard import set_page_ocr_attention_issues_state
 from waraq.notifications.events import (
     notify_project_event,
     project_audit_url,
@@ -111,12 +112,19 @@ async def approve_go(
 ) -> OcrPageStatusResponse:
     page = await owned_page_or_404(session, page_uuid, current.account_uuid)
     try:
-        await approve_page_as_go(
+        decision = await approve_page_as_go(
             session=session,
             page=page,
             weights=make_default_severity_weights(),
             actor_uuid=current.account_uuid,
             note=req.note,
+        )
+        await set_page_ocr_attention_issues_state(
+            session=session,
+            project_uuid=page.project_uuid,
+            page_uuid=page.page_uuid,
+            state="accepted",
+            decision_event_uuid=decision.decision_event_uuid,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -149,12 +157,19 @@ async def approve_warning(
 ) -> OcrPageStatusResponse:
     page = await owned_page_or_404(session, page_uuid, current.account_uuid)
     try:
-        await approve_page_with_warning(
+        decision = await approve_page_with_warning(
             session=session,
             page=page,
             weights=make_default_severity_weights(),
             actor_uuid=current.account_uuid,
             note=req.note,
+        )
+        await set_page_ocr_attention_issues_state(
+            session=session,
+            project_uuid=page.project_uuid,
+            page_uuid=page.page_uuid,
+            state="accepted_with_warning",
+            decision_event_uuid=decision.decision_event_uuid,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

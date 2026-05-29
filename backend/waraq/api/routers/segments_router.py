@@ -29,6 +29,7 @@ from waraq.api.schemas import (
     SegmentEditRequest,
     SegmentResponse,
     SegmentTranslationEditRequest,
+    SegmentTranslationStyleRequest,
 )
 from waraq.canon_rules import apply_all as apply_canon_rules
 from waraq.invariant.enums import OperationMode
@@ -36,6 +37,10 @@ from waraq.invariant.exceptions import H1H2Violation
 from waraq.revision.service import create_revision
 from waraq.schemas import Block, Segment
 from waraq.schemas.enums import ChangeSource
+from waraq.translation_styles import (
+    read_translation_style_map,
+    write_translation_style_key,
+)
 
 router = APIRouter(tags=["segments"])
 
@@ -53,9 +58,18 @@ async def list_segments_in_page(
         .where(Block.page_uuid == page_uuid, Segment.active.is_(True))
         .order_by(Block.block_index.asc(), Segment.satz_index.asc())
     )
+    rows = result.all()
+    style_map = await read_translation_style_map(
+        session=session, segment_uuids=[segment.satz_uuid for segment, _block_type in rows]
+    )
     return [
-        SegmentResponse.model_validate(segment).model_copy(update={"block_type": block_type})
-        for segment, block_type in result.all()
+        SegmentResponse.model_validate(segment).model_copy(
+            update={
+                "block_type": block_type,
+                "translation_style_key": style_map.get(segment.satz_uuid),
+            }
+        )
+        for segment, block_type in rows
     ]
 
 
@@ -69,7 +83,15 @@ async def get_segment(
     block_type = await session.scalar(
         select(Block.block_type).where(Block.block_uuid == segment.block_uuid)
     )
-    return SegmentResponse.model_validate(segment).model_copy(update={"block_type": block_type})
+    style_map = await read_translation_style_map(
+        session=session, segment_uuids=[segment.satz_uuid]
+    )
+    return SegmentResponse.model_validate(segment).model_copy(
+        update={
+            "block_type": block_type,
+            "translation_style_key": style_map.get(segment.satz_uuid),
+        }
+    )
 
 
 @router.put("/segments/{satz_uuid}/text", response_model=SegmentResponse)
@@ -101,7 +123,15 @@ async def edit_segment_text(
     block_type = await session.scalar(
         select(Block.block_type).where(Block.block_uuid == segment.block_uuid)
     )
-    return SegmentResponse.model_validate(segment).model_copy(update={"block_type": block_type})
+    style_map = await read_translation_style_map(
+        session=session, segment_uuids=[segment.satz_uuid]
+    )
+    return SegmentResponse.model_validate(segment).model_copy(
+        update={
+            "block_type": block_type,
+            "translation_style_key": style_map.get(segment.satz_uuid),
+        }
+    )
 
 
 @router.put("/segments/{satz_uuid}/translation-text", response_model=SegmentResponse)
@@ -135,4 +165,41 @@ async def edit_segment_translation_text(
     block_type = await session.scalar(
         select(Block.block_type).where(Block.block_uuid == segment.block_uuid)
     )
-    return SegmentResponse.model_validate(segment).model_copy(update={"block_type": block_type})
+    style_map = await read_translation_style_map(
+        session=session, segment_uuids=[segment.satz_uuid]
+    )
+    return SegmentResponse.model_validate(segment).model_copy(
+        update={
+            "block_type": block_type,
+            "translation_style_key": style_map.get(segment.satz_uuid),
+        }
+    )
+
+
+@router.put("/segments/{satz_uuid}/translation-style", response_model=SegmentResponse)
+async def edit_segment_translation_style(
+    satz_uuid: _uuid.UUID,
+    req: SegmentTranslationStyleRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> SegmentResponse:
+    """Persist a segment's canonical translation paragraph style key."""
+    segment = await owned_segment_or_404(session, satz_uuid, current.account_uuid)
+    await write_translation_style_key(
+        session=session,
+        segment_uuid=satz_uuid,
+        internal_style_key=req.internal_style_key,
+        actor_uuid=current.account_uuid,
+    )
+    block_type = await session.scalar(
+        select(Block.block_type).where(Block.block_uuid == segment.block_uuid)
+    )
+    style_map = await read_translation_style_map(
+        session=session, segment_uuids=[segment.satz_uuid]
+    )
+    return SegmentResponse.model_validate(segment).model_copy(
+        update={
+            "block_type": block_type,
+            "translation_style_key": style_map.get(segment.satz_uuid),
+        }
+    )

@@ -39,14 +39,24 @@ Important visual assets:
    - Verified with `npm run typecheck`; run `npm run build` after any additional edits.
 
 2. Translation editor / Word-like style system
-   - Major redesign required.
-   - Add Paragraph Style dropdown with canonical Waraq styles.
-   - Separate paragraph styles from character styles.
-   - Persist `internal_style_key` and editable `display_label`.
-   - Add global style editing, structured Quran/Hadith/Quote blocks, font-library handling, and export/preflight integration.
+   - Implemented.
+   - TipTap / ProseMirror is now the approved editor foundation and installed in the frontend package.
+   - Editable translation mode now uses a TipTap editor instead of the old textarea, while preserving segment anchors.
+   - Added Word-like translation toolbar with paragraph style, font, size, bold, italic, underline, strike, alignment, line-height, footnote/Quran/Hadith/quote style actions, save style, and save page controls.
+   - Added canonical first-pass style definitions in `Waraq/frontend/src/lib/translation-styles.ts`.
+   - Added per-style `translation_style_templates` in the project style profile. Each style carries display label, font, size, line height, spacing, DOCX size, alignment, first-line indent, left indent, left-rule flag, italic, and bold.
+   - Added selected style-template editor; changes apply globally to all paragraphs using that style after saving.
+   - Segment paragraph style keys persist as segment-scoped Decision Events with `decision_type=translation_paragraph_style_update`, `decision_source=style_management`, and `content.internal_style_key`.
+   - Added `PUT /segments/{satz_uuid}/translation-style`.
+   - Segment API responses now include `translation_style_key`.
+   - DOCX export now reads saved style keys and per-style templates, mapping them to DOCX paragraph styles and applying saved font/size/spacing/alignment/indent/bold/italic values.
+   - Added `GET /projects/{project_uuid}/style-profile/fonts` for server font-library visibility.
+   - Toolbar uses server-available fonts and surfaces missing critical fonts from guard-near preflight.
+   - Quran/Hadith/Quote buttons apply three-part style sequences to the current and following anchored paragraphs. They do not create brand-new segments because the current text model requires segment anchors for persistence/history.
+   - Local font check found `Noto Sans Arabic` available; likely missing/needs install: `KFGQPC Uthmanic Script HAFS`, `Traditional Naskh`, and `Calibri`.
 
 3. OCR review, Attention List, and issue lifecycle
-   - Mostly implemented.
+   - Implemented.
    - Existing backend page approval already persists OCR review Decision Events, resolves non-blocking OCR error rows, and suppresses accepted OCR-PO attention rows when the approval is newer than the OCR result.
    - Added `GET /projects/{project_uuid}/audit/ocr-review-decisions` as a resolved/history read path over OCR review Decision Events.
    - Audit page now has `Active attention` and `Resolved OCR decisions` tabs.
@@ -57,17 +67,33 @@ Important visual assets:
    - OCR engine differences now keep deterministic inline highlighting and add an OpenAI-backed reviewer endpoint, `POST /projects/{project_uuid}/audit/segments/{satz_uuid}/ocr-difference-explanation`, for Arabic-specific explanations. Gemini is treated as the primary OCR reading, OpenAI as the comparison reading, and the returned explanation maps how OpenAI differs from Gemini line by line plus character-level notes. It requires `OPENAI_API_KEY`; optional model override is `OPENAI_OCR_DIFF_MODEL` and defaults to `gpt-4o`.
    - Added explicit `superseded by OCR retry` lifecycle handling. Accepting a DPI retry candidate saves OCR text, creates an OCR Review Decision Event with `decision_type=ocr_attention_superseded_by_rerun`, suppresses the active attention item when newer than the OCR-PO, and shows it only in the explicit resolved `Superseded by retry` filter.
    - DPI retry acceptance records trace metadata in the superseded decision: candidate UUID, page UUID, segment UUID, scope, engine, DPI, crop, changed flag, and character count.
-   - Still remaining: a true crop-level OCR issue mapping model. The current retry endpoint returns an unsaved candidate and maps only to a page/segment plus optional crop rectangle; it does not persist candidate rows or bind a crop to a specific attention issue/finding ID.
+   - Added persisted OCR lifecycle tables via migration `0028`: `ocr_attention_issues` and `ocr_retry_candidates`.
+   - Active OCR attention now has stable issue UUIDs, persisted state, source OCR-PO UUIDs, and group keys.
+   - Resolved OCR decisions expose accepted, warning, unresolved, superseded, historical, and ignored/deleted filters.
+   - OCR retry candidates are persisted and can link to an OCR issue UUID; accepted candidates link back to the superseded Decision Event.
+   - Current text replacement remains segment-level because the app's OCR text model is segment-level; crop boxes are persisted for audit/history.
 
 4. TOC / IVZ review screen
-   - Build from the mockup as a structural manuscript review station.
-   - Include scan panel, editable TOC OCR text, structured table, issue resolution, release gate, export settings, and heading-style customization.
-   - Re-detect must never silently overwrite manual decisions.
+   - Implemented in `Waraq/frontend/src/components/TocPanel.tsx`, `Waraq/backend/waraq/toc/service.py`, and `Waraq/backend/waraq/api/routers/toc_router.py`.
+   - Rebuilt from the mockup as a structural manuscript review station.
+   - Includes top workflow steps, original scan panel, editable TOC OCR text, structured TOC table, issue resolution, release gate, export settings, and heading-style customization.
+   - Original scan panel supports page render, zoom, previous/next line navigation, selected-line highlight, and re-detect messaging.
+   - OCR text panel persists save/cancel correction, split, merge-next, mark TOC, mark not TOC, and protected/manual correction indicators via TOC Decision Events.
+   - Structured table supports row selection, heading edit, persisted relink, persisted confirm-match, status display, translation preview, and add-entry from selected OCR source line.
+   - `GET /projects/{project_uuid}/toc` now returns replayed `ocr_lines`, line keys, manual/protected flags, entry status, target-page fields, and latest export settings.
+   - Added persisted endpoints for TOC line decisions, entry decisions, export settings, and re-detect requests. Re-detect preserves manual line/entry decisions by replaying them after detection.
+   - Heading style customization is limited to heading styles and persists heading-relevant fields through the project style-profile endpoint.
+   - Step 2 final translated review is scaffolded as a workflow phase for post-translation review.
+   - Selected-area TOC OCR routes to the existing DPI recovery flow for the selected source page.
+   - Re-detect messaging states that manual OCR corrections and confirmed decisions are preserved.
 
 5. DPI Compare / OCR retry recovery
-   - Current setup stage is acceptable.
-   - Add post-retry result review with original crop, current OCR, new candidate, highlighted differences, mapping target, issue reference, and accept/reject/edit actions.
-   - Acceptance must update OCR text and linked finding state.
+   - Implemented for the current page/segment lifecycle model.
+   - Current low/high DPI setup is preserved.
+   - Post-retry review now shows original crop/page preview, current OCR, new candidate, highlighted differences, mapping target, source attention context, acceptance effect, and explicit accept/keep/edit/discard actions.
+   - Audit attention rows now include `Open DPI retry`, opening the workspace DPI panel with source attention context.
+   - Acceptance updates OCR text, creates a `ocr_attention_superseded_by_rerun` Decision Event, suppresses the old active attention item when newer than the OCR-PO, and keeps the action in resolved OCR decision history.
+   - True issue/candidate persistence is now implemented through `ocr_attention_issues` and `ocr_retry_candidates`; crop text replacement remains segment-level.
 
 ## Recommended Implementation Order
 

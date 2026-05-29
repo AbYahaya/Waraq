@@ -25,17 +25,24 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from waraq.api._ownership import owned_page_or_404, owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.api.schemas import PageResponse
 from waraq.notifications.events import notify_project_event, page_dpi_url
-from waraq.schemas import Block, Page, Project, ProvenanceObject, Segment
+from waraq.schemas import Block, OcrRetryCandidate, Page, Project, ProvenanceObject, Segment
 from waraq.schemas.enums import POType, ScopeType
 from waraq.text_state import resolve_segment_source_text
 
 router = APIRouter(tags=["pages"])
+
+
+async def _table_exists(session: DbSession, table_name: str) -> bool:
+    connection = await session.connection()
+    return await connection.run_sync(
+        lambda sync_conn: inspect(sync_conn).has_table(table_name)
+    )
 
 
 def _dedupe_pages_by_index(pages: list[Page]) -> list[Page]:
@@ -157,6 +164,7 @@ class OcrRetryCandidateRequest(BaseModel):
     scope: Literal["region", "full_page"]
     crop: NormalizedCropBox | None = None
     engine: Literal["openai", "gemini"] = "openai"
+    issue_uuid: _uuid.UUID | None = None
 
     @model_validator(mode="after")
     def _region_requires_crop(self) -> OcrRetryCandidateRequest:
@@ -167,6 +175,7 @@ class OcrRetryCandidateRequest(BaseModel):
 
 class OcrRetryCandidateResponse(BaseModel):
     candidate_uuid: _uuid.UUID
+    issue_uuid: _uuid.UUID | None = None
     page_uuid: _uuid.UUID
     segment_uuid: _uuid.UUID | None
     scope: Literal["region", "full_page"]
@@ -370,6 +379,25 @@ async def create_ocr_retry_candidate(
     warning = None
     if segment is None:
         warning = "No active OCR segment exists yet, so this candidate cannot be accepted directly."
+    candidate_uuid = _uuid.uuid4()
+    crop_payload = req.crop.model_dump() if req.crop is not None else None
+    if await _table_exists(session, "ocr_retry_candidates"):
+        session.add(
+            OcrRetryCandidate(
+                candidate_uuid=candidate_uuid,
+                issue_uuid=req.issue_uuid,
+                project_uuid=page.project_uuid,
+                page_uuid=page_uuid,
+                segment_uuid=segment.satz_uuid if segment is not None else None,
+                scope=req.scope,
+                engine=req.engine,
+                dpi=req.dpi,
+                crop=crop_payload,
+                text=candidate_text,
+                current_text_snapshot=current_text,
+                status="candidate",
+            )
+        )
     project: Project | None = await session.get(Project, page.project_uuid)
     if project is not None:
         await notify_project_event(
@@ -388,7 +416,8 @@ async def create_ocr_retry_candidate(
         )
 
     return OcrRetryCandidateResponse(
-        candidate_uuid=_uuid.uuid4(),
+        candidate_uuid=candidate_uuid,
+        issue_uuid=req.issue_uuid,
         page_uuid=page_uuid,
         segment_uuid=segment.satz_uuid if segment is not None else None,
         scope=req.scope,

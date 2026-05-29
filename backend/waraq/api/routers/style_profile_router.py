@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid as _uuid
+import shutil
+import subprocess
 from typing import Any
 
 from fastapi import APIRouter
@@ -10,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 from waraq.api._ownership import owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
+from waraq.preflight.guard_near import CRITICAL_FONTS
 from waraq.style_profile import read_project_style_profile, write_project_style_profile
 
 router = APIRouter(prefix="/projects/{project_uuid}/style-profile", tags=["style-profile"])
@@ -92,6 +95,12 @@ class StyleProfileUpdateRequest(BaseModel):
         return self.model_dump(exclude_none=True)
 
 
+class FontLibraryResponse(BaseModel):
+    available_fonts: list[str]
+    critical_fonts: list[str]
+    missing_critical_fonts: list[str]
+
+
 @router.get("", response_model=StyleProfileResponse)
 async def get_style_profile(
     project_uuid: _uuid.UUID,
@@ -101,6 +110,27 @@ async def get_style_profile(
     await owned_project_or_404(session, project_uuid, current.account_uuid)
     profile = await read_project_style_profile(session=session, project_uuid=project_uuid)
     return StyleProfileResponse.model_validate(profile)
+
+
+@router.get("/fonts", response_model=FontLibraryResponse)
+async def get_style_font_library(
+    project_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> FontLibraryResponse:
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    fonts = _available_font_families()
+    fonts_lower = {font.lower() for font in fonts}
+    missing = [
+        font
+        for font in CRITICAL_FONTS
+        if not any(font.lower() in available for available in fonts_lower)
+    ]
+    return FontLibraryResponse(
+        available_fonts=fonts,
+        critical_fonts=list(CRITICAL_FONTS),
+        missing_critical_fonts=missing,
+    )
 
 
 @router.put("", response_model=StyleProfileResponse)
@@ -120,3 +150,23 @@ async def update_style_profile(
         actor_uuid=current.account_uuid,
     )
     return StyleProfileResponse.model_validate(saved)
+
+
+def _available_font_families() -> list[str]:
+    fc_list = shutil.which("fc-list")
+    if fc_list is None:
+        return []
+    proc = subprocess.run(
+        [fc_list, ":", "family"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    names: set[str] = set()
+    for line in proc.stdout.splitlines():
+        for family in line.split(","):
+            cleaned = family.strip()
+            if cleaned:
+                names.add(cleaned)
+    return sorted(names)

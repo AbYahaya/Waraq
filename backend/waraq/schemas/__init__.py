@@ -19,6 +19,7 @@ from waraq.schemas.identity_types import (
 from waraq.schemas.jobs import Checkpoint, Job
 from waraq.schemas.notifications import AccountPreferences, Notification
 from waraq.schemas.ocr_errors import OcrErrorInstance
+from waraq.schemas.ocr_lifecycle import OcrAttentionIssue, OcrRetryCandidate
 from waraq.schemas.preflight import PflichtfrageProfil
 from waraq.schemas.projects import Block, Page, Project, Segment
 from waraq.schemas.promotion import BestaetigteStilregel, Musterkandidat, TranslationObservation
@@ -48,6 +49,8 @@ __all__ = [
     "Musterkandidat",
     "Notification",
     "OcrErrorInstance",
+    "OcrAttentionIssue",
+    "OcrRetryCandidate",
     "Page",
     "PflichtfrageProfil",
     "Project",

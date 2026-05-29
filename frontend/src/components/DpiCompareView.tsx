@@ -6,7 +6,7 @@
  * accepts the candidate through the manual segment edit endpoint.
  */
 
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,7 @@ interface CropBox {
 
 interface OcrRetryCandidate {
   candidate_uuid: string;
+  issue_uuid: string | null;
   page_uuid: string;
   segment_uuid: string | null;
   scope: "region" | "full_page";
@@ -45,12 +46,20 @@ interface OcrRetryCandidate {
 export interface DpiCompareViewProps {
   pageUuid: string;
   projectUuid?: string;
+  sourceIssueLabel?: string | null;
+  sourceIssueRef?: string | null;
+  sourceIssueUuid?: string | null;
+  attentionReturnUrl?: string | null;
   className?: string;
 }
 
 export function DpiCompareView({
   pageUuid,
   projectUuid,
+  sourceIssueLabel,
+  sourceIssueRef,
+  sourceIssueUuid,
+  attentionReturnUrl,
   className,
 }: DpiCompareViewProps): JSX.Element {
   const queryClient = useQueryClient();
@@ -92,6 +101,7 @@ export function DpiCompareView({
           scope,
           crop: scope === "region" ? selection : null,
           engine,
+          issue_uuid: sourceIssueUuid ?? null,
         },
       );
       setCandidate(resp);
@@ -123,6 +133,7 @@ export function DpiCompareView({
             reason: "OCR retry candidate accepted.",
             details: {
               candidate_uuid: candidate.candidate_uuid,
+              issue_uuid: candidate.issue_uuid,
               page_uuid: candidate.page_uuid,
               segment_uuid: candidate.segment_uuid,
               scope: candidate.scope,
@@ -132,6 +143,7 @@ export function DpiCompareView({
               changed: candidate.changed,
               text_chars: candidate.text_chars,
             },
+            issue_uuid: candidate.issue_uuid,
           },
         );
       }
@@ -244,9 +256,19 @@ export function DpiCompareView({
           candidate={candidate}
           draft={candidateDraft}
           saving={saving}
+          sourceIssueLabel={sourceIssueLabel}
+          sourceIssueRef={sourceIssueRef}
+          sourceIssueUuid={sourceIssueUuid}
+          attentionReturnUrl={attentionReturnUrl}
           onDraftChange={setCandidateDraft}
           onAccept={() => void acceptCandidate()}
+          onKeepCurrent={() => {
+            setAcceptedMessage("Current OCR kept. Retry candidate was not applied.");
+            setCandidate(null);
+            setCandidateDraft("");
+          }}
           onDiscard={() => {
+            setAcceptedMessage(null);
             setCandidate(null);
             setCandidateDraft("");
           }}
@@ -456,8 +478,13 @@ interface CandidateReviewProps {
   candidate: OcrRetryCandidate;
   draft: string;
   saving: boolean;
+  sourceIssueLabel?: string | null;
+  sourceIssueRef?: string | null;
+  sourceIssueUuid?: string | null;
+  attentionReturnUrl?: string | null;
   onDraftChange: (next: string) => void;
   onAccept: () => void;
+  onKeepCurrent: () => void;
   onDiscard: () => void;
 }
 
@@ -465,20 +492,33 @@ function CandidateReview({
   candidate,
   draft,
   saving,
+  sourceIssueLabel,
+  sourceIssueRef,
+  sourceIssueUuid,
+  attentionReturnUrl,
   onDraftChange,
   onAccept,
+  onKeepCurrent,
   onDiscard,
 }: CandidateReviewProps): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const diffLines = useMemo(
     () => makeCandidateLineStates(candidate.current_text ?? "", draft),
     [candidate.current_text, draft],
   );
+  const acceptLabel =
+    candidate.scope === "region" ? "Accept new region OCR" : "Accept new full-page OCR";
+  const mappingTarget =
+    candidate.segment_uuid !== null
+      ? `Page ${shortUuid(candidate.page_uuid)} / segment ${shortUuid(candidate.segment_uuid)}`
+      : `Page ${shortUuid(candidate.page_uuid)} / no active segment`;
 
   return (
-    <div className="max-h-[44%] overflow-auto border-t bg-card">
+    <div className="max-h-[58%] overflow-auto border-t bg-card">
       <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
         <div>
-          <p className="text-sm font-semibold">OCR retry candidate</p>
+          <p className="text-sm font-semibold">OCR retry result review</p>
           <p className="text-xs text-muted-foreground">
             {candidate.scope === "region" ? "Selected region" : "Full page"} · {candidate.engine} ·{" "}
             {candidate.dpi} DPI · {candidate.text_chars} characters
@@ -494,13 +534,30 @@ function CandidateReview({
         >
           {candidate.changed ? "Different from current OCR" : "Same as current OCR"}
         </span>
+        <span className="rounded-full bg-muted px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+          {candidate.segment_uuid === null ? "No segment mapping" : "Mapped to segment"}
+        </span>
         <Button
           size="sm"
           className="ml-auto"
           onClick={onAccept}
           disabled={saving || candidate.segment_uuid === null}
         >
-          {saving ? "Saving..." : "Accept candidate"}
+          {saving ? "Saving..." : acceptLabel}
+        </Button>
+        <Button size="sm" variant="outline" onClick={onKeepCurrent} disabled={saving}>
+          Keep current OCR
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            setEditing(true);
+            window.setTimeout(() => textareaRef.current?.focus(), 0);
+          }}
+          disabled={saving}
+        >
+          Edit manually
         </Button>
         <Button size="sm" variant="outline" onClick={onDiscard} disabled={saving}>
           Discard
@@ -509,17 +566,51 @@ function CandidateReview({
       {candidate.warning !== null ? (
         <p className="border-b px-3 py-2 text-xs text-amber-800">{candidate.warning}</p>
       ) : null}
+      <div className="grid gap-1 border-b p-1 lg:grid-cols-[minmax(14rem,0.8fr)_minmax(0,1.2fr)]">
+        <RetryRegionPreview candidate={candidate} />
+        <div className="grid gap-1 md:grid-cols-2">
+          <ReviewFact label="Mapping target" value={mappingTarget} />
+          <ReviewFact
+            label="Linked issue"
+            value={sourceIssueLabel ?? "OCR retry from workspace"}
+            detail={sourceIssueUuid ?? sourceIssueRef ?? "No source OCR issue selected"}
+          />
+          <ReviewFact
+            label="Acceptance effect"
+            value={
+              candidate.segment_uuid === null
+                ? "Cannot apply until a segment exists"
+                : "Updates mapped segment OCR and records a superseded retry decision"
+            }
+          />
+          <ReviewFact
+            label="Confidence / reason"
+            value={candidate.changed ? "Candidate differs from current OCR" : "Candidate matches current OCR"}
+            detail="Retry engines do not currently return calibrated confidence for this review panel."
+          />
+          {attentionReturnUrl ? (
+            <a
+              href={attentionReturnUrl}
+              className="rounded border bg-background p-2 text-xs underline text-muted-foreground hover:text-foreground md:col-span-2"
+            >
+              Back to source attention item
+            </a>
+          ) : null}
+        </div>
+      </div>
       <div className="grid gap-1 p-1 lg:grid-cols-3">
         <TextPanel label="Current OCR" text={candidate.current_text ?? "(No current OCR text)"} />
         <div className="flex min-h-[16rem] flex-col border bg-background">
           <div className="border-b px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-            Candidate OCR (editable before accept)
+            Candidate OCR {editing ? "(editing)" : "(use Edit manually to change)"}
           </div>
           <textarea
+            ref={textareaRef}
             dir="rtl"
             lang="ar"
             value={draft}
             onChange={(event) => onDraftChange(event.target.value)}
+            readOnly={!editing}
             className="min-h-[16rem] flex-1 resize-y whitespace-pre-wrap border-0 bg-background p-3 text-right font-arabic text-base leading-loose outline-none"
           />
         </div>
@@ -557,6 +648,64 @@ function CandidateReview({
   );
 }
 
+function RetryRegionPreview({ candidate }: { candidate: OcrRetryCandidate }): JSX.Element {
+  const { blobUrl, error } = useRenderedPage(candidate.page_uuid, candidate.dpi);
+  return (
+    <div className="flex min-h-[12rem] flex-col border bg-background">
+      <div className="border-b px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+        Original {candidate.scope === "region" ? "crop" : "page"} region
+      </div>
+      <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-2">
+        {error !== null ? (
+          <p className="text-xs text-destructive">{error}</p>
+        ) : blobUrl === null ? (
+          <p className="text-xs text-muted-foreground">Rendering...</p>
+        ) : (
+          <div className="relative inline-block max-h-56">
+            <img
+              src={blobUrl}
+              alt="OCR retry source region"
+              className="max-h-56 max-w-full rounded border"
+            />
+            {candidate.crop !== null ? (
+              <div
+                className="pointer-events-none absolute border-2 border-emerald-500 bg-emerald-400/20 shadow-[0_0_0_9999px_rgba(15,23,42,0.18)]"
+                style={{
+                  left: `${candidate.crop.x * 100}%`,
+                  top: `${candidate.crop.y * 100}%`,
+                  width: `${candidate.crop.width * 100}%`,
+                  height: `${candidate.crop.height * 100}%`,
+                }}
+              />
+            ) : null}
+          </div>
+        )}
+      </div>
+      <div className="border-t px-2 py-1 text-[10px] text-muted-foreground">
+        {candidate.crop ? formatCrop(candidate.crop) : "Full page retry"}
+      </div>
+    </div>
+  );
+}
+
+function ReviewFact({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+}): JSX.Element {
+  return (
+    <div className="rounded border bg-background p-2 text-xs">
+      <div className="uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 font-medium">{value}</div>
+      {detail ? <div className="mt-1 text-muted-foreground">{detail}</div> : null}
+    </div>
+  );
+}
+
 function TextPanel({ label, text }: { label: string; text: string }): JSX.Element {
   return (
     <div className="flex min-h-[16rem] flex-col border bg-background">
@@ -572,6 +721,18 @@ function TextPanel({ label, text }: { label: string; text: string }): JSX.Elemen
       </pre>
     </div>
   );
+}
+
+function formatCrop(crop: CropBox): string {
+  return `Crop ${percent(crop.x)}, ${percent(crop.y)}, ${percent(crop.width)} x ${percent(crop.height)}`;
+}
+
+function percent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function shortUuid(value: string): string {
+  return value.slice(0, 8);
 }
 
 function makeCandidateLineStates(

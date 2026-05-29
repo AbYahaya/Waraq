@@ -141,10 +141,33 @@ export interface TocEntryDto {
   de_text: string;
   satz_uuid: string | null;
   block_uuid: string | null;
+  line_key: string;
+  target_page_index: number | null;
+  target_page_uuid: string | null;
+  status: "verified" | "missing" | "verify" | "mismatch" | "fallback";
+  is_toc_entry: boolean;
+  manual: boolean;
+  protected: boolean;
+  target_heading: string | null;
+}
+
+export interface TocOcrLineDto {
+  line_key: string;
+  page_index: number;
+  page_uuid: string;
+  line_no: number;
+  text: string;
+  is_toc_entry: boolean;
+  manual: boolean;
+  protected: boolean;
+  satz_uuid: string | null;
+  block_uuid: string | null;
+  source_kind: string;
 }
 
 export interface TocResponseDto {
   entries: TocEntryDto[];
+  ocr_lines: TocOcrLineDto[];
   fallback_kind: "none" | "page_by_page";
   detected_heading_count: number;
   page_count: number;

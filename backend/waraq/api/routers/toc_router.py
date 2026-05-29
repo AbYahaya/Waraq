@@ -17,7 +17,15 @@ from waraq.api.dependencies import CurrentAccount, DbSession
 from waraq.canon_rules import apply_all as apply_canon_rules
 from waraq.invariant.exceptions import H1H2Violation
 from waraq.notifications.events import notify_project_event, project_workspace_url
-from waraq.toc import confirm_toc_final_review, detect_toc, edit_toc_entry_heading
+from waraq.toc import (
+    confirm_toc_final_review,
+    detect_toc,
+    edit_toc_entry_heading,
+    record_toc_entry_decision,
+    record_toc_export_settings,
+    record_toc_line_decision,
+    record_toc_redetect_request,
+)
 
 router = APIRouter(tags=["toc"])
 
@@ -30,10 +38,33 @@ class TocEntryDto(BaseModel):
     de_text: str
     satz_uuid: _uuid.UUID | None
     block_uuid: _uuid.UUID | None
+    line_key: str
+    target_page_index: int | None
+    target_page_uuid: _uuid.UUID | None
+    status: str
+    is_toc_entry: bool
+    manual: bool
+    protected: bool
+    target_heading: str | None
+
+
+class TocOcrLineDto(BaseModel):
+    line_key: str
+    page_index: int
+    page_uuid: _uuid.UUID
+    line_no: int
+    text: str
+    is_toc_entry: bool
+    manual: bool
+    protected: bool
+    satz_uuid: _uuid.UUID | None
+    block_uuid: _uuid.UUID | None
+    source_kind: str
 
 
 class TocResponse(BaseModel):
     entries: list[TocEntryDto]
+    ocr_lines: list[TocOcrLineDto]
     fallback_kind: str
     detected_heading_count: int
     page_count: int
@@ -64,8 +95,32 @@ async def get_project_toc(
                 de_text=e.de_text,
                 satz_uuid=e.satz_uuid,
                 block_uuid=e.block_uuid,
+                line_key=e.line_key,
+                target_page_index=e.target_page_index,
+                target_page_uuid=e.target_page_uuid,
+                status=e.status,
+                is_toc_entry=e.is_toc_entry,
+                manual=e.manual,
+                protected=e.protected,
+                target_heading=e.target_heading,
             )
             for e in result.entries
+        ],
+        ocr_lines=[
+            TocOcrLineDto(
+                line_key=line.line_key,
+                page_index=line.page_index,
+                page_uuid=line.page_uuid,
+                line_no=line.line_no,
+                text=line.text,
+                is_toc_entry=line.is_toc_entry,
+                manual=line.manual,
+                protected=line.protected,
+                satz_uuid=line.satz_uuid,
+                block_uuid=line.block_uuid,
+                source_kind=line.source_kind,
+            )
+            for line in result.ocr_lines
         ],
         fallback_kind=result.fallback_kind.value,
         detected_heading_count=result.detected_heading_count,
@@ -118,6 +173,142 @@ async def confirm_project_toc(
         action_label="Open project",
     )
     return TocConfirmResponse(
+        decision_event_uuid=decision.decision_event_uuid,
+        workflow_state=result.workflow_state.value,
+    )
+
+
+class TocLineDecisionRequest(BaseModel):
+    action: str
+    line_key: str
+    text: str | None = None
+    first_text: str | None = None
+    second_text: str | None = None
+    new_line_key: str | None = None
+
+
+class TocDecisionResponse(BaseModel):
+    decision_event_uuid: _uuid.UUID
+    workflow_state: str
+
+
+@router.post(
+    "/projects/{project_uuid}/toc/line-decision",
+    response_model=TocDecisionResponse,
+)
+async def save_toc_line_decision(
+    project_uuid: _uuid.UUID,
+    req: TocLineDecisionRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> TocDecisionResponse:
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    if req.action not in {"correct", "split", "merge_next", "mark_toc", "mark_not_toc"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown TOC line action")
+    payload = req.model_dump(exclude={"action", "line_key"}, exclude_none=True)
+    decision = await record_toc_line_decision(
+        session=session,
+        project_uuid=project_uuid,
+        actor_uuid=current.account_uuid,
+        action=req.action,
+        line_key=req.line_key,
+        payload=payload,
+    )
+    result = await detect_toc(session=session, project_uuid=project_uuid)
+    return TocDecisionResponse(
+        decision_event_uuid=decision.decision_event_uuid,
+        workflow_state=result.workflow_state.value,
+    )
+
+
+class TocEntryDecisionRequest(BaseModel):
+    action: str
+    line_key: str
+    level: int | None = None
+    ar_text: str | None = None
+    de_text: str | None = None
+    target_page_index: int | None = None
+    target_page_uuid: _uuid.UUID | None = None
+    target_heading: str | None = None
+
+
+@router.post(
+    "/projects/{project_uuid}/toc/entry-decision",
+    response_model=TocDecisionResponse,
+)
+async def save_toc_entry_decision(
+    project_uuid: _uuid.UUID,
+    req: TocEntryDecisionRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> TocDecisionResponse:
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    if req.action not in {"add_from_source", "confirm_match", "relink_page", "set_level"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown TOC entry action")
+    payload = req.model_dump(exclude={"action"}, exclude_none=True)
+    decision = await record_toc_entry_decision(
+        session=session,
+        project_uuid=project_uuid,
+        actor_uuid=current.account_uuid,
+        action=req.action,
+        payload=payload,
+    )
+    result = await detect_toc(session=session, project_uuid=project_uuid)
+    return TocDecisionResponse(
+        decision_event_uuid=decision.decision_event_uuid,
+        workflow_state=result.workflow_state.value,
+    )
+
+
+class TocExportSettingsRequest(BaseModel):
+    toc_position: str
+    header_heading_level: int
+    chapter_break_heading_level: int
+    display_arabic_chapter_headings: bool
+    navigation_depth: int
+
+
+@router.put(
+    "/projects/{project_uuid}/toc/export-settings",
+    response_model=TocDecisionResponse,
+)
+async def save_toc_export_settings(
+    project_uuid: _uuid.UUID,
+    req: TocExportSettingsRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> TocDecisionResponse:
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    decision = await record_toc_export_settings(
+        session=session,
+        project_uuid=project_uuid,
+        actor_uuid=current.account_uuid,
+        settings=req.model_dump(),
+    )
+    result = await detect_toc(session=session, project_uuid=project_uuid)
+    return TocDecisionResponse(
+        decision_event_uuid=decision.decision_event_uuid,
+        workflow_state=result.workflow_state.value,
+    )
+
+
+@router.post(
+    "/projects/{project_uuid}/toc/redetect",
+    response_model=TocDecisionResponse,
+)
+async def redetect_project_toc(
+    project_uuid: _uuid.UUID,
+    session: DbSession,
+    current: CurrentAccount,
+) -> TocDecisionResponse:
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    decision = await record_toc_redetect_request(
+        session=session,
+        project_uuid=project_uuid,
+        actor_uuid=current.account_uuid,
+    )
+    result = await detect_toc(session=session, project_uuid=project_uuid)
+    return TocDecisionResponse(
         decision_event_uuid=decision.decision_event_uuid,
         workflow_state=result.workflow_state.value,
     )

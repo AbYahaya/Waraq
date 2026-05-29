@@ -83,6 +83,9 @@ interface AttentionItem {
   satz_uuid: string;
   satz_index: number;
   filter_matched: string;
+  issue_uuid: string | null;
+  issue_state: string | null;
+  issue_group_key: string | null;
   detail: Record<string, unknown>;
 }
 
@@ -179,7 +182,14 @@ const FILTER_LABEL: Record<string, string> = Object.fromEntries(
 );
 
 type AuditTab = "active" | "resolved";
-type ResolvedDecisionFilter = "all" | "accepted" | "warning" | "superseded" | "ignored_deleted";
+type ResolvedDecisionFilter =
+  | "all"
+  | "accepted"
+  | "warning"
+  | "unresolved"
+  | "superseded"
+  | "historical"
+  | "ignored_deleted";
 
 export function ProjectAuditPage(): JSX.Element {
   const { projectUuid } = useParams<{ projectUuid: string }>();
@@ -794,6 +804,7 @@ function SegmentDetailPanel({
         {
           action: "mark_unresolved",
           filter_matched: group.reasons.map((reason) => reason.filter_matched).join(","),
+          issue_uuid: group.primary.issue_uuid,
           reason: "Marked unresolved from Audit attention detail.",
         },
       );
@@ -833,6 +844,7 @@ function SegmentDetailPanel({
         {
           action: "ignore",
           filter_matched: group.reasons.map((reason) => reason.filter_matched).join(","),
+          issue_uuid: group.primary.issue_uuid,
           reason: "Ignored from Audit attention detail.",
         },
       );
@@ -854,6 +866,7 @@ function SegmentDetailPanel({
         {
           action: "delete",
           filter_matched: group.reasons.map((reason) => reason.filter_matched).join(","),
+          issue_uuid: group.primary.issue_uuid,
           reason: "Deleted/hidden from Audit attention detail.",
         },
       );
@@ -937,6 +950,13 @@ function SegmentDetailPanel({
                 </Button>
                 <Button size="sm" variant="outline" asChild>
                   <Link to={`/projects/${projectUuid}/pages/${item.page_uuid}?from=attention&focus=${attentionFocusKey(group)}`}>Open page</Link>
+                </Button>
+                <Button size="sm" variant="outline" asChild>
+                  <Link
+                    to={`/projects/${projectUuid}/pages/${item.page_uuid}?panel=dpi&from=attention&focus=${attentionFocusKey(group)}&issue=${encodeURIComponent(group.reasons.map((reason) => reason.filter_matched).join(","))}${group.primary.issue_uuid ? `&issue_uuid=${group.primary.issue_uuid}` : ""}`}
+                  >
+                    Open DPI retry
+                  </Link>
                 </Button>
                 <Button
                   size="sm"
@@ -1513,7 +1533,9 @@ function ResolvedOcrDecisionList({
             ["all", "All"],
             ["accepted", "Accepted / resolved"],
             ["warning", "Accepted with warning"],
+            ["unresolved", "Unresolved"],
             ["superseded", "Superseded by retry"],
+            ["historical", "Historical"],
             ["ignored_deleted", "Ignored / deleted"],
           ].map(([value, label]) => (
             <Button
@@ -1705,6 +1727,8 @@ function decisionLabel(decisionType: string): string {
       return "Marked unresolved";
     case "ocr_attention_superseded_by_rerun":
       return "Superseded by OCR retry";
+    case "ocr_attention_historical":
+      return "Historical";
     default:
       return decisionType;
   }
@@ -1716,6 +1740,12 @@ function decisionTone(decisionType: string): string {
   }
   if (decisionType === "ocr_attention_superseded_by_rerun") {
     return "bg-blue-100 text-blue-900";
+  }
+  if (decisionType === "ocr_attention_mark_unresolved") {
+    return "bg-amber-100 text-amber-900";
+  }
+  if (decisionType === "ocr_attention_historical") {
+    return "bg-zinc-100 text-zinc-800";
   }
   if (decisionType === "ocr_attention_ignored" || decisionType === "ocr_attention_deleted") {
     return "bg-slate-100 text-slate-800";
@@ -1735,8 +1765,14 @@ function decisionMatchesFilter(
   if (filter === "warning") {
     return item.decision_type === "ocr_review_approve_with_warning";
   }
+  if (filter === "unresolved") {
+    return item.decision_type === "ocr_attention_mark_unresolved";
+  }
   if (filter === "superseded") {
     return item.decision_type === "ocr_attention_superseded_by_rerun";
+  }
+  if (filter === "historical") {
+    return item.decision_type === "ocr_attention_historical";
   }
   return item.decision_type === "ocr_attention_ignored" ||
     item.decision_type === "ocr_attention_deleted";

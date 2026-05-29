@@ -47,7 +47,7 @@ Implementation notes:
 
 ## 2. Translation Editor / Word-Like Style System
 
-Latest status: not acceptable yet; major redesign required.
+Latest status: implemented.
 
 Required changes:
 
@@ -103,9 +103,52 @@ Required changes:
 
 Clarity to resolve during implementation:
 
-- Decide whether to introduce a rich-text editor dependency such as TipTap/ProseMirror or continue with custom editor components.
-- Confirm whether critical font files are already available on the server, or whether missing fonts should first be handled through upload/selection.
-- Confirm how much of the font-library workflow should ship in the first pass versus the style-model foundation.
+- Answered: use TipTap / ProseMirror for the real-user editor foundation.
+- Answered: editable user-facing labels can wait until after the core style system works.
+- Answered: use server-available fonts first; missing canon-critical fonts should be surfaced and installed separately.
+- Answered: first add the style system; Quran/Hadith/Quote structured block insertion comes afterward.
+
+Implemented in this pass:
+
+- Installed TipTap packages: `@tiptap/react`, `@tiptap/starter-kit`, and `@tiptap/extension-text-align`.
+- Replaced the editable translation textarea with a TipTap editor surface while preserving segment anchors.
+- Added a Word-like editable translation toolbar with paragraph style, font, size, bold, italic, underline, strike, alignment, line-height, footnote/Quran/Hadith/quote style actions, save style, and save page controls.
+- Added canonical first-pass paragraph style definitions in `frontend/src/lib/translation-styles.ts`.
+- Added per-style template records under `translation_style_templates`; each style has its own display label, font, size, line height, paragraph spacing, DOCX size, alignment, first-line indent, left indent, left-rule flag, italic, and bold values.
+- Added an "Edit selected style template" panel. Changes apply globally to all paragraphs using that internal style key after saving the style profile.
+- Persisted segment paragraph style keys through segment-scoped Decision Events:
+  - decision type: `translation_paragraph_style_update`
+  - decision source: `style_management`
+  - content key: `internal_style_key`
+- Added `PUT /segments/{satz_uuid}/translation-style`.
+- Added `translation_style_key` to segment responses so the editor can reload saved style choices.
+- Updated DOCX export to read segment style decisions and per-style templates, mapping internal style keys to DOCX paragraph styles and applying saved font/size/spacing/alignment/indent/bold/italic values.
+- Added server font-library endpoint at `GET /projects/{project_uuid}/style-profile/fonts`.
+- Toolbar font options now use server-available fonts when available.
+- Toolbar surfaces missing critical fonts from the existing guard-near preflight check.
+- Editable display labels are implemented inside the selected style-template editor.
+- Quran/Hadith/Quote buttons apply the relevant three-part style sequence to the current and following anchored paragraphs:
+  - Quran: `quran_de`, `quran_de`, `source_note`
+  - Hadith: `hadith_de`, `hadith_de`, `source_note`
+  - Quote: `quote_de`, `quote_de`, `source_note`
+
+Implementation note:
+
+- The structured block buttons apply canonical style sequences to existing anchored paragraphs. They do not create new text segments because the current Waraq text model requires segment anchors for persistence/history. Creating brand-new segments from the translation editor would be a separate text-structure editing feature.
+
+Font status from local server check:
+
+- Available: `Noto Sans Arabic`, `Noto Naskh Arabic`, `Noto Kufi Arabic`, `Noto Nastaliq Urdu`, `DejaVu`, `Liberation`, and many other Noto families.
+- Missing or not confirmed locally: `KFGQPC Uthmanic Script HAFS`, `Traditional Naskh`, and `Calibri`.
+- `Calibri` needs a licensed Microsoft font source if exact canon compliance is required; `Carlito` can be a fallback only if explicitly approved.
+- `KFGQPC Uthmanic Script HAFS` should come from the official King Fahd Quran Complex font package or another trusted licensed source.
+- `Traditional Naskh` should come from a licensed source or be replaced by an approved substitute in a later decision.
+
+Verification:
+
+- `backend/.venv/bin/python -m py_compile backend/waraq/translation_styles.py backend/waraq/api/routers/segments_router.py backend/waraq/api/schemas.py backend/waraq/export/docx_builder.py`
+- `npm run typecheck`
+- `npm run build`
 
 Visual references:
 
@@ -152,18 +195,16 @@ OCR difference note:
 - Current inline highlighting remains a deterministic visual aid.
 - OpenAI now acts as the reviewer/agent layer for full Arabic OCR-difference explanations. It compares Gemini as the primary OCR reading against OpenAI as the comparison reading, maps how OpenAI differs from Gemini line by line, adds character-level notes, and explains likely Arabic-specific causes such as harakat, hamza forms, dotting, ligatures, spacing, and normalization. It requires `OPENAI_API_KEY`; `OPENAI_OCR_DIFF_MODEL` can override the default `gpt-4o`.
 
-Still remaining:
+Completion status:
 
-- A full persisted OCR finding lifecycle with explicit states beyond current `offen` / `aufgeloest` plus Decision Events:
-  - decision required
-  - accepted with warning
-  - unresolved
-  - historical
-- Separate explicit filters for lifecycle states beyond the current Active / Resolved / Superseded / Ignored-deleted views.
-- True crop-level issue mapping and region-specific OCR lifecycle. The current retry endpoint returns an unsaved candidate and maps to page/segment plus optional crop metadata, but does not persist candidates or bind a crop to a specific issue/finding ID.
-- Stronger backend-level issue grouping if future UI/API consumers need grouped findings server-side.
+- No Workstream 3 implementation gap remains for the current product surface.
+- The persisted OCR lifecycle model is now in place through `ocr_attention_issues`.
+- OCR retry candidates are now persisted through `ocr_retry_candidates` and can link to an OCR issue UUID.
+- Backend attention rows now carry stable `issue_uuid`, `issue_state`, and `issue_group_key` fields for server-side lifecycle identity/grouping.
+- Crop-level retry metadata is persisted on the retry candidate and linked superseded Decision Event. Region-specific replacement still resolves the mapped segment, because the current text model stores OCR at segment granularity.
+- Resolved OCR decisions now include explicit filters for accepted, warning, unresolved, superseded, historical, and ignored/deleted states.
 
-Required changes:
+Implemented requirement checklist:
 
 - Add one unified OCR finding lifecycle:
   - open
@@ -238,7 +279,7 @@ Visual references:
 
 ## 4. TOC / IVZ Review Screen
 
-Latest status: needs implementation according to the mockup and described workflow.
+Latest status: implemented as a persisted structural review station in `frontend/src/components/TocPanel.tsx`, `backend/waraq/toc/service.py`, and `backend/waraq/api/routers/toc_router.py`.
 
 Required changes:
 
@@ -278,7 +319,7 @@ Required changes:
   - target page
   - target heading where space allows
   - status
-  - German heading preview
+  - translation heading preview
   - actions
 - Structured TOC table actions should support:
   - select row
@@ -310,7 +351,7 @@ Required changes:
   - save to export profile
 - Heading style customization on this screen is limited to heading styles only:
   - H1 through H6
-  - German heading style
+  - translation heading style
   - Arabic heading style
 - Do not include full document formatting here; body, Quran, Hadith, quote, footnote, and general layout styles belong in the Solo Translation editor / document formatting area.
 - Add "Save heading style" and "Reset to baseline" actions.
@@ -325,10 +366,24 @@ Required changes:
   - confirmed heading levels
   - confirmed TOC entries
 
+Implemented:
+
+- Rebuilt the TOC panel into a TOC / IVZ review station matching the mockup workflow structure.
+- Added top workflow area with Step 1 structural confirmation and Step 2 final translated review.
+- Added release status badge and Confirm & Proceed gate; confirmation is disabled while blocking TOC issues remain.
+- Added original scan panel with rendered source page, zoom controls, previous/next line navigation, selected-line highlight, persisted re-detect request, and a selected-area OCR handoff to the existing DPI recovery flow.
+- Added persisted editable OCR lines panel with save/cancel correction, split, merge-next, mark TOC, mark not TOC, and protected/manual correction indicators.
+- Added structured TOC table with level, page, Arabic OCR, target page, status, translation preview, select/edit/relink actions, and add-entry from selected source line.
+- Added issue resolution panel showing source evidence, target evidence, status explanation, persisted target-page relink, persisted heading-level change, and persisted confirm-match action.
+- Added TOC and heading export settings surface for running-header level, chapter level, TOC position, Arabic-heading display, navigation depth, and persisted save action.
+- Added heading-style customization limited to heading styles, with H1-H6 selector, translation/Arabic preview, save heading style, and reset to baseline. It writes heading-relevant fields through the existing project style-profile endpoint.
+- Backend TOC detection now returns replayed `ocr_lines`, stable line keys, manual/protected flags, entry status, target-page fields, and latest export settings.
+- TOC line decisions, entry decisions, export settings, and re-detect requests are saved as project-scoped Decision Events. Detection replays these decisions after scanning current headings, so manual OCR corrections and confirmed decisions are preserved across refresh/re-detect.
+
 Clarity to resolve during implementation:
 
-- Confirm whether selected-area OCR already exists for TOC pages, or should be deferred behind a disabled/coming-later control.
-- Confirm whether final Step 2 translated TOC review should be built in the first pass or scaffolded with state and placeholder behavior.
+- Selected-area OCR exists in the DPI recovery tool; the TOC screen opens that recovery flow for the selected page instead of duplicating crop OCR logic.
+- Step 2 final translated TOC review is scaffolded as a workflow phase and becomes meaningful after structural confirmation/translation output.
 
 Visual reference:
 
@@ -336,7 +391,7 @@ Visual reference:
 
 ## 5. DPI Compare / OCR Retry Recovery
 
-Latest status: setup stage is good; retry result review is missing.
+Latest status: implemented for the current page/segment lifecycle model.
 
 Required changes:
 
@@ -366,11 +421,32 @@ Required changes:
 - Re-running OCR for a selected crop must never silently replace the whole page.
 - The UI must clearly ask whether the user wants to replace only the mapped region/segment or the entire page OCR result.
 
+Implemented:
+
+- Kept the existing low/high DPI comparison setup.
+- After selected-region or full-page retry, the recovery tool now opens an OCR Retry Result Review panel.
+- Result review includes:
+  - original page/crop region preview
+  - current accepted OCR text
+  - new OCR candidate
+  - editable candidate text after choosing Edit manually
+  - highlighted candidate line differences
+  - reason labels for changed/same OCR and segment mapping status
+  - mapping target using page/segment references
+  - source attention context when opened from Audit
+  - acceptance effect copy explaining that acceptance updates mapped segment OCR and records a superseded retry decision
+- Added decision actions:
+  - Accept new region OCR / Accept new full-page OCR
+  - Keep current OCR
+  - Edit manually
+  - Discard
+- Audit OCR attention rows now include an Open DPI retry link that opens the workspace DPI panel with attention context.
+- Acceptance updates OCR text, creates the `ocr_attention_superseded_by_rerun` Decision Event, removes the old issue from Active attention when the decision is newer than the OCR-PO, and leaves the action visible in resolved OCR decision history.
+
 Clarity to resolve during implementation:
 
-- Confirm whether selected-region OCR exists backend-side.
-- If selected-region OCR is not available, decide whether first pass should implement full-page retry plus UI scaffolding for region retry.
-- Confirm how OCR retry candidates should be versioned and linked to the original OCR finding.
+- Selected-region OCR exists backend-side through normalized crop rendering before OCR extraction.
+- Persisted retry candidate versioning and linking to a specific OCR finding is implemented through `ocr_retry_candidates.issue_uuid`.
 
 ## Implementation Order
 
@@ -389,22 +465,44 @@ Reasoning:
 - TOC / IVZ is a large workflow but can be built after the review-state model is stable.
 - The translation editor/style system is the largest architectural item because it touches frontend editing, backend persistence, preflight, DOCX export, PDF export, and font availability.
 
-## Parked Follow-Up: True Crop-to-Finding Mapping
+## Implemented Architecture: True Crop-to-Finding Mapping
 
-Workstream 3 is functionally complete within the current codebase model, but true crop-to-specific-finding mapping requires a backend schema/model upgrade.
+Status: implemented as part of closing Workstream 3 architecture.
 
-Current limitation:
+Implemented model:
 
-- OCR retry candidates are returned as temporary API responses, not persisted records.
-- Active OCR attention items are derived from OCR-PO payloads and Decision Events, not stored as first-class issue rows.
-- Accepted retry decisions can store crop metadata, candidate UUID, page UUID, segment UUID, engine, DPI, and scope in the Decision Event, but cannot point to a stable crop-level OCR finding ID because that ID does not exist yet.
+- `ocr_attention_issues` persists OCR issue UUIDs, project/page/block/segment references, issue type, state, severity, source OCR-PO UUID, group key, and details.
+- `ocr_retry_candidates` persists retry candidate UUIDs, linked issue UUID where available, page/segment references, crop box, engine, DPI, candidate text, current-text snapshot, status, and linked Decision Event.
+- Audit attention rows now expose stable issue identity fields.
+- DPI retry candidate creation can receive and persist `issue_uuid`.
+- Candidate acceptance links the superseded Decision Event back to the candidate and issue.
 
-Required future model:
+Current granularity note:
 
-- Add a persisted OCR attention issue table with stable issue UUIDs, project/page/block/segment references, issue type, state, source OCR-PO UUID, and timestamps.
-- Add a persisted OCR retry candidate table with candidate UUID, linked issue UUID where available, page/segment references, crop box, engine, DPI, candidate text, current-text snapshot, status, actor, and timestamps.
-- Link accepted/rejected/edited retry decisions to both the candidate UUID and the issue UUID.
-- On candidate acceptance, update OCR text, mark the linked issue as resolved/replaced/superseded, and keep the action in Decision Events/history.
-- Region retries should resolve only the mapped segment/issue unless the user explicitly chooses full-page replacement.
+- The app's editable OCR text is still segment-level, so accepted crop retries update the mapped segment OCR. The crop itself is persisted for audit/history, but the text storage model does not yet split one segment into sub-segment crop ranges.
 
-This should be implemented before claiming precise crop-level lifecycle support in the UI.
+## Optional Future Extension: Span-Level Crop Replacement
+
+Workstream 5 is complete for page/segment OCR retry recovery. A deeper optional extension would allow a selected crop to replace only a text span inside a segment instead of replacing the whole mapped segment OCR text.
+
+Possible implementation:
+
+- Add `ocr_text_spans` table with span UUID, segment UUID, source OCR-PO UUID, start/end character offsets or line/word anchors, optional crop box, text snapshot, confidence/reason metadata, and active flag.
+- Add crop-to-span mapping during OCR retry:
+  - use OCR line/word bounding boxes if an engine returns layout metadata
+  - otherwise allow user confirmation by selecting the target line/span in the review UI
+- Add span-level retry candidates:
+  - link `ocr_retry_candidates` to either `issue_uuid` only or both `issue_uuid` and `span_uuid`
+  - store candidate text for that span
+- Add partial replacement UI:
+  - show current full segment
+  - highlight the mapped span
+  - preview the full segment after replacement
+  - actions: replace span only, replace whole segment, edit manually, discard
+- Add text composition/readout support:
+  - segment text remains the canonical export/readout value
+  - span replacements either write a new segment revision with composed text or maintain span overlays that are composed before display/export
+- Add audit/history support:
+  - Decision Events should record `span_uuid`, crop, before-span text, after-span text, and resulting segment revision UUID when a text change is written.
+
+This is not required for the current Workstream 5 completion because the present Waraq text model is segment-level.

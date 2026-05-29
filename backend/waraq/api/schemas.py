@@ -202,6 +202,7 @@ class SegmentResponse(BaseModel):
     lock_flag: str
     current_rev_uuid: _uuid.UUID | None
     text_content: str | None
+    translation_style_key: str | None = None
     active: bool
 
 
@@ -222,6 +223,12 @@ class SegmentTranslationEditRequest(BaseModel):
     """
 
     after_text: str = Field(min_length=0, max_length=8192)
+
+
+class SegmentTranslationStyleRequest(BaseModel):
+    """Update a segment's canonical translation paragraph style."""
+
+    internal_style_key: str = Field(min_length=1, max_length=64)
 
 
 # --- Lock ---------------------------------------------------------------

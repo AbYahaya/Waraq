@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.schemas import (
@@ -38,12 +38,20 @@ from waraq.schemas import (
     Block,
     ConflictInstance,
     DecisionEvent,
+    OcrAttentionIssue,
     Page,
     ProvenanceObject,
     Segment,
 )
 from waraq.schemas.consistency import KonsistenzBefund
 from waraq.schemas.enums import DecisionSource, OcrStatus, POType, ScopeType
+
+
+async def _table_exists(session: AsyncSession, table_name: str) -> bool:
+    connection = await session.connection()
+    return await connection.run_sync(
+        lambda sync_conn: inspect(sync_conn).has_table(table_name)
+    )
 
 # ---------------------------------------------------------------------
 # Summary models
@@ -179,6 +187,9 @@ class AttentionItem:
     satz_uuid: _uuid.UUID
     satz_index: int
     filter_matched: AttentionFilter
+    issue_uuid: _uuid.UUID | None = None
+    issue_state: str | None = None
+    issue_group_key: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
 
 
@@ -273,6 +284,12 @@ async def list_attention_segments(
     pages_by_uuid = {p.page_uuid: p for p in pages}
     blocks = await _project_blocks(session, project_uuid)
     blocks_by_uuid = {b.block_uuid: b for b in blocks}
+    await sync_ocr_attention_issues(session=session, project_uuid=project_uuid)
+    ocr_issues = await _active_ocr_attention_issues(
+        session=session,
+        project_uuid=project_uuid,
+        segment_uuids=segment_uuids,
+    )
     page_acceptances = await _latest_ocr_review_acceptances(
         session=session,
         page_uuids=set(pages_by_uuid.keys()),
@@ -300,6 +317,9 @@ async def list_attention_segments(
             if AttentionFilter.LOW_CONFIDENCE in active_filters:
                 klass = payload.get("confidence_class")
                 if klass in ("deficient", "critical"):
+                    issue = ocr_issues.get((satz_uuid, AttentionFilter.LOW_CONFIDENCE.value))
+                    if issue is None:
+                        continue
                     items.append(
                         _build_item(
                             seg_by_uuid,
@@ -312,12 +332,16 @@ async def list_attention_segments(
                                 "confidence_class": klass,
                                 "confidence_score": payload.get("confidence_score"),
                             },
+                            issue=issue,
                         )
                     )
             if (
                 AttentionFilter.DIVERGENT_OCR in active_filters
                 and payload.get("engine_agreement") == "divergent"
             ):
+                issue = ocr_issues.get((satz_uuid, AttentionFilter.DIVERGENT_OCR.value))
+                if issue is None:
+                    continue
                 items.append(
                     _build_item(
                         seg_by_uuid,
@@ -327,6 +351,7 @@ async def list_attention_segments(
                         satz_uuid,
                         AttentionFilter.DIVERGENT_OCR,
                         {"engine_agreement": "divergent"},
+                        issue=issue,
                     )
                 )
 
@@ -487,9 +512,144 @@ async def list_ocr_review_decisions(
         )
         for decision, segment, _block, page in segment_result.all()
     ]
-    items = [*page_items, *segment_items]
+    issue_items: list[OcrReviewDecisionItem] = []
+    if await _table_exists(session, "ocr_attention_issues"):
+        issue_result = await session.execute(
+            select(OcrAttentionIssue, Page)
+            .join(Page, Page.page_uuid == OcrAttentionIssue.page_uuid)
+            .where(OcrAttentionIssue.project_uuid == project_uuid)
+            .where(Page.active.is_(True))
+            .where(OcrAttentionIssue.active.is_(True))
+            .where(OcrAttentionIssue.state.in_(("historical",)))
+            .order_by(OcrAttentionIssue.updated_at.desc())
+            .limit(limit)
+        )
+        issue_items = [
+            OcrReviewDecisionItem(
+                decision_event_uuid=issue.issue_uuid,
+                page_uuid=issue.page_uuid,
+                page_index=page.page_index,
+                satz_uuid=issue.satz_uuid,
+                decision_type=f"ocr_attention_{issue.state}",
+                content={
+                    "issue_uuid": str(issue.issue_uuid),
+                    "issue_state": issue.state,
+                    "issue_type": issue.issue_type,
+                    "severity": issue.severity,
+                    "details": issue.details or {},
+                },
+                created_at=issue.updated_at,
+            )
+            for issue, page in issue_result.all()
+        ]
+    items = [*page_items, *segment_items, *issue_items]
     items.sort(key=lambda item: item.created_at, reverse=True)
     return items[:limit]
+
+
+async def sync_ocr_attention_issues(
+    *,
+    session: AsyncSession,
+    project_uuid: _uuid.UUID,
+) -> None:
+    """Materialize current OCR-PO attention into persisted issue rows.
+
+    OCR confidence/divergence attention is still detected from the latest
+    OCR-PO, but each detected item now gets a stable issue UUID and lifecycle
+    state. Fresh OCR-POs naturally create fresh issues; older unresolved issue
+    rows for the same segment/type become historical.
+    """
+    if not await _table_exists(session, "ocr_attention_issues"):
+        return
+    segments = await _project_segments(session, project_uuid)
+    if not segments:
+        return
+    seg_by_uuid = {s.satz_uuid: s for s in segments}
+    blocks = await _project_blocks(session, project_uuid)
+    blocks_by_uuid = {b.block_uuid: b for b in blocks}
+    ocr_pos = await _latest_pos_for_segments(session, set(seg_by_uuid.keys()), POType.OCR)
+
+    result = await session.execute(
+        select(OcrAttentionIssue)
+        .where(OcrAttentionIssue.project_uuid == project_uuid)
+        .where(OcrAttentionIssue.issue_type.in_(("low_confidence", "divergent_ocr")))
+        .where(OcrAttentionIssue.active.is_(True))
+    )
+    existing = list(result.scalars())
+    by_source = {
+        (issue.satz_uuid, issue.issue_type, issue.source_po_uuid): issue for issue in existing
+    }
+    current_keys: set[tuple[_uuid.UUID, str, _uuid.UUID | None]] = set()
+
+    for satz_uuid, po in ocr_pos.items():
+        segment = seg_by_uuid.get(satz_uuid)
+        if segment is None:
+            continue
+        block = blocks_by_uuid.get(segment.block_uuid)
+        if block is None:
+            continue
+        payload = po.payload or {}
+        detected: list[tuple[str, str, dict[str, Any]]] = []
+        klass = payload.get("confidence_class")
+        if klass in ("deficient", "critical"):
+            detected.append(
+                (
+                    "low_confidence",
+                    "critical" if klass == "critical" else "warning",
+                    {
+                        "confidence_class": klass,
+                        "confidence_score": payload.get("confidence_score"),
+                    },
+                )
+            )
+        if payload.get("engine_agreement") == "divergent":
+            detected.append(
+                (
+                    "divergent_ocr",
+                    "warning",
+                    {"engine_agreement": "divergent"},
+                )
+            )
+        for issue_type, severity, details in detected:
+            key = (satz_uuid, issue_type, po.po_uuid)
+            current_keys.add(key)
+            issue = by_source.get(key)
+            if issue is None:
+                issue = OcrAttentionIssue(
+                    issue_uuid=_uuid.uuid4(),
+                    project_uuid=project_uuid,
+                    page_uuid=block.page_uuid,
+                    block_uuid=block.block_uuid,
+                    satz_uuid=satz_uuid,
+                    source_po_uuid=po.po_uuid,
+                    issue_type=issue_type,
+                    state="decision_required" if severity == "critical" else "open",
+                    severity=severity,
+                    group_key=f"ocr:{block.page_uuid}:{block.block_uuid}:{satz_uuid}",
+                    details=details,
+                )
+                session.add(issue)
+            elif issue.state == "historical":
+                issue.state = "decision_required" if severity == "critical" else "open"
+            issue.page_uuid = block.page_uuid
+            issue.block_uuid = block.block_uuid
+            issue.severity = severity
+            issue.group_key = f"ocr:{block.page_uuid}:{block.block_uuid}:{satz_uuid}"
+            issue.details = details
+
+    terminal = {
+        "accepted",
+        "accepted_with_warning",
+        "superseded",
+        "ignored",
+        "deleted",
+        "historical",
+    }
+    for issue in existing:
+        key = (issue.satz_uuid, issue.issue_type, issue.source_po_uuid)
+        if key not in current_keys and issue.state not in terminal:
+            issue.state = "historical"
+    await session.flush()
 
 
 # ---------------------------------------------------------------------
@@ -630,6 +790,99 @@ async def _latest_ocr_attention_suppressions(
             continue
         latest[decision.scope_uuid] = decision
     return latest
+
+
+async def _active_ocr_attention_issues(
+    *,
+    session: AsyncSession,
+    project_uuid: _uuid.UUID,
+    segment_uuids: set[_uuid.UUID],
+) -> dict[tuple[_uuid.UUID, str], OcrAttentionIssue]:
+    if not segment_uuids:
+        return {}
+    result = await session.execute(
+        select(OcrAttentionIssue)
+        .where(OcrAttentionIssue.project_uuid == project_uuid)
+        .where(OcrAttentionIssue.satz_uuid.in_(segment_uuids))
+        .where(OcrAttentionIssue.active.is_(True))
+        .where(
+            OcrAttentionIssue.state.in_(
+                ("open", "decision_required", "unresolved")
+            )
+        )
+        .order_by(OcrAttentionIssue.created_at.desc())
+    )
+    latest: dict[tuple[_uuid.UUID, str], OcrAttentionIssue] = {}
+    for issue in result.scalars():
+        key = (issue.satz_uuid, issue.issue_type)
+        if key not in latest:
+            latest[key] = issue
+    return latest
+
+
+async def set_ocr_attention_issue_state(
+    *,
+    session: AsyncSession,
+    project_uuid: _uuid.UUID,
+    satz_uuid: _uuid.UUID,
+    state: str,
+    issue_types: set[str] | None = None,
+    issue_uuid: _uuid.UUID | None = None,
+    decision_event_uuid: _uuid.UUID | None = None,
+) -> list[OcrAttentionIssue]:
+    if not await _table_exists(session, "ocr_attention_issues"):
+        return []
+    await sync_ocr_attention_issues(session=session, project_uuid=project_uuid)
+    stmt = (
+        select(OcrAttentionIssue)
+        .where(OcrAttentionIssue.project_uuid == project_uuid)
+        .where(OcrAttentionIssue.satz_uuid == satz_uuid)
+        .where(OcrAttentionIssue.active.is_(True))
+        .where(OcrAttentionIssue.state.in_(("open", "decision_required", "unresolved")))
+    )
+    if issue_uuid is not None:
+        stmt = stmt.where(OcrAttentionIssue.issue_uuid == issue_uuid)
+    if issue_types:
+        stmt = stmt.where(OcrAttentionIssue.issue_type.in_(issue_types))
+    result = await session.execute(stmt)
+    issues = list(result.scalars())
+    for issue in issues:
+        issue.state = state
+        details = dict(issue.details or {})
+        if decision_event_uuid is not None:
+            details["decision_event_uuid"] = str(decision_event_uuid)
+        issue.details = details
+    await session.flush()
+    return issues
+
+
+async def set_page_ocr_attention_issues_state(
+    *,
+    session: AsyncSession,
+    project_uuid: _uuid.UUID,
+    page_uuid: _uuid.UUID,
+    state: str,
+    decision_event_uuid: _uuid.UUID | None = None,
+) -> list[OcrAttentionIssue]:
+    if not await _table_exists(session, "ocr_attention_issues"):
+        return []
+    await sync_ocr_attention_issues(session=session, project_uuid=project_uuid)
+    result = await session.execute(
+        select(OcrAttentionIssue)
+        .where(OcrAttentionIssue.project_uuid == project_uuid)
+        .where(OcrAttentionIssue.page_uuid == page_uuid)
+        .where(OcrAttentionIssue.active.is_(True))
+        .where(OcrAttentionIssue.state.in_(("open", "decision_required", "unresolved")))
+    )
+    issues = list(result.scalars())
+    for issue in issues:
+        issue.state = state
+        details = dict(issue.details or {})
+        if decision_event_uuid is not None:
+            details["decision_event_uuid"] = str(decision_event_uuid)
+        issue.details = details
+    await session.flush()
+    return issues
 
 
 def _page_uuid_for_segment(
@@ -1014,6 +1267,7 @@ def _build_item(
     satz_uuid: _uuid.UUID,
     matched: AttentionFilter,
     detail: dict[str, Any],
+    issue: OcrAttentionIssue | None = None,
 ) -> AttentionItem:
     seg = segments[satz_uuid]
     block = blocks.get(seg.block_uuid)
@@ -1029,6 +1283,9 @@ def _build_item(
             satz_uuid=satz_uuid,
             satz_index=seg.satz_index,
             filter_matched=matched,
+            issue_uuid=issue.issue_uuid if issue is not None else None,
+            issue_state=issue.state if issue is not None else None,
+            issue_group_key=issue.group_key if issue is not None else None,
             detail=detail,
         )
     page = pages.get(block.page_uuid)
@@ -1043,5 +1300,8 @@ def _build_item(
         satz_uuid=satz_uuid,
         satz_index=seg.satz_index,
         filter_matched=matched,
+        issue_uuid=issue.issue_uuid if issue is not None else None,
+        issue_state=issue.state if issue is not None else None,
+        issue_group_key=issue.group_key if issue is not None else None,
         detail=detail,
     )

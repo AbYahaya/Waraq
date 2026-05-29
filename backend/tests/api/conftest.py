@@ -37,6 +37,8 @@ from waraq.schemas import (
     LogEntry,
     Musterkandidat,
     OcrErrorInstance,
+    OcrAttentionIssue,
+    OcrRetryCandidate,
     Page,
     Project,
     ProvenanceObject,
@@ -126,6 +128,11 @@ async def _cleanup_account(account_uuid: Any) -> None:
             scope_uuids.append(account_uuid)
 
             if segment_uuids:
+                await session.execute(
+                    delete(OcrRetryCandidate).where(
+                        OcrRetryCandidate.segment_uuid.in_(segment_uuids)
+                    )
+                )
                 # Break the segments↔revisions FK cycle by nulling
                 # current_rev_uuid before deleting revisions.
                 from sqlalchemy import update
@@ -177,6 +184,12 @@ async def _cleanup_account(account_uuid: Any) -> None:
                 )
                 await session.execute(delete(Revision).where(Revision.satz_uuid.in_(segment_uuids)))
             if page_uuids:
+                await session.execute(
+                    delete(OcrRetryCandidate).where(OcrRetryCandidate.page_uuid.in_(page_uuids))
+                )
+                await session.execute(
+                    delete(OcrAttentionIssue).where(OcrAttentionIssue.page_uuid.in_(page_uuids))
+                )
                 await session.execute(
                     delete(OcrErrorInstance).where(OcrErrorInstance.page_uuid.in_(page_uuids))
                 )

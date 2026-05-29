@@ -23,7 +23,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from waraq.api._ownership import owned_project_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
@@ -32,6 +32,7 @@ from waraq.audit_dashboard import (
     list_attention_segments,
     list_ocr_review_decisions,
     segment_audit_detail,
+    set_ocr_attention_issue_state,
     summarize_project,
 )
 from waraq.decisions import create_decision_event
@@ -40,10 +41,25 @@ from waraq.ocr.diff_explainer import (
     OcrDifferenceExplainerUnconfigured,
     explain_ocr_difference_with_openai,
 )
-from waraq.schemas import Block, Page, Segment
+from waraq.schemas import Block, OcrRetryCandidate, Page, Segment
 from waraq.schemas.enums import DecisionSource, ScopeType
 
 router = APIRouter(prefix="/projects", tags=["audit-dashboard"])
+
+
+def _ocr_issue_types_from_filter(raw: str | None) -> set[str] | None:
+    if not raw:
+        return None
+    values = {part.strip() for part in raw.split(",") if part.strip()}
+    issue_types = values & {"low_confidence", "divergent_ocr"}
+    return issue_types or None
+
+
+async def _table_exists(session: DbSession, table_name: str) -> bool:
+    connection = await session.connection()
+    return await connection.run_sync(
+        lambda sync_conn: inspect(sync_conn).has_table(table_name)
+    )
 
 
 # ---------------------------------------------------------------------
@@ -113,6 +129,9 @@ class AttentionItemResponse(BaseModel):
     satz_uuid: _uuid.UUID
     satz_index: int
     filter_matched: str  # AttentionFilter.value
+    issue_uuid: _uuid.UUID | None = None
+    issue_state: str | None = None
+    issue_group_key: str | None = None
     detail: dict[str, Any]
 
 
@@ -138,6 +157,7 @@ class OcrAttentionDecisionRequest(BaseModel):
     action: str
     reason: str | None = None
     filter_matched: str | None = None
+    issue_uuid: _uuid.UUID | None = None
     details: dict[str, Any] | None = None
 
 
@@ -307,6 +327,9 @@ async def get_attention_list(
                 satz_uuid=it.satz_uuid,
                 satz_index=it.satz_index,
                 filter_matched=it.filter_matched.value,
+                issue_uuid=it.issue_uuid,
+                issue_state=it.issue_state,
+                issue_group_key=it.issue_group_key,
                 detail=it.detail,
             )
             for it in items
@@ -382,6 +405,12 @@ async def decide_ocr_attention_item(
         "mark_unresolved": "ocr_attention_mark_unresolved",
         "supersede": "ocr_attention_superseded_by_rerun",
     }
+    action_to_issue_state = {
+        "ignore": "ignored",
+        "delete": "deleted",
+        "mark_unresolved": "unresolved",
+        "supersede": "superseded",
+    }
     decision_type = action_to_decision.get(req.action)
     if decision_type is None:
         raise HTTPException(
@@ -400,11 +429,36 @@ async def decide_ocr_attention_item(
         content={
             "reason": req.reason,
             "filter_matched": req.filter_matched,
+            "issue_uuid": str(req.issue_uuid) if req.issue_uuid is not None else None,
             "page_uuid": str(page.page_uuid),
             "page_index": page.page_index,
             "details": req.details or {},
         },
     )
+    filter_types = _ocr_issue_types_from_filter(req.filter_matched)
+    await set_ocr_attention_issue_state(
+        session=session,
+        project_uuid=project.project_uuid,
+        satz_uuid=satz_uuid,
+        state=action_to_issue_state[req.action],
+        issue_types=filter_types,
+        issue_uuid=req.issue_uuid,
+        decision_event_uuid=de.decision_event_uuid,
+    )
+    details = req.details or {}
+    candidate_raw = details.get("candidate_uuid")
+    if isinstance(candidate_raw, str) and await _table_exists(session, "ocr_retry_candidates"):
+        try:
+            candidate_uuid = _uuid.UUID(candidate_raw)
+        except ValueError:
+            candidate_uuid = None
+        if candidate_uuid is not None:
+            candidate = await session.get(OcrRetryCandidate, candidate_uuid)
+            if candidate is not None and candidate.project_uuid == project.project_uuid:
+                candidate.status = "accepted" if req.action == "supersede" else req.action
+                candidate.decision_event_uuid = de.decision_event_uuid
+                if req.issue_uuid is not None:
+                    candidate.issue_uuid = req.issue_uuid
     return OcrAttentionDecisionResponse(
         decision_event_uuid=de.decision_event_uuid,
         decision_type=de.decision_type,

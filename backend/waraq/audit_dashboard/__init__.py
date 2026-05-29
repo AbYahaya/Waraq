@@ -29,7 +29,10 @@ from waraq.audit_dashboard.service import (
     list_attention_segments,
     list_ocr_review_decisions,
     segment_audit_detail,
+    set_page_ocr_attention_issues_state,
+    set_ocr_attention_issue_state,
     summarize_project,
+    sync_ocr_attention_issues,
 )
 
 __all__ = [
@@ -46,5 +49,8 @@ __all__ = [
     "list_attention_segments",
     "list_ocr_review_decisions",
     "segment_audit_detail",
+    "set_page_ocr_attention_issues_state",
+    "set_ocr_attention_issue_state",
     "summarize_project",
+    "sync_ocr_attention_issues",
 ]

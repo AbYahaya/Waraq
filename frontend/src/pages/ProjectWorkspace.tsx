@@ -101,6 +101,9 @@ export function ProjectWorkspacePage(): JSX.Element {
     if (focus) params.set("focus", focus);
     return `/projects/${projectUuid}/audit?${params.toString()}`;
   }, [projectUuid, searchParams]);
+  const attentionFocus = searchParams.get("focus");
+  const attentionIssue = searchParams.get("issue");
+  const attentionIssueUuid = searchParams.get("issue_uuid");
 
   const panes = useMemo<PaneConfig[]>(() => {
     if (pageUuid === undefined || pageQ.data === undefined) return [];
@@ -328,7 +331,14 @@ export function ProjectWorkspacePage(): JSX.Element {
                   projectName={projectQ.data?.name ?? "Waraq Export"}
                 />
               ) : dpiCompareOpen ? (
-                <DpiCompareView pageUuid={pageUuid} projectUuid={projectUuid} />
+                <DpiCompareView
+                  pageUuid={pageUuid}
+                  projectUuid={projectUuid}
+                  sourceIssueLabel={attentionIssue}
+                  sourceIssueRef={attentionFocus}
+                  sourceIssueUuid={attentionIssueUuid}
+                  attentionReturnUrl={attentionReturnUrl}
+                />
               ) : tocOpen ? (
                 <TocPanel projectUuid={projectUuid} />
               ) : (

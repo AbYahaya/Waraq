@@ -38,6 +38,10 @@ from waraq.toc.service import (
     confirm_toc_final_review,
     detect_toc,
     edit_toc_entry_heading,
+    record_toc_entry_decision,
+    record_toc_export_settings,
+    record_toc_line_decision,
+    record_toc_redetect_request,
 )
 
 __all__ = [
@@ -49,4 +53,8 @@ __all__ = [
     "confirm_toc_final_review",
     "detect_toc",
     "edit_toc_entry_heading",
+    "record_toc_entry_decision",
+    "record_toc_export_settings",
+    "record_toc_line_decision",
+    "record_toc_redetect_request",
 ]

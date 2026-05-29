@@ -44,6 +44,7 @@ from waraq.text_state import (
     resolve_segment_text_state,
     split_source_target_text,
 )
+from waraq.translation_styles import read_translation_style_map
 
 TocPosition = Literal["front", "back"]
 InlineAlignment = Literal["left", "center", "justify"]
@@ -280,15 +281,46 @@ def _apply_translation_layout(
     *,
     block_type: str | None = None,
     alignment: InlineAlignment | None = None,
+    internal_style_key: str | None = None,
 ) -> None:
     profile = _effective_style_profile(config)
-    paragraph.alignment = _docx_alignment(alignment)
-    paragraph.paragraph_format.space_after = Pt(_docx_spacing_for_block(profile, block_type))
-    paragraph.paragraph_format.line_spacing = float(profile["docx_line_spacing"])
-    _apply_block_indent(paragraph, block_type)
+    template = _style_template(profile, internal_style_key)
+    paragraph.alignment = (
+        _docx_alignment(alignment)
+        if alignment
+        else _docx_alignment_from_string(template.get("alignment") if template else None)
+    )
+    paragraph.paragraph_format.space_after = Pt(
+        float(template.get("paragraph_spacing_px")) * 0.75
+        if template and template.get("paragraph_spacing_px") is not None
+        else _docx_spacing_for_block(profile, block_type)
+    )
+    paragraph.paragraph_format.line_spacing = float(
+        template.get("line_height") if template else profile["docx_line_spacing"]
+    )
+    if template:
+        paragraph.paragraph_format.first_line_indent = Pt(
+            float(template.get("first_line_indent_px", 0)) * 0.75
+        )
+        paragraph.paragraph_format.left_indent = Pt(
+            float(template.get("left_indent_px", 0)) * 0.75
+        )
+    else:
+        _apply_block_indent(paragraph, block_type)
     for run in paragraph.runs:
-        run.font.name = str(profile["docx_translation_font_family"])
-        run.font.size = Pt(_docx_font_size_for_block(profile, block_type=block_type, source=False))
+        run.font.name = str(
+            template.get("font_family") if template else profile["docx_translation_font_family"]
+        )
+        run.font.size = Pt(
+            int(
+                template.get("docx_font_size_pt")
+                if template
+                else _docx_font_size_for_block(profile, block_type=block_type, source=False)
+            )
+        )
+        if template:
+            run.bold = bool(template.get("bold", False))
+            run.italic = bool(template.get("italic", False))
 
 
 _ALIGNMENT_MARKER_RE = re.compile(
@@ -303,6 +335,26 @@ def _docx_alignment(alignment: InlineAlignment | None) -> WD_PARAGRAPH_ALIGNMENT
     if alignment == "justify":
         return WD_PARAGRAPH_ALIGNMENT.JUSTIFY
     return WD_PARAGRAPH_ALIGNMENT.LEFT
+
+
+def _docx_alignment_from_string(value: object) -> WD_PARAGRAPH_ALIGNMENT:
+    if value == "center":
+        return WD_PARAGRAPH_ALIGNMENT.CENTER
+    if value == "right":
+        return WD_PARAGRAPH_ALIGNMENT.RIGHT
+    if value == "justify":
+        return WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+    return WD_PARAGRAPH_ALIGNMENT.LEFT
+
+
+def _style_template(profile: Mapping[str, Any], style_key: str | None) -> Mapping[str, Any] | None:
+    if not style_key:
+        return None
+    templates = profile.get("translation_style_templates")
+    if not isinstance(templates, Mapping):
+        return None
+    template = templates.get(style_key)
+    return template if isinstance(template, Mapping) else None
 
 
 def _iter_aligned_blocks(text: str) -> list[tuple[str, InlineAlignment | None]]:
@@ -325,6 +377,7 @@ def _add_translation_paragraphs(
     style: str,
     config: TranslationDocxConfig,
     block_type: str | None,
+    internal_style_key: str | None = None,
 ) -> None:
     blocks = _iter_aligned_blocks(text)
     if not blocks:
@@ -336,6 +389,7 @@ def _add_translation_paragraphs(
             config,
             block_type=block_type,
             alignment=alignment,
+            internal_style_key=internal_style_key,
         )
 
 
@@ -503,12 +557,58 @@ _BLOCK_TYPE_STYLE: dict[str, str] = {
 }
 
 
-def _style_for_block(block_type: str, config: TranslationDocxConfig) -> str:
+_DOCX_STYLE_FOR_TRANSLATION_KEY = {
+    "body_de": "Normal",
+    "body_de_no_indent": "Normal",
+    "heading_1": "Heading 1",
+    "heading_2": "Heading 2",
+    "heading_3": "Heading 3",
+    "heading_4": "Heading 4",
+    "heading_5": "Heading 5",
+    "heading_6": "Heading 6",
+    "quran_de": "Quote",
+    "hadith_de": "Quote",
+    "quote_de": "Quote",
+    "source_note": "Caption",
+    "footnote_text": "Footnote Text",
+}
+
+
+_BLOCK_TYPE_FOR_TRANSLATION_KEY = {
+    "heading_1": "UE",
+    "heading_2": "HD",
+    "heading_3": "heading",
+    "heading_4": "heading",
+    "heading_5": "heading",
+    "heading_6": "heading",
+    "quran_de": "quran",
+    "hadith_de": "hadith",
+    "quote_de": "quote",
+    "source_note": "caption",
+    "footnote_text": "footnote",
+}
+
+
+def _style_for_block(
+    block_type: str,
+    config: TranslationDocxConfig,
+    internal_style_key: str | None = None,
+) -> str:
+    if internal_style_key:
+        style = _DOCX_STYLE_FOR_TRANSLATION_KEY.get(internal_style_key)
+        if style is not None:
+            return style
     if block_type == "UE":
         return f"Heading {config.chapter_break_heading_level}"
     if block_type == "HD":
         return f"Heading {min(6, config.chapter_break_heading_level + 1)}"
     return _BLOCK_TYPE_STYLE.get(block_type, "Normal")
+
+
+def _block_type_for_style_key(block_type: str, internal_style_key: str | None) -> str:
+    if not internal_style_key:
+        return block_type
+    return _BLOCK_TYPE_FOR_TRANSLATION_KEY.get(internal_style_key, block_type)
 
 
 def _include_source_for_block(block_type: str, config: TranslationDocxConfig) -> bool:
@@ -566,6 +666,10 @@ async def build_translation_docx(
     if segment_uuids is not None:
         stmt = stmt.where(Segment.satz_uuid.in_(segment_uuids))
     rows = (await session.execute(stmt)).all()
+    style_map = await read_translation_style_map(
+        session=session,
+        segment_uuids=[segment.satz_uuid for _page, _block, segment in rows],
+    )
 
     document = Document()
     _set_document_rtl(document)
@@ -604,7 +708,8 @@ async def build_translation_docx(
         text_state = await resolve_segment_text_state(session=session, segment=segment)
         source, target = text_state.source_text, text_state.target_text
 
-        style = _style_for_block(block.block_type, config)
+        style_key = style_map.get(segment.satz_uuid)
+        style = _style_for_block(block.block_type, config, style_key)
         arabic_style = _ensure_arabic_style(document, style)
 
         if source.strip() and _include_source_for_block(block.block_type, config):
@@ -617,7 +722,8 @@ async def build_translation_docx(
                 target or "",
                 style=style,
                 config=config,
-                block_type=block.block_type,
+                block_type=_block_type_for_style_key(block.block_type, style_key),
+                internal_style_key=style_key,
             )
 
     _add_back_toc(document, config)
@@ -687,6 +793,10 @@ async def build_translation_docx_from_snapshot(
             .order_by(Page.page_index, Block.block_index, Segment.satz_index)
         )
     ).all()
+    style_map = await read_translation_style_map(
+        session=session,
+        segment_uuids=[segment.satz_uuid for _revision, _page, _block, segment in rows],
+    )
 
     document = Document()
     _set_document_rtl(document)
@@ -730,7 +840,8 @@ async def build_translation_docx_from_snapshot(
         target = embedded_target or revision.after_text
         if embedded_source and not source:
             source = embedded_source
-        style = _style_for_block(block.block_type, config)
+        style_key = style_map.get(segment.satz_uuid)
+        style = _style_for_block(block.block_type, config, style_key)
         arabic_style = _ensure_arabic_style(document, style)
         if source.strip() and _include_source_for_block(block.block_type, config):
             ar_paragraph = document.add_paragraph(source, style=arabic_style)
@@ -741,7 +852,8 @@ async def build_translation_docx_from_snapshot(
                 target or "",
                 style=style,
                 config=config,
-                block_type=block.block_type,
+                block_type=_block_type_for_style_key(block.block_type, style_key),
+                internal_style_key=style_key,
             )
 
     _add_back_toc(document, config)

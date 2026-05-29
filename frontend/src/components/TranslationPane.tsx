@@ -14,7 +14,24 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { mergeAttributes, type Editor } from "@tiptap/core";
+import Paragraph from "@tiptap/extension-paragraph";
+import TextAlign from "@tiptap/extension-text-align";
+import Underline from "@tiptap/extension-underline";
+import { EditorContent, useEditor, type JSONContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlignCenter,
+  AlignJustify,
+  AlignLeft,
+  Bold,
+  Italic,
+  Pilcrow,
+  Save,
+  Strikethrough,
+  Underline as UnderlineIcon,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -24,7 +41,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
 import { ApiError, api } from "@/lib/api";
 import { queries, qk, type SegmentHistoryDto } from "@/lib/queries";
 import {
@@ -39,6 +55,16 @@ import {
   isTranslationStale,
   type ProtectedReferenceSummary,
 } from "@/lib/segment-history";
+import {
+  defaultTranslationStyleKey,
+  effectiveTranslationStyleTemplates,
+  normalizeTranslationStyleKey,
+  TRANSLATION_STYLE_DEFINITIONS,
+  translationStyleCss,
+  withUpdatedTranslationStyleTemplate,
+  type TranslationStyleKey,
+  type TranslationStyleTemplate,
+} from "@/lib/translation-styles";
 import type { ProjectStyleProfile, Segment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -58,6 +84,7 @@ interface TranslationPageEntry {
   stale: boolean;
   protectedReference: ProtectedReferenceSummary | null;
   sentenceIndexInPage: number;
+  styleKey: TranslationStyleKey;
 }
 
 const ORIGIN = "translation";
@@ -92,6 +119,10 @@ export function TranslationPane({
           stale: isTranslationStale(history),
           protectedReference: getLatestProtectedReference(history),
           sentenceIndexInPage: i + 1,
+          styleKey: normalizeTranslationStyleKey(
+            segment.translation_style_key ??
+              defaultTranslationStyleKey(segment.block_type, Boolean(getLatestProtectedReference(history))),
+          ),
         };
       }),
     [histories, segmentsQ.data],
@@ -200,11 +231,7 @@ function TranslationPageReadView({
             >
               <TranslationText
                 entry={entry}
-                paragraphStyle={translationParagraphStyle(
-                  styleProfile,
-                  entry.segment.block_type,
-                  Boolean(entry.protectedReference),
-                )}
+                paragraphStyle={translationStyleCss(styleProfile, entry.styleKey)}
               />
             </TranslationPageAnchor>
           ))}
@@ -233,36 +260,70 @@ function TranslationPageEditor({
   styleProfile,
   persistedStyleProfile,
   onStyleProfileChange,
-  styleControlsEnabled,
 }: TranslationPageEditorProps): JSX.Element {
   const qc = useQueryClient();
-  const pageText = useMemo(
-    () => entries.map((entry) => entry.translation).join("\n\n"),
-    [entries],
-  );
+  const editorContent = useMemo(() => entriesToTipTapDoc(entries), [entries]);
+  const initialSignature = useMemo(() => JSON.stringify(editorContent), [editorContent]);
   const staleCount = entries.filter((entry) => entry.stale).length;
-  const [draft, setDraft] = useState(pageText);
   const [error, setError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [currentStyleKey, setCurrentStyleKey] = useState<TranslationStyleKey>(
+    entries[0]?.styleKey ?? "body_de",
+  );
+  const [dirty, setDirty] = useState(false);
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({ paragraph: false }),
+      StyledParagraph,
+      Underline,
+      TextAlign.configure({ types: ["paragraph"] }),
+    ],
+    content: editorContent,
+    editorProps: {
+      attributes: {
+        class:
+          "waraq-translation-editor min-h-[58vh] rounded-[1.25rem] border border-[#d8cdbb] bg-[#fffaf0] px-5 py-5 text-left text-[#252820] shadow-inner outline-none",
+      },
+    },
+    onUpdate: () => {
+      setDirty(true);
+      setError(null);
+    },
+    onSelectionUpdate: ({ editor: activeEditor }) => {
+      setCurrentStyleKey(activeParagraphStyleKey(activeEditor.getAttributes("paragraph")));
+    },
+  });
 
   useEffect(() => {
-    setDraft(pageText);
+    if (!editor) return;
+    editor.commands.setContent(editorContent);
+    setCurrentStyleKey(entries[0]?.styleKey ?? "body_de");
+    setDirty(false);
     setError(null);
-  }, [pageText, pageUuid]);
+  }, [editor, editorContent, entries, pageUuid]);
 
   const saveMutation = useMutation({
-    mutationFn: async (nextText: string) => {
-      const chunks = splitDraftForSegments(nextText, entries.length);
+    mutationFn: async () => {
+      if (!editor) return;
+      const chunks = paragraphsFromTipTapDoc(editor.getJSON(), entries.length);
       await Promise.all(
         entries.map((entry, i) =>
-          api.put<Segment>(`/segments/${entry.segment.satz_uuid}/translation-text`, {
-            after_text: chunks[i] ?? "",
-          }),
+          Promise.all([
+            api.put<Segment>(`/segments/${entry.segment.satz_uuid}/translation-text`, {
+              after_text: chunks[i]?.text ?? "",
+            }),
+            chunks[i]?.styleKey !== entry.styleKey
+              ? api.put<Segment>(`/segments/${entry.segment.satz_uuid}/translation-style`, {
+                  internal_style_key: chunks[i]?.styleKey ?? "body_de",
+                })
+              : Promise.resolve(),
+          ]),
         ),
       );
     },
     onSuccess: async () => {
       setError(null);
+      setDirty(false);
       await Promise.all([
         qc.invalidateQueries({ queryKey: qk.pageSegments(pageUuid) }),
         ...entries.map((entry) =>
@@ -280,26 +341,37 @@ function TranslationPageEditor({
 
   const isLegacyMultiSegment = entries.length > 1;
   const textStyle = translationTextStyle(styleProfile);
+  const canSave = Boolean(editor) && dirty && !saveMutation.isPending;
 
   return (
-    <div className="h-full overflow-y-scroll bg-[#f4efe6] px-3 py-4">
+    <div className="flex h-full min-h-0 flex-col bg-[#f4efe6]">
+      <WordLikeTranslationToolbar
+        editor={editor}
+        projectUuid={projectUuid}
+        profile={styleProfile}
+        persistedProfile={persistedStyleProfile}
+        currentStyleKey={currentStyleKey}
+        dirty={dirty}
+        saving={saveMutation.isPending}
+        canSave={canSave}
+        onProfileChange={onStyleProfileChange}
+        onStyleKeyChange={(styleKey) => {
+          editor?.chain().focus().updateAttributes("paragraph", { styleKey }).run();
+          setCurrentStyleKey(styleKey);
+          setDirty(true);
+        }}
+        onSave={() => saveMutation.mutate()}
+        onReset={() => {
+          editor?.commands.setContent(JSON.parse(initialSignature) as JSONContent);
+          setDirty(false);
+          setError(null);
+        }}
+      />
+      <div className="min-h-0 flex-1 overflow-y-scroll px-3 py-4">
       <article
-        className="mx-auto flex min-h-full flex-col rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-4 py-5 shadow-sm sm:px-8 sm:py-8"
-        style={{ maxWidth: `${styleProfile.page_max_width_rem}rem` }}
+        className="mx-auto flex min-h-full flex-col border border-[#ddd4c4] bg-[#fffdf8] px-8 py-10 shadow-md sm:px-14 sm:py-14"
+        style={{ width: "min(100%, 52rem)" }}
       >
-        {styleControlsEnabled && (
-          <TranslationStyleControls
-            projectUuid={projectUuid}
-            profile={styleProfile}
-            persistedProfile={persistedStyleProfile}
-            onProfileChange={onStyleProfileChange}
-            onApplyInlineAlignment={(alignment) => {
-              const next = applyAlignmentToSelection(textareaRef.current, draft, alignment);
-              setDraft(next);
-              setError(null);
-            }}
-          />
-        )}
         <TranslationPageHeader
           pageIndex={pageIndex}
           entries={entries}
@@ -314,47 +386,638 @@ function TranslationPageEditor({
           </div>
         )}
 
-        <Textarea
-          ref={textareaRef}
-          value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            setError(null);
-          }}
-          spellCheck
-          className="mt-5 min-h-[58vh] flex-1 resize-y rounded-[1.25rem] border-[#d8cdbb] bg-[#fffaf0] px-5 py-5 text-left text-[#252820] shadow-inner"
-          style={textStyle}
-          aria-label={`Editable translation text for page ${pageIndex}`}
-        />
-
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            onClick={() => saveMutation.mutate(draft)}
-            disabled={saveMutation.isPending || draft === pageText}
-          >
-            {saveMutation.isPending ? "Saving…" : "Save translation page"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              setDraft(pageText);
-              setError(null);
-            }}
-            disabled={saveMutation.isPending || draft === pageText}
-          >
-            Reset changes
-          </Button>
-          <span className="text-xs text-muted-foreground">
-            Protected Quran/Hadith source badges remain visible in read mode after saving.
-          </span>
+        <div className="mt-5">
+          <TranslationEditorStyleElement profile={styleProfile} />
+          <EditorContent
+            editor={editor}
+            style={textStyle}
+            aria-label={`Editable translation text for page ${pageIndex}`}
+          />
         </div>
 
         {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
       </article>
+      </div>
     </div>
   );
+}
+
+function WordLikeTranslationToolbar({
+  editor,
+  projectUuid,
+  profile,
+  persistedProfile,
+  currentStyleKey,
+  dirty,
+  saving,
+  canSave,
+  onProfileChange,
+  onStyleKeyChange,
+  onSave,
+  onReset,
+}: {
+  editor: Editor | null;
+  projectUuid: string;
+  profile: ProjectStyleProfile;
+  persistedProfile: ProjectStyleProfile;
+  currentStyleKey: TranslationStyleKey;
+  dirty: boolean;
+  saving: boolean;
+  canSave: boolean;
+  onProfileChange: (profile: ProjectStyleProfile) => void;
+  onStyleKeyChange: (styleKey: TranslationStyleKey) => void;
+  onSave: () => void;
+  onReset: () => void;
+}): JSX.Element {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const guardNearQ = useQuery({
+    queryKey: ["projects", projectUuid, "preflight", "guard-near"],
+    queryFn: () => api.get<GuardNearPreview>(`/projects/${projectUuid}/preflight/guard-near`),
+    staleTime: 30_000,
+  });
+  const fontLibraryQ = useQuery({
+    queryKey: ["projects", projectUuid, "style-profile", "fonts"],
+    queryFn: () => api.get<FontLibraryResponse>(`/projects/${projectUuid}/style-profile/fonts`),
+    staleTime: 60_000,
+  });
+
+  const styleSaveMutation = useMutation({
+    mutationFn: (nextProfile: ProjectStyleProfile) =>
+      api.put<ProjectStyleProfile>(`/projects/${projectUuid}/style-profile`, nextProfile),
+    onSuccess: async (saved) => {
+      onProfileChange(saved);
+      setError(null);
+      await qc.invalidateQueries({ queryKey: qk.projectStyleProfile(projectUuid) });
+    },
+    onError: (err) => setError(err instanceof ApiError ? err.detail : "Style save failed"),
+  });
+
+  const disabled = !editor || saving;
+  const styleDirty = !shallowEqualProfile(profile, persistedProfile);
+  const templates = effectiveTranslationStyleTemplates(profile);
+  const selectedTemplate = templates[currentStyleKey];
+  const missingFonts = guardNearQ.data?.evidence.critical_font_missing ?? [];
+  const fontOptions = Array.from(
+    new Set([
+      selectedTemplate.font_family,
+      ...(fontLibraryQ.data?.available_fonts.length
+        ? fontLibraryQ.data.available_fonts
+        : STYLE_FONT_OPTIONS),
+    ]),
+  ).filter(Boolean);
+  const updateSelectedTemplate = (patch: Partial<TranslationStyleTemplate>) => {
+    onProfileChange(withUpdatedTranslationStyleTemplate(profile, currentStyleKey, patch));
+  };
+
+  return (
+    <div className="shrink-0 border-b border-[#ded6c7] bg-[#fbfaf6] px-3 py-2 shadow-sm">
+      <div className="flex min-h-10 flex-wrap items-center gap-1.5">
+        <ToolbarSelect
+          label="Paragraph style"
+          value={currentStyleKey}
+          disabled={disabled}
+          onChange={(value) => onStyleKeyChange(normalizeTranslationStyleKey(value))}
+          className="w-40"
+        >
+          {TRANSLATION_STYLE_DEFINITIONS.map((style) => (
+            <option key={style.key} value={style.key}>
+              {templates[style.key].display_label || style.label}
+            </option>
+          ))}
+        </ToolbarSelect>
+
+        <ToolbarSelect
+          label="Style font"
+          value={selectedTemplate.font_family}
+          disabled={styleSaveMutation.isPending}
+          onChange={(value) => updateSelectedTemplate({ font_family: value })}
+          className="w-36"
+        >
+          {fontOptions.map((font) => (
+            <option key={font} value={font}>
+              {font}
+            </option>
+          ))}
+        </ToolbarSelect>
+
+        <ToolbarSelect
+          label="Text size"
+          value={selectedTemplate.font_size_px}
+          disabled={styleSaveMutation.isPending}
+          onChange={(value) => {
+            const size = Number(value);
+            updateSelectedTemplate({
+              font_size_px: size,
+              docx_font_size_pt: pxToDocxPt(size, 6, 32),
+            });
+          }}
+          className="w-16"
+        >
+          {[10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 26].map((size) => (
+            <option key={size} value={size}>
+              {size}
+            </option>
+          ))}
+        </ToolbarSelect>
+
+        <ToolbarDivider />
+
+        <ToolbarIconButton
+          label="Style bold"
+          active={selectedTemplate.bold}
+          disabled={styleSaveMutation.isPending}
+          onClick={() => updateSelectedTemplate({ bold: !selectedTemplate.bold })}
+        >
+          <Bold className="h-4 w-4" />
+        </ToolbarIconButton>
+        <ToolbarIconButton
+          label="Style italic"
+          active={selectedTemplate.italic}
+          disabled={styleSaveMutation.isPending}
+          onClick={() => updateSelectedTemplate({ italic: !selectedTemplate.italic })}
+        >
+          <Italic className="h-4 w-4" />
+        </ToolbarIconButton>
+        <ToolbarIconButton
+          label="Underline"
+          active={editor?.isActive("underline")}
+          disabled={disabled}
+          onClick={() => editor?.chain().focus().toggleUnderline().run()}
+        >
+          <UnderlineIcon className="h-4 w-4" />
+        </ToolbarIconButton>
+        <ToolbarIconButton
+          label="Strike"
+          active={editor?.isActive("strike")}
+          disabled={disabled}
+          onClick={() => editor?.chain().focus().toggleStrike().run()}
+        >
+          <Strikethrough className="h-4 w-4" />
+        </ToolbarIconButton>
+
+        <ToolbarDivider />
+
+        <ToolbarIconButton
+          label="Align left"
+          active={selectedTemplate.alignment === "left"}
+          disabled={styleSaveMutation.isPending}
+          onClick={() => updateSelectedTemplate({ alignment: "left" })}
+        >
+          <AlignLeft className="h-4 w-4" />
+        </ToolbarIconButton>
+        <ToolbarIconButton
+          label="Align center"
+          active={selectedTemplate.alignment === "center"}
+          disabled={styleSaveMutation.isPending}
+          onClick={() => updateSelectedTemplate({ alignment: "center" })}
+        >
+          <AlignCenter className="h-4 w-4" />
+        </ToolbarIconButton>
+        <ToolbarIconButton
+          label="Justify"
+          active={selectedTemplate.alignment === "justify"}
+          disabled={styleSaveMutation.isPending}
+          onClick={() => updateSelectedTemplate({ alignment: "justify" })}
+        >
+          <AlignJustify className="h-4 w-4" />
+        </ToolbarIconButton>
+
+        <ToolbarDivider />
+
+        <ToolbarSelect
+          label="Line height"
+          value={selectedTemplate.line_height}
+          disabled={styleSaveMutation.isPending}
+          onChange={(value) => updateSelectedTemplate({ line_height: Number(value) })}
+          className="w-20"
+        >
+          {[1, 1.15, 1.3, 1.5, 1.6, 1.8, 2].map((lineHeight) => (
+            <option key={lineHeight} value={lineHeight}>
+              {lineHeight}
+            </option>
+          ))}
+        </ToolbarSelect>
+
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 px-2 text-xs"
+          disabled={disabled}
+          onClick={() => onStyleKeyChange("footnote_text")}
+          title="Apply footnote paragraph style"
+        >
+          <Pilcrow className="mr-1 h-3.5 w-3.5" />
+          Footnote
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 px-2 text-xs"
+          disabled={disabled}
+          onClick={() =>
+            editor &&
+            applyStyleSequenceToAnchoredParagraphs(editor, ["quran_de", "quran_de", "source_note"])
+          }
+          title="Apply Quran block sequence to this and following anchored paragraphs"
+        >
+          Quran
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 px-2 text-xs"
+          disabled={disabled}
+          onClick={() =>
+            editor &&
+            applyStyleSequenceToAnchoredParagraphs(editor, ["hadith_de", "hadith_de", "source_note"])
+          }
+          title="Apply Hadith block sequence to this and following anchored paragraphs"
+        >
+          Hadith
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 px-2 text-xs"
+          disabled={disabled}
+          onClick={() =>
+            editor &&
+            applyStyleSequenceToAnchoredParagraphs(editor, ["quote_de", "quote_de", "source_note"])
+          }
+          title="Apply quote block sequence to this and following anchored paragraphs"
+        >
+          Quote
+        </Button>
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 px-2 text-xs"
+            disabled={!dirty || saving}
+            onClick={onReset}
+          >
+            Reset
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 px-2 text-xs"
+            disabled={!styleDirty || styleSaveMutation.isPending}
+            onClick={() => styleSaveMutation.mutate(profile)}
+          >
+            {styleSaveMutation.isPending ? "Saving style..." : "Save style"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 px-2 text-xs"
+            disabled={!canSave}
+            onClick={onSave}
+          >
+            <Save className="mr-1 h-3.5 w-3.5" />
+            {saving ? "Saving..." : "Save page"}
+          </Button>
+        </div>
+      </div>
+      <details className="mt-2 rounded border border-[#ded6c7] bg-white/60 px-2 py-1">
+        <summary className="cursor-pointer select-none text-[11px] font-medium text-muted-foreground">
+          Edit selected style template
+        </summary>
+        <div className="mt-2 grid gap-2 pb-1 text-xs sm:grid-cols-2 lg:grid-cols-6">
+          <ToolbarTextInput
+            label="Display label"
+            value={selectedTemplate.display_label}
+            disabled={styleSaveMutation.isPending}
+            onChange={(value) => updateSelectedTemplate({ display_label: value })}
+          />
+          <ToolbarNumberInput
+            label="Spacing"
+            value={selectedTemplate.paragraph_spacing_px}
+            min={0}
+            max={72}
+            disabled={styleSaveMutation.isPending}
+            onChange={(value) => updateSelectedTemplate({ paragraph_spacing_px: value })}
+          />
+          <ToolbarNumberInput
+            label="First indent"
+            value={selectedTemplate.first_line_indent_px}
+            min={-80}
+            max={120}
+            disabled={styleSaveMutation.isPending}
+            onChange={(value) => updateSelectedTemplate({ first_line_indent_px: value })}
+          />
+          <ToolbarNumberInput
+            label="Left indent"
+            value={selectedTemplate.left_indent_px}
+            min={0}
+            max={160}
+            disabled={styleSaveMutation.isPending}
+            onChange={(value) => updateSelectedTemplate({ left_indent_px: value })}
+          />
+          <ToolbarNumberInput
+            label="DOCX pt"
+            value={selectedTemplate.docx_font_size_pt}
+            min={6}
+            max={32}
+            disabled={styleSaveMutation.isPending}
+            onChange={(value) => updateSelectedTemplate({ docx_font_size_pt: value })}
+          />
+          <label className="flex items-center justify-between gap-2 rounded border bg-background px-2 py-1">
+            <span>Left rule</span>
+            <input
+              type="checkbox"
+              checked={selectedTemplate.border_left}
+              disabled={styleSaveMutation.isPending}
+              onChange={(event) => updateSelectedTemplate({ border_left: event.target.checked })}
+            />
+          </label>
+        </div>
+      </details>
+      {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
+      {missingFonts.length > 0 && (
+        <p className="mt-1 text-[11px] text-destructive">
+          Missing critical export fonts: {missingFonts.join(", ")}. Install them before preflight/export.
+        </p>
+      )}
+      {(dirty || styleDirty) && (
+        <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-amber-800">
+          {dirty && <span>Unsaved page edits</span>}
+          {styleDirty && <span>Unsaved global style changes</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface GuardNearPreview {
+  passes: boolean;
+  blockers: string[];
+  advisories: string[];
+  evidence: Record<string, string[]>;
+}
+
+interface FontLibraryResponse {
+  available_fonts: string[];
+  critical_fonts: string[];
+  missing_critical_fonts: string[];
+}
+
+function ToolbarSelect({
+  label,
+  value,
+  disabled,
+  onChange,
+  className,
+  children,
+}: {
+  label: string;
+  value: string | number;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  className?: string;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <select
+      aria-label={label}
+      title={label}
+      value={value}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value)}
+      className={cn("h-8 rounded border bg-white px-2 text-xs shadow-sm disabled:opacity-50", className)}
+    >
+      {children}
+    </select>
+  );
+}
+
+function ToolbarIconButton({
+  label,
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "grid h-8 w-8 place-items-center rounded border text-[#252820] shadow-sm disabled:opacity-50",
+        active ? "border-[#0b4a36] bg-[#dfece7]" : "border-[#ded6c7] bg-white hover:bg-muted/70",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ToolbarTextInput({
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}): JSX.Element {
+  return (
+    <label className="space-y-1">
+      <span className="block text-[10px] text-muted-foreground">{label}</span>
+      <input
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-8 w-full rounded border bg-background px-2"
+      />
+    </label>
+  );
+}
+
+function ToolbarNumberInput({
+  label,
+  value,
+  min,
+  max,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}): JSX.Element {
+  return (
+    <label className="space-y-1">
+      <span className="block text-[10px] text-muted-foreground">{label}</span>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        disabled={disabled}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="h-8 w-full rounded border bg-background px-2"
+      />
+    </label>
+  );
+}
+
+function ToolbarDivider(): JSX.Element {
+  return <span className="mx-1 h-7 w-px bg-[#ded6c7]" />;
+}
+
+const StyledParagraph = Paragraph.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      satzUuid: {
+        default: null,
+        parseHTML: (element) => element.getAttribute("data-satz-uuid"),
+        renderHTML: (attributes) =>
+          attributes.satzUuid ? { "data-satz-uuid": attributes.satzUuid } : {},
+      },
+      styleKey: {
+        default: "body_de",
+        parseHTML: (element) => element.getAttribute("data-style-key") ?? "body_de",
+        renderHTML: (attributes) => ({
+          "data-style-key": normalizeTranslationStyleKey(String(attributes.styleKey ?? "body_de")),
+        }),
+      },
+    };
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ["p", mergeAttributes(HTMLAttributes), 0];
+  },
+});
+
+interface TipTapParagraphState {
+  text: string;
+  styleKey: TranslationStyleKey;
+}
+
+function entriesToTipTapDoc(entries: TranslationPageEntry[]): JSONContent {
+  return {
+    type: "doc",
+    content: entries.map((entry) => ({
+      type: "paragraph",
+      attrs: {
+        satzUuid: entry.segment.satz_uuid,
+        styleKey: entry.styleKey,
+      },
+      content: textToTipTapNodes(entry.translation),
+    })),
+  };
+}
+
+function textToTipTapNodes(text: string): JSONContent[] | undefined {
+  if (!text) return undefined;
+  const nodes: JSONContent[] = [];
+  text.split("\n").forEach((line, index) => {
+    if (index > 0) nodes.push({ type: "hardBreak" });
+    if (line) nodes.push({ type: "text", text: line });
+  });
+  return nodes.length > 0 ? nodes : undefined;
+}
+
+function paragraphsFromTipTapDoc(doc: JSONContent, expectedCount: number): TipTapParagraphState[] {
+  const paragraphs = (doc.content ?? []).filter((node) => node.type === "paragraph");
+  const anchored = paragraphs.filter((node) => typeof node.attrs?.satzUuid === "string");
+  if (anchored.length !== expectedCount) {
+    throw new Error(
+      `This page has ${expectedCount} internal translation anchors. Keep the existing anchored paragraphs while editing, or reset changes before saving.`,
+    );
+  }
+  return anchored.map((node) => ({
+    text: textFromTipTapNodes(node.content ?? []),
+    styleKey: normalizeTranslationStyleKey(String(node.attrs?.styleKey ?? "body_de")),
+  }));
+}
+
+function textFromTipTapNodes(nodes: JSONContent[]): string {
+  return nodes
+    .map((node) => {
+      if (node.type === "text") return node.text ?? "";
+      if (node.type === "hardBreak") return "\n";
+      return textFromTipTapNodes(node.content ?? []);
+    })
+    .join("");
+}
+
+function activeParagraphStyleKey(attrs: Record<string, unknown>): TranslationStyleKey {
+  return normalizeTranslationStyleKey(String(attrs.styleKey ?? "body_de"));
+}
+
+function applyStyleSequenceToAnchoredParagraphs(
+  editor: Editor,
+  sequence: TranslationStyleKey[],
+): void {
+  const paragraphs: Array<{ pos: number; attrs: Record<string, unknown> }> = [];
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name !== "paragraph" || typeof node.attrs.satzUuid !== "string") return;
+    paragraphs.push({ pos, attrs: { ...node.attrs } });
+  });
+  const currentPos = editor.state.selection.$from.before(1);
+  const currentIndex = Math.max(
+    0,
+    paragraphs.findIndex((paragraph) => paragraph.pos === currentPos),
+  );
+  const tr = editor.state.tr;
+  sequence.forEach((styleKey, offset) => {
+    const paragraph = paragraphs[currentIndex + offset];
+    if (!paragraph) return;
+    tr.setNodeMarkup(paragraph.pos, undefined, {
+      ...paragraph.attrs,
+      styleKey,
+    });
+  });
+  editor.view.dispatch(tr);
+  editor.commands.focus();
+}
+
+function TranslationEditorStyleElement({ profile }: { profile: ProjectStyleProfile }): JSX.Element {
+  const templates = effectiveTranslationStyleTemplates(profile);
+  const css = TRANSLATION_STYLE_DEFINITIONS.map((definition) => {
+    const tpl = templates[definition.key];
+    return `
+      .waraq-translation-editor p[data-style-key="${definition.key}"] {
+        border-left: ${tpl.border_left ? "3px solid #d7c39c" : "0"};
+        font-family: "${tpl.font_family}", Calibri, sans-serif;
+        font-size: ${tpl.font_size_px}px;
+        font-style: ${tpl.italic ? "italic" : "normal"};
+        font-weight: ${tpl.bold ? 700 : 400};
+        line-height: ${tpl.line_height};
+        margin: 0 0 ${tpl.paragraph_spacing_px}px;
+        margin-left: ${tpl.left_indent_px}px;
+        padding-left: ${tpl.border_left ? "1rem" : "0"};
+        text-align: ${tpl.alignment};
+        text-indent: ${tpl.first_line_indent_px}px;
+      }
+    `;
+  }).join("\n");
+  return <style>{css}</style>;
 }
 
 interface TranslationPageHeaderProps {
@@ -921,25 +1584,6 @@ function markerAlignmentToCss(value: string | undefined): CSSProperties["textAli
   return undefined;
 }
 
-function applyAlignmentToSelection(
-  textarea: HTMLTextAreaElement | null,
-  draft: string,
-  alignment: InlineAlignment,
-): string {
-  if (!textarea) return draft;
-  const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  if (start === end) return draft;
-  const selected = draft.slice(start, end);
-  const wrapped = `[[${alignment}]]${selected}[[/${alignment}]]`;
-  const next = `${draft.slice(0, start)}${wrapped}${draft.slice(end)}`;
-  requestAnimationFrame(() => {
-    textarea.focus();
-    textarea.setSelectionRange(start, start + wrapped.length);
-  });
-  return next;
-}
-
 function StyleField({
   label,
   children,
@@ -993,23 +1637,23 @@ function StyleNumberField({
   );
 }
 
-function splitDraftForSegments(draft: string, expectedCount: number): string[] {
-  if (expectedCount <= 1) return [draft];
-  const chunks = draft.split(/\n\s*\n/g);
-  if (chunks.length !== expectedCount) {
-    throw new Error(
-      `This page has ${expectedCount} internal translation anchors. Keep exactly one blank line between each block before saving, or rerun OCR/translation so the page becomes one full-page translation block.`,
-    );
-  }
-  return chunks;
-}
-
 const TRANSLATION_FONT_OPTIONS = [
   "Iowan Old Style",
   "Source Serif 4",
   "Libre Baskerville",
   "Georgia",
   "Times New Roman",
+] as const;
+
+const STYLE_FONT_OPTIONS = [
+  "Calibri",
+  "Noto Sans Arabic",
+  "Noto Naskh Arabic",
+  "Traditional Naskh",
+  "KFGQPC Uthmanic Script HAFS",
+  "Times New Roman",
+  "Georgia",
+  "Liberation Serif",
 ] as const;
 
 const ARABIC_FONT_OPTIONS = [

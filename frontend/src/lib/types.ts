@@ -88,6 +88,23 @@ export interface ProjectStyleProfile {
   docx_footnote_font_size_pt: number;
   docx_protected_font_size_pt: number;
   docx_header_font_size_pt: number;
+  translation_style_templates?: Record<
+    string,
+    {
+      display_label?: string;
+      font_family?: string;
+      font_size_px?: number;
+      line_height?: number;
+      paragraph_spacing_px?: number;
+      docx_font_size_pt?: number;
+      alignment?: "left" | "center" | "right" | "justify";
+      first_line_indent_px?: number;
+      left_indent_px?: number;
+      border_left?: boolean;
+      italic?: boolean;
+      bold?: boolean;
+    }
+  >;
   decision_event_uuid?: string | null;
   updated_at?: string | null;
 }
@@ -108,6 +125,7 @@ export interface Segment {
   lock_flag: "none" | "manual_local" | "manual_editorial";
   current_rev_uuid: string | null;
   text_content: string | null;
+  translation_style_key?: string | null;
   active: boolean;
 }
 
