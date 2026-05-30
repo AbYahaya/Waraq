@@ -132,7 +132,7 @@ export function TranslationPane({
     setStyleDraft(persistedStyle);
   }, [persistedStyle]);
 
-  const effectiveStyle = styleControlsEnabled ? styleDraft : persistedStyle;
+  const effectiveStyle = editable && styleControlsEnabled ? styleDraft : persistedStyle;
 
   if (segmentsQ.isLoading) {
     return <p className="text-sm text-muted-foreground p-3">Loading translation page…</p>;
@@ -166,34 +166,22 @@ export function TranslationPane({
   return (
     <TranslationPageReadView
       pageIndex={pageIndex}
-      projectUuid={projectUuid}
       entries={entries}
       styleProfile={effectiveStyle}
-      persistedStyleProfile={persistedStyle}
-      onStyleProfileChange={setStyleDraft}
-      styleControlsEnabled={styleControlsEnabled}
     />
   );
 }
 
 interface TranslationPageViewProps {
   pageIndex: number;
-  projectUuid: string;
   entries: TranslationPageEntry[];
   styleProfile: ProjectStyleProfile;
-  persistedStyleProfile: ProjectStyleProfile;
-  onStyleProfileChange: (profile: ProjectStyleProfile) => void;
-  styleControlsEnabled: boolean;
 }
 
 function TranslationPageReadView({
   pageIndex,
-  projectUuid,
   entries,
   styleProfile,
-  persistedStyleProfile,
-  onStyleProfileChange,
-  styleControlsEnabled,
 }: TranslationPageViewProps): JSX.Element {
   const staleCount = entries.filter((entry) => entry.stale).length;
   const textStyle = translationTextStyle(styleProfile);
@@ -204,14 +192,6 @@ function TranslationPageReadView({
         className="mx-auto min-h-full rounded-[1.75rem] border border-[#e7decf] bg-[#fffdf8] px-6 py-8 shadow-sm sm:px-10 sm:py-12"
         style={{ maxWidth: `${styleProfile.page_max_width_rem}rem` }}
       >
-        {styleControlsEnabled && (
-          <TranslationStyleControls
-            projectUuid={projectUuid}
-            profile={styleProfile}
-            persistedProfile={persistedStyleProfile}
-            onProfileChange={onStyleProfileChange}
-          />
-        )}
         <TranslationPageHeader
           pageIndex={pageIndex}
           entries={entries}
@@ -402,7 +382,7 @@ function TranslationPageEditor({
   );
 }
 
-function WordLikeTranslationToolbar({
+export function WordLikeTranslationToolbar({
   editor,
   projectUuid,
   profile,
@@ -415,6 +395,7 @@ function WordLikeTranslationToolbar({
   onStyleKeyChange,
   onSave,
   onReset,
+  styleOnly = false,
 }: {
   editor: Editor | null;
   projectUuid: string;
@@ -428,6 +409,7 @@ function WordLikeTranslationToolbar({
   onStyleKeyChange: (styleKey: TranslationStyleKey) => void;
   onSave: () => void;
   onReset: () => void;
+  styleOnly?: boolean;
 }): JSX.Element {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
@@ -453,7 +435,8 @@ function WordLikeTranslationToolbar({
     onError: (err) => setError(err instanceof ApiError ? err.detail : "Style save failed"),
   });
 
-  const disabled = !editor || saving;
+  const editorDisabled = !editor || saving;
+  const styleKeyDisabled = styleOnly ? saving : editorDisabled;
   const styleDirty = !shallowEqualProfile(profile, persistedProfile);
   const templates = effectiveTranslationStyleTemplates(profile);
   const selectedTemplate = templates[currentStyleKey];
@@ -476,7 +459,7 @@ function WordLikeTranslationToolbar({
         <ToolbarSelect
           label="Paragraph style"
           value={currentStyleKey}
-          disabled={disabled}
+          disabled={styleKeyDisabled}
           onChange={(value) => onStyleKeyChange(normalizeTranslationStyleKey(value))}
           className="w-40"
         >
@@ -542,7 +525,7 @@ function WordLikeTranslationToolbar({
         <ToolbarIconButton
           label="Underline"
           active={editor?.isActive("underline")}
-          disabled={disabled}
+          disabled={editorDisabled}
           onClick={() => editor?.chain().focus().toggleUnderline().run()}
         >
           <UnderlineIcon className="h-4 w-4" />
@@ -550,7 +533,7 @@ function WordLikeTranslationToolbar({
         <ToolbarIconButton
           label="Strike"
           active={editor?.isActive("strike")}
-          disabled={disabled}
+          disabled={editorDisabled}
           onClick={() => editor?.chain().focus().toggleStrike().run()}
         >
           <Strikethrough className="h-4 w-4" />
@@ -599,72 +582,78 @@ function WordLikeTranslationToolbar({
           ))}
         </ToolbarSelect>
 
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 px-2 text-xs"
-          disabled={disabled}
-          onClick={() => onStyleKeyChange("footnote_text")}
-          title="Apply footnote paragraph style"
-        >
-          <Pilcrow className="mr-1 h-3.5 w-3.5" />
-          Footnote
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 px-2 text-xs"
-          disabled={disabled}
-          onClick={() =>
-            editor &&
-            applyStyleSequenceToAnchoredParagraphs(editor, ["quran_de", "quran_de", "source_note"])
-          }
-          title="Apply Quran block sequence to this and following anchored paragraphs"
-        >
-          Quran
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 px-2 text-xs"
-          disabled={disabled}
-          onClick={() =>
-            editor &&
-            applyStyleSequenceToAnchoredParagraphs(editor, ["hadith_de", "hadith_de", "source_note"])
-          }
-          title="Apply Hadith block sequence to this and following anchored paragraphs"
-        >
-          Hadith
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8 px-2 text-xs"
-          disabled={disabled}
-          onClick={() =>
-            editor &&
-            applyStyleSequenceToAnchoredParagraphs(editor, ["quote_de", "quote_de", "source_note"])
-          }
-          title="Apply quote block sequence to this and following anchored paragraphs"
-        >
-          Quote
-        </Button>
+        {!styleOnly && (
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-2 text-xs"
+              disabled={editorDisabled}
+              onClick={() => onStyleKeyChange("footnote_text")}
+              title="Apply footnote paragraph style"
+            >
+              <Pilcrow className="mr-1 h-3.5 w-3.5" />
+              Footnote
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-2 text-xs"
+              disabled={editorDisabled}
+              onClick={() =>
+                editor &&
+                applyStyleSequenceToAnchoredParagraphs(editor, ["quran_de", "quran_de", "source_note"])
+              }
+              title="Apply Quran block sequence to this and following anchored paragraphs"
+            >
+              Quran
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-2 text-xs"
+              disabled={editorDisabled}
+              onClick={() =>
+                editor &&
+                applyStyleSequenceToAnchoredParagraphs(editor, ["hadith_de", "hadith_de", "source_note"])
+              }
+              title="Apply Hadith block sequence to this and following anchored paragraphs"
+            >
+              Hadith
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-2 text-xs"
+              disabled={editorDisabled}
+              onClick={() =>
+                editor &&
+                applyStyleSequenceToAnchoredParagraphs(editor, ["quote_de", "quote_de", "source_note"])
+              }
+              title="Apply quote block sequence to this and following anchored paragraphs"
+            >
+              Quote
+            </Button>
+          </>
+        )}
 
         <div className="ml-auto flex items-center gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 px-2 text-xs"
-            disabled={!dirty || saving}
-            onClick={onReset}
-          >
-            Reset
-          </Button>
+          {!styleOnly && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-2 text-xs"
+              disabled={!dirty || saving}
+              onClick={onReset}
+            >
+              Reset
+            </Button>
+          )}
           <Button
             type="button"
             size="sm"
@@ -675,16 +664,18 @@ function WordLikeTranslationToolbar({
           >
             {styleSaveMutation.isPending ? "Saving style..." : "Save style"}
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            className="h-8 px-2 text-xs"
-            disabled={!canSave}
-            onClick={onSave}
-          >
-            <Save className="mr-1 h-3.5 w-3.5" />
-            {saving ? "Saving..." : "Save page"}
-          </Button>
+          {!styleOnly && (
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 px-2 text-xs"
+              disabled={!canSave}
+              onClick={onSave}
+            >
+              <Save className="mr-1 h-3.5 w-3.5" />
+              {saving ? "Saving..." : "Save page"}
+            </Button>
+          )}
         </div>
       </div>
       <details className="mt-2 rounded border border-[#ded6c7] bg-white/60 px-2 py-1">
@@ -1226,330 +1217,6 @@ function ProtectedReferenceDialog({
   );
 }
 
-export interface TranslationStyleControlsProps {
-  projectUuid: string;
-  profile: ProjectStyleProfile;
-  persistedProfile: ProjectStyleProfile;
-  onProfileChange: (profile: ProjectStyleProfile) => void;
-  onApplyInlineAlignment?: (alignment: InlineAlignment) => void;
-}
-
-export function TranslationStyleControls({
-  projectUuid,
-  profile,
-  persistedProfile,
-  onProfileChange,
-  onApplyInlineAlignment,
-}: TranslationStyleControlsProps): JSX.Element {
-  const qc = useQueryClient();
-  const [error, setError] = useState<string | null>(null);
-
-  const saveMutation = useMutation({
-    mutationFn: (nextProfile: ProjectStyleProfile) =>
-      api.put<ProjectStyleProfile>(`/projects/${projectUuid}/style-profile`, nextProfile),
-    onSuccess: async (saved) => {
-      onProfileChange(saved);
-      setError(null);
-      await qc.invalidateQueries({ queryKey: qk.projectStyleProfile(projectUuid) });
-    },
-    onError: (err) => setError(err instanceof ApiError ? err.detail : "Style save failed"),
-  });
-
-  return (
-    <section className="sticky top-0 z-20 mb-4 rounded-2xl border border-[#e7decf] bg-[#fbf6ed]/95 p-2.5 shadow-sm backdrop-blur">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-xs font-medium text-[#1d221d]">Project style profile</p>
-          <p className="text-[11px] text-muted-foreground">
-            Applies to workspace pages and the next DOCX/PDF export.
-          </p>
-        </div>
-        {onApplyInlineAlignment && (
-          <div className="flex flex-wrap gap-1 rounded-xl border border-[#e7decf] bg-white/70 p-1">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-[11px]"
-              onClick={() => onApplyInlineAlignment("left")}
-              title="Apply left alignment to selected translation text"
-            >
-              Left
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-[11px]"
-              onClick={() => onApplyInlineAlignment("center")}
-              title="Center selected translation text, useful for page numbers"
-            >
-              Center
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-[11px]"
-              onClick={() => onApplyInlineAlignment("justify")}
-              title="Justify selected translation text"
-            >
-              Justify
-            </Button>
-          </div>
-        )}
-        <Button
-          size="sm"
-          className="h-8 text-xs"
-          onClick={() => saveMutation.mutate(profile)}
-          disabled={saveMutation.isPending || shallowEqualProfile(profile, persistedProfile)}
-        >
-          {saveMutation.isPending ? "Saving…" : "Save style"}
-        </Button>
-      </div>
-
-      <details className="mt-2">
-        <summary className="cursor-pointer select-none text-[11px] font-medium text-muted-foreground">
-          Advanced layout controls
-        </summary>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StyleField label="Translation font">
-          <select
-            value={profile.translation_font_family}
-            onChange={(e) =>
-              onProfileChange({
-                ...profile,
-                translation_font_family: e.target.value,
-                docx_translation_font_family: e.target.value,
-              })
-            }
-            className="h-8 w-full rounded border bg-background px-2 text-xs"
-          >
-            {TRANSLATION_FONT_OPTIONS.map((font) => (
-              <option key={font} value={font}>
-                {font}
-              </option>
-            ))}
-          </select>
-        </StyleField>
-        <StyleNumberField
-          label="Text size"
-          value={profile.translation_font_size_px}
-          min={13}
-          max={26}
-          suffix="px"
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              translation_font_size_px: value,
-              docx_translation_font_size_pt: pxToDocxPt(value, 9, 16),
-            })
-          }
-        />
-        <StyleNumberField
-          label="Line height"
-          value={profile.translation_line_height}
-          min={1.25}
-          max={2.6}
-          step={0.05}
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              translation_line_height: value,
-              docx_line_spacing: clampNumber(value, 1, 2),
-            })
-          }
-        />
-        <StyleNumberField
-          label="Paragraph gap"
-          value={profile.translation_paragraph_spacing_px}
-          min={8}
-          max={40}
-          suffix="px"
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              translation_paragraph_spacing_px: value,
-              docx_paragraph_spacing_pt: clampNumber(Math.round(value * 0.35), 0, 18),
-            })
-          }
-        />
-        <StyleNumberField
-          label="Heading size"
-          value={profile.heading_font_size_px}
-          min={16}
-          max={38}
-          suffix="px"
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              heading_font_size_px: value,
-              docx_heading_font_size_pt: pxToDocxPt(value, 11, 24),
-            })
-          }
-        />
-        <StyleNumberField
-          label="Heading gap"
-          value={profile.heading_paragraph_spacing_px}
-          min={8}
-          max={52}
-          suffix="px"
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              heading_paragraph_spacing_px: value,
-            })
-          }
-        />
-        <StyleNumberField
-          label="Quote size"
-          value={profile.quote_font_size_px}
-          min={12}
-          max={24}
-          suffix="px"
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              quote_font_size_px: value,
-              docx_quote_font_size_pt: pxToDocxPt(value, 8, 14),
-            })
-          }
-        />
-        <StyleNumberField
-          label="Quote line"
-          value={profile.quote_line_height}
-          min={1.2}
-          max={2.4}
-          step={0.05}
-          onChange={(value) => onProfileChange({ ...profile, quote_line_height: value })}
-        />
-        <StyleNumberField
-          label="Footnote size"
-          value={profile.footnote_font_size_px}
-          min={10}
-          max={20}
-          suffix="px"
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              footnote_font_size_px: value,
-              docx_footnote_font_size_pt: pxToDocxPt(value, 7, 12),
-            })
-          }
-        />
-        <StyleNumberField
-          label="Quran/Hadith"
-          value={profile.protected_font_size_px}
-          min={12}
-          max={24}
-          suffix="px"
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              protected_font_size_px: value,
-              docx_protected_font_size_pt: pxToDocxPt(value, 8, 14),
-            })
-          }
-        />
-        <StyleNumberField
-          label="Arabic size"
-          value={profile.arabic_font_size_px}
-          min={16}
-          max={34}
-          suffix="px"
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              arabic_font_size_px: value,
-              docx_arabic_font_size_pt: pxToDocxPt(value, 10, 22),
-            })
-          }
-        />
-        <StyleField label="Arabic font">
-          <select
-            value={profile.arabic_font_family}
-            onChange={(e) =>
-              onProfileChange({
-                ...profile,
-                arabic_font_family: e.target.value,
-                docx_arabic_font_family: e.target.value,
-              })
-            }
-            className="h-8 w-full rounded border bg-background px-2 text-xs"
-          >
-            {ARABIC_FONT_OPTIONS.map((font) => (
-              <option key={font} value={font}>
-                {font}
-              </option>
-            ))}
-          </select>
-        </StyleField>
-        <StyleNumberField
-          label="Arabic line"
-          value={profile.arabic_line_height}
-          min={1.6}
-          max={3}
-          step={0.05}
-          onChange={(value) =>
-            onProfileChange({
-              ...profile,
-              arabic_line_height: value,
-              docx_line_spacing: clampNumber(value, 1, 2),
-            })
-          }
-        />
-        <StyleNumberField
-          label="Page width"
-          value={profile.page_max_width_rem}
-          min={38}
-          max={72}
-          suffix="rem"
-          onChange={(value) => onProfileChange({ ...profile, page_max_width_rem: value })}
-        />
-        <StyleNumberField
-          label="DOCX text"
-          value={profile.docx_translation_font_size_pt}
-          min={9}
-          max={16}
-          suffix="pt"
-          onChange={(value) =>
-            onProfileChange({ ...profile, docx_translation_font_size_pt: value })
-          }
-        />
-        <StyleNumberField
-          label="DOCX Arabic"
-          value={profile.docx_arabic_font_size_pt}
-          min={10}
-          max={22}
-          suffix="pt"
-          onChange={(value) =>
-            onProfileChange({ ...profile, docx_arabic_font_size_pt: value })
-          }
-        />
-        <StyleNumberField
-          label="DOCX header"
-          value={profile.docx_header_font_size_pt}
-          min={7}
-          max={14}
-          suffix="pt"
-          onChange={(value) =>
-            onProfileChange({ ...profile, docx_header_font_size_pt: value })
-          }
-        />
-      </div>
-      </details>
-      {!shallowEqualProfile(profile, persistedProfile) && (
-        <p className="mt-2 text-[11px] text-amber-800">
-          Previewing unsaved style changes. Save style before running a new export.
-        </p>
-      )}
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-    </section>
-  );
-}
-
-type InlineAlignment = "left" | "center" | "justify";
-
 interface AlignedTextBlock {
   text: string;
   alignment: CSSProperties["textAlign"];
@@ -1584,67 +1251,6 @@ function markerAlignmentToCss(value: string | undefined): CSSProperties["textAli
   return undefined;
 }
 
-function StyleField({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}): JSX.Element {
-  return (
-    <label className="space-y-1">
-      <span className="block text-[11px] text-muted-foreground">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function StyleNumberField({
-  label,
-  value,
-  min,
-  max,
-  step = 1,
-  suffix,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  suffix?: string;
-  onChange: (value: number) => void;
-}): JSX.Element {
-  return (
-    <StyleField label={label}>
-      <div className="flex items-center gap-2">
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
-          className="min-w-0 flex-1"
-        />
-        <span className="w-12 text-right text-[11px] text-muted-foreground">
-          {value}
-          {suffix}
-        </span>
-      </div>
-    </StyleField>
-  );
-}
-
-const TRANSLATION_FONT_OPTIONS = [
-  "Iowan Old Style",
-  "Source Serif 4",
-  "Libre Baskerville",
-  "Georgia",
-  "Times New Roman",
-] as const;
-
 const STYLE_FONT_OPTIONS = [
   "Calibri",
   "Noto Sans Arabic",
@@ -1654,13 +1260,6 @@ const STYLE_FONT_OPTIONS = [
   "Times New Roman",
   "Georgia",
   "Liberation Serif",
-] as const;
-
-const ARABIC_FONT_OPTIONS = [
-  "Noto Naskh Arabic",
-  "Amiri",
-  "Scheherazade New",
-  "Traditional Arabic",
 ] as const;
 
 export const DEFAULT_STYLE_PROFILE: ProjectStyleProfile = {

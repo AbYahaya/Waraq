@@ -9,7 +9,7 @@
  * comparison panes broadcasts a cross-pane scroll-sync event.
  */
 
-import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
@@ -20,23 +20,16 @@ import {
   type SinglePane,
 } from "@/components/ComparisonModeSelector";
 import { BookPreview } from "@/components/BookPreview";
-import { DeleteProjectDialog } from "@/components/DeleteProjectDialog";
-import { DifficultyBadge } from "@/components/DifficultyBadge";
 import { DpiCompareView } from "@/components/DpiCompareView";
-import { GuidedReviewPanel } from "@/components/GuidedReviewPanel";
 import { MultiPaneView, type PaneConfig } from "@/components/MultiPaneView";
-import { OcrAutoRunPanel } from "@/components/OcrAutoRunPanel";
-import { OcrExportDialog } from "@/components/OcrExportDialog";
 import { OcrPane } from "@/components/OcrPane";
 import { OcrReviewBar } from "@/components/OcrReviewBar";
 import { PageTranslationPanel } from "@/components/PageTranslationPanel";
 import { OriginalPane } from "@/components/OriginalPane";
-import { PageList } from "@/components/PageList";
-import { ReleaseGatePanel } from "@/components/ReleaseGatePanel";
+import { DifficultyBadge } from "@/components/DifficultyBadge";
+import { ProjectWorkspaceSidebar } from "@/components/ProjectWorkspaceSidebar";
 import { TocPanel } from "@/components/TocPanel";
-import { TranslationExportDialog } from "@/components/TranslationExportDialog";
 import { TranslationPane } from "@/components/TranslationPane";
-import { UploadPdfDialog } from "@/components/UploadPdfDialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ApiError } from "@/lib/api";
@@ -69,10 +62,6 @@ export function ProjectWorkspacePage(): JSX.Element {
   const [tocOpen, setTocOpen] = useState<boolean>(false);
   const [bookPreviewOpen, setBookPreviewOpen] = useState<boolean>(false);
 
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [exportOpen, setExportOpen] = useState(false);
-  const [translateExportOpen, setTranslateExportOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
   // Sub-batch O — the bulk OCR mutation is replaced by OcrAutoRunPanel,
   // which polls the new BackgroundTask-driven /ocr/ocr-jobs/{u} endpoint
   // for live progress, survives page refresh, and exposes a Cancel button.
@@ -135,7 +124,7 @@ export function ProjectWorkspacePage(): JSX.Element {
           projectUuid={projectUuid}
           editable={editMode}
           styleControlsEnabled={
-            comparisonMode === "single_fullscreen" && singlePaneSelection === "translation"
+            editMode && comparisonMode === "single_fullscreen" && singlePaneSelection === "translation"
           }
         />
       ),
@@ -162,77 +151,14 @@ export function ProjectWorkspacePage(): JSX.Element {
   }, [comparisonMode, editMode, singlePaneSelection, pageUuid, pageQ.data, projectUuid]);
 
   return (
-    <div className="grid h-full min-h-0 overflow-y-auto grid-cols-1 gap-4 xl:grid-cols-[18rem_minmax(0,1fr)]">
-      <aside className="flex min-h-0 h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-[2rem] border border-border/80 bg-card/95 shadow-sm">
-        <div className="shrink-0 border-b border-border/80 px-3 py-3">
-          <div className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-            Project
-          </div>
-          <div className="mt-1 truncate text-base font-semibold text-[#1d221d]">
-            {projectQ.data?.name ?? "Loading…"}
-          </div>
-          <div className="mt-2">
-            <DifficultyBadge scope="project" uuid={projectUuid} projectUuid={projectUuid} />
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setUploadOpen(true)}>
-              Upload
-            </Button>
-            <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setExportOpen(true)}>
-              OCR text
-            </Button>
-            <Button size="sm" className="rounded-xl" onClick={() => setTranslateExportOpen(true)}>
-              Translate &amp; export
-            </Button>
-            <Button size="sm" variant="outline" className="rounded-xl" asChild>
-              <Link to={`/projects/${projectUuid}/audit`}>Audit</Link>
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="rounded-xl text-destructive border-destructive/40 hover:bg-destructive/10"
-              onClick={() => setDeleteOpen(true)}
-              title="Hide this project from your projects list. Server-side this is inactivation (H-5); data is preserved."
-            >
-              Delete
-            </Button>
-          </div>
-          <div className="mt-2">
-            <OcrAutoRunPanel projectUuid={projectUuid} />
-          </div>
-        </div>
-        <ReleaseGatePanel projectUuid={projectUuid} />
-        <GuidedReviewPanel projectUuid={projectUuid} />
-        <div className="min-h-0 flex-1 overflow-hidden border-t border-border/80">
-          <PageList projectUuid={projectUuid} activePageUuid={pageUuid} />
-        </div>
-      </aside>
-
-      <UploadPdfDialog
-        open={uploadOpen}
-        onOpenChange={setUploadOpen}
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto">
+      <ProjectWorkspaceSidebar
         projectUuid={projectUuid}
-      />
-      <OcrExportDialog
-        open={exportOpen}
-        onOpenChange={setExportOpen}
-        projectUuid={projectUuid}
-        defaultPageRange={logicalPages.map((p) => p.page_index)}
-      />
-      <TranslationExportDialog
-        open={translateExportOpen}
-        onOpenChange={setTranslateExportOpen}
-        projectUuid={projectUuid}
-        projectName={projectQ.data?.name ?? "Waraq Export"}
-      />
-      <DeleteProjectDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        projectUuid={projectUuid}
-        projectName={projectQ.data?.name ?? "this project"}
+        activePageUuid={pageUuid}
+        className="h-[42rem] max-h-[calc(100vh-8rem)] lg:hidden"
       />
 
-      <main className="flex min-h-0 flex-col overflow-hidden rounded-[2rem] border border-border/80 bg-card/95 shadow-sm">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[2rem] border border-border/80 bg-card/95 shadow-sm">
         {pageUuid === undefined && (
           <div className="flex h-full items-center justify-center text-center p-12">
             <div className="max-w-md space-y-2">

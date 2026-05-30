@@ -206,6 +206,7 @@ export function OcrAutoRunPanel({
           variant="outline"
           onClick={startRun}
           disabled={starting || inFlightQ.isLoading || perPageBusy}
+          className="h-8 w-full px-2 text-xs"
           title={
             perPageBusy
               ? "A per-page Run-OCR is in progress. Wait for it to finish before starting the bulk run."
@@ -229,8 +230,8 @@ export function OcrAutoRunPanel({
   // ------------------------------------------------------------ in-progress / terminal
   return (
     <div className="space-y-1 rounded border bg-muted/30 p-2">
-      <div className="flex items-center justify-between text-xs">
-        <span className="font-medium">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="min-w-0 flex-1 leading-4 font-medium">
           {statusQ.isError
             ? statusMissing
               ? "Auto-OCR job no longer exists"
@@ -253,18 +254,19 @@ export function OcrAutoRunPanel({
             variant="outline"
             onClick={cancelRun}
             disabled={status?.cancel_requested === true}
+            className="h-8 shrink-0 px-2 text-xs"
           >
             {status?.cancel_requested ? "Cancelling…" : "Cancel"}
           </Button>
         )}
         {isTerminal && (
-          <Button size="sm" variant="outline" onClick={reset}>
+          <Button size="sm" variant="outline" onClick={reset} className="h-8 shrink-0 px-2 text-xs">
             New run
           </Button>
         )}
         {statusQ.isError && (
           statusMissing ? (
-            <Button size="sm" variant="outline" onClick={reset}>
+            <Button size="sm" variant="outline" onClick={reset} className="h-8 shrink-0 px-2 text-xs">
               New run
             </Button>
           ) : (
@@ -272,6 +274,7 @@ export function OcrAutoRunPanel({
               size="sm"
               variant="outline"
               onClick={() => void statusQ.refetch()}
+              className="h-8 shrink-0 px-2 text-xs"
             >
               Retry
             </Button>

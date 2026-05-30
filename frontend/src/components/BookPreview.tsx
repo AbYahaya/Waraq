@@ -11,10 +11,9 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 
 import {
   DEFAULT_STYLE_PROFILE,
-  TranslationStyleControls,
+  WordLikeTranslationToolbar,
   splitAlignedText,
   styleKindForBlock,
-  translationParagraphStyle,
   translationTextStyle,
 } from "@/components/TranslationPane";
 import { queries, type SegmentHistoryDto } from "@/lib/queries";
@@ -24,6 +23,12 @@ import {
   getLatestTranslationRevision,
   isTranslationStale,
 } from "@/lib/segment-history";
+import {
+  defaultTranslationStyleKey,
+  normalizeTranslationStyleKey,
+  translationStyleCss,
+  type TranslationStyleKey,
+} from "@/lib/translation-styles";
 import type { Page, ProjectStyleProfile, Segment } from "@/lib/types";
 
 export interface BookPreviewProps {
@@ -35,6 +40,7 @@ interface PreviewSegment {
   page: Page;
   segment: Segment;
   history: SegmentHistoryDto | undefined;
+  styleKey?: TranslationStyleKey;
 }
 
 export function BookPreview({
@@ -45,6 +51,7 @@ export function BookPreview({
   const styleQ = useQuery(queries.projectStyleProfile(projectUuid));
   const persistedStyle = styleQ.data ?? DEFAULT_STYLE_PROFILE;
   const [styleDraft, setStyleDraft] = useState<ProjectStyleProfile>(persistedStyle);
+  const [selectedStyleKey, setSelectedStyleKey] = useState<TranslationStyleKey>("body_de");
 
   useEffect(() => {
     setStyleDraft(persistedStyle);
@@ -73,6 +80,13 @@ export function BookPreview({
       previewSegments.map((entry, index) => ({
         ...entry,
         history: historyQueries[index]?.data,
+        styleKey: normalizeTranslationStyleKey(
+          entry.segment.translation_style_key ??
+            defaultTranslationStyleKey(
+              entry.segment.block_type,
+              Boolean(getLatestProtectedReference(historyQueries[index]?.data)),
+            ),
+        ),
       })),
     [historyQueries, previewSegments],
   );
@@ -101,11 +115,20 @@ export function BookPreview({
   return (
     <div className="h-full overflow-auto bg-[#efe7d8] px-3 py-4">
       <div className="mx-auto max-w-[72rem] space-y-5">
-        <TranslationStyleControls
+        <WordLikeTranslationToolbar
+          editor={null}
           projectUuid={projectUuid}
           profile={styleDraft}
           persistedProfile={persistedStyle}
+          currentStyleKey={selectedStyleKey}
+          dirty={false}
+          saving={false}
+          canSave={false}
           onProfileChange={setStyleDraft}
+          onStyleKeyChange={setSelectedStyleKey}
+          onSave={() => undefined}
+          onReset={() => setStyleDraft(persistedStyle)}
+          styleOnly
         />
         <header className="rounded-[1.75rem] border border-[#e0d5c4] bg-[#fffdf8] px-6 py-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -203,7 +226,6 @@ function PreviewPage({
             const source = getLatestSourceRevision(entry.history)?.text ?? entry.segment.text_content ?? "";
             const translation = getLatestTranslationRevision(entry.history)?.text ?? "";
             const stale = isTranslationStale(entry.history);
-            const protectedReference = getLatestProtectedReference(entry.history);
             return (
               <section key={entry.segment.satz_uuid} className="space-y-3">
                 {source && (
@@ -223,10 +245,10 @@ function PreviewPage({
                     text={translation}
                     stale={stale}
                     translationStyle={translationStyle}
-                    paragraphStyle={translationParagraphStyle(
+                    paragraphStyle={translationStyleCss(
                       styleProfile,
-                      entry.segment.block_type,
-                      Boolean(protectedReference),
+                      entry.styleKey ??
+                        defaultTranslationStyleKey(entry.segment.block_type, false),
                     )}
                   />
                 ) : (
