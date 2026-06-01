@@ -105,20 +105,31 @@ const PFLICHTFRAGEN: ReadonlyArray<PflichtfrageDef> = [
   {
     index: 1,
     key: "header_heading_level",
-    label: "Which heading level should be displayed in the header?",
+    label: "Running header source",
   },
   {
     index: 2,
     key: "chapter_break_heading_level",
-    label: "Which heading level marks chapter breaks?",
+    label: "Chapter break level",
   },
-  { index: 3, key: "toc_position", label: "Position of the TOC (front / back)?" },
+  { index: 3, key: "toc_position", label: "Contents position" },
   {
     index: 4,
     key: "display_arabic_chapter_headings",
-    label: "Display Arabic chapter headings in the body text?",
+    label: "Arabic/OCR source text",
   },
 ];
+
+const PFLICHTFRAGE_HELP: Record<PflichtfrageDef["key"], string> = {
+  header_heading_level:
+    "Chooses which heading depth should feed running headers when the export has heading-aware headers.",
+  chapter_break_heading_level:
+    "Chooses which heading depth starts a new chapter section in the exported book.",
+  toc_position:
+    "Places the generated table of contents before the body or after the body.",
+  display_arabic_chapter_headings:
+    "Controls whether Arabic OCR/source paragraphs are included beside the translation in the exported document.",
+};
 
 interface PflichtfragenState {
   header_heading_level: number;
@@ -615,9 +626,9 @@ export function TranslationExportDialog({
           >
             <header className="text-sm font-medium">2. Preflight</header>
             <p className="text-xs text-muted-foreground">
-              This step does not rewrite the document. It checks whether export
-              is safe, records the layout choices below, and explains any
-              blockers or warnings before the file is generated.
+              This is an export safety check and setup step. It does not change
+              your translation text. It records the layout choices below, checks
+              unresolved review/font/style blockers, and then allows export.
             </p>
             {guardNearQ.data && (
               <div className="rounded border bg-muted/30 p-2 text-xs space-y-1">
@@ -670,8 +681,8 @@ export function TranslationExportDialog({
             {preflightRunUuid && (
               <>
                 <p className="text-xs text-muted-foreground">
-                  Confirm each setup question for this export run. These choices
-                  are written into the export record and applied to the DOCX/PDF.
+                  Confirm each export-layout choice. These are saved only for
+                  this export run and applied when DOCX/PDF is generated.
                 </p>
                 <ul className="space-y-2">
                   {PFLICHTFRAGEN.map((f) => {
@@ -683,6 +694,9 @@ export function TranslationExportDialog({
                       >
                         <span className="text-xs font-medium">
                           {f.index}. {f.label}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">
+                          {PFLICHTFRAGE_HELP[f.key]}
                         </span>
                         <div className="flex items-center gap-2">
                           {(f.key === "header_heading_level" ||
@@ -736,7 +750,7 @@ export function TranslationExportDialog({
                                   }))
                                 }
                               />
-                              <span>Display Arabic headings</span>
+                              <span>Include Arabic/OCR source</span>
                             </label>
                           )}
                           <Button

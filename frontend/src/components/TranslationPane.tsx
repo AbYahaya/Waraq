@@ -14,7 +14,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { mergeAttributes, type Editor } from "@tiptap/core";
+import { Mark, mergeAttributes, type Editor } from "@tiptap/core";
 import Paragraph from "@tiptap/extension-paragraph";
 import TextAlign from "@tiptap/extension-text-align";
 import Underline from "@tiptap/extension-underline";
@@ -211,7 +211,7 @@ function TranslationPageReadView({
             >
               <TranslationText
                 entry={entry}
-                paragraphStyle={translationStyleCss(styleProfile, entry.styleKey)}
+                styleProfile={styleProfile}
               />
             </TranslationPageAnchor>
           ))}
@@ -255,6 +255,8 @@ function TranslationPageEditor({
     extensions: [
       StarterKit.configure({ paragraph: false }),
       StyledParagraph,
+      InlineFontFamily,
+      InlineFontSize,
       Underline,
       TextAlign.configure({ types: ["paragraph"] }),
     ],
@@ -285,20 +287,24 @@ function TranslationPageEditor({
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!editor) return;
-      const chunks = paragraphsFromTipTapDoc(editor.getJSON(), entries.length);
+      const paragraphs = paragraphsFromTipTapDoc(editor.getJSON(), entries);
       await Promise.all(
-        entries.map((entry, i) =>
-          Promise.all([
+        entries.map((entry) => {
+          const entryParagraphs = paragraphs.filter(
+            (paragraph) => paragraph.satzUuid === entry.segment.satz_uuid,
+          );
+          const primaryStyleKey = entryParagraphs[0]?.styleKey ?? entry.styleKey;
+          return Promise.all([
             api.put<Segment>(`/segments/${entry.segment.satz_uuid}/translation-text`, {
-              after_text: chunks[i]?.text ?? "",
+              after_text: serializeStyledParagraphs(entryParagraphs, primaryStyleKey),
             }),
-            chunks[i]?.styleKey !== entry.styleKey
+            primaryStyleKey !== entry.styleKey
               ? api.put<Segment>(`/segments/${entry.segment.satz_uuid}/translation-style`, {
-                  internal_style_key: chunks[i]?.styleKey ?? "body_de",
+                  internal_style_key: primaryStyleKey,
                 })
               : Promise.resolve(),
-          ]),
-        ),
+          ]);
+        }),
       );
     },
     onSuccess: async () => {
@@ -336,7 +342,7 @@ function TranslationPageEditor({
         canSave={canSave}
         onProfileChange={onStyleProfileChange}
         onStyleKeyChange={(styleKey) => {
-          editor?.chain().focus().updateAttributes("paragraph", { styleKey }).run();
+          if (editor) applyStyleToCurrentParagraph(editor, styleKey);
           setCurrentStyleKey(styleKey);
           setDirty(true);
         }}
@@ -471,10 +477,14 @@ export function WordLikeTranslationToolbar({
         </ToolbarSelect>
 
         <ToolbarSelect
-          label="Style font"
+          label={styleOnly ? "Style font" : "Font"}
           value={selectedTemplate.font_family}
-          disabled={styleSaveMutation.isPending}
-          onChange={(value) => updateSelectedTemplate({ font_family: value })}
+          disabled={styleOnly ? styleSaveMutation.isPending : editorDisabled}
+          onChange={(value) =>
+            styleOnly
+              ? updateSelectedTemplate({ font_family: value })
+              : editor?.chain().focus().setMark("inlineFontFamily", { fontFamily: value }).run()
+          }
           className="w-36"
         >
           {fontOptions.map((font) => (
@@ -487,13 +497,17 @@ export function WordLikeTranslationToolbar({
         <ToolbarSelect
           label="Text size"
           value={selectedTemplate.font_size_px}
-          disabled={styleSaveMutation.isPending}
+          disabled={styleOnly ? styleSaveMutation.isPending : editorDisabled}
           onChange={(value) => {
             const size = Number(value);
-            updateSelectedTemplate({
-              font_size_px: size,
-              docx_font_size_pt: pxToDocxPt(size, 6, 32),
-            });
+            if (styleOnly) {
+              updateSelectedTemplate({
+                font_size_px: size,
+                docx_font_size_pt: pxToDocxPt(size, 6, 32),
+              });
+            } else {
+              editor?.chain().focus().setMark("inlineFontSize", { fontSize: size }).run();
+            }
           }}
           className="w-16"
         >
@@ -507,18 +521,26 @@ export function WordLikeTranslationToolbar({
         <ToolbarDivider />
 
         <ToolbarIconButton
-          label="Style bold"
-          active={selectedTemplate.bold}
-          disabled={styleSaveMutation.isPending}
-          onClick={() => updateSelectedTemplate({ bold: !selectedTemplate.bold })}
+          label={styleOnly ? "Style bold" : "Bold"}
+          active={styleOnly ? selectedTemplate.bold : editor?.isActive("bold")}
+          disabled={styleOnly ? styleSaveMutation.isPending : editorDisabled}
+          onClick={() =>
+            styleOnly
+              ? updateSelectedTemplate({ bold: !selectedTemplate.bold })
+              : editor?.chain().focus().toggleBold().run()
+          }
         >
           <Bold className="h-4 w-4" />
         </ToolbarIconButton>
         <ToolbarIconButton
-          label="Style italic"
-          active={selectedTemplate.italic}
-          disabled={styleSaveMutation.isPending}
-          onClick={() => updateSelectedTemplate({ italic: !selectedTemplate.italic })}
+          label={styleOnly ? "Style italic" : "Italic"}
+          active={styleOnly ? selectedTemplate.italic : editor?.isActive("italic")}
+          disabled={styleOnly ? styleSaveMutation.isPending : editorDisabled}
+          onClick={() =>
+            styleOnly
+              ? updateSelectedTemplate({ italic: !selectedTemplate.italic })
+              : editor?.chain().focus().toggleItalic().run()
+          }
         >
           <Italic className="h-4 w-4" />
         </ToolbarIconButton>
@@ -690,6 +712,25 @@ export function WordLikeTranslationToolbar({
             onChange={(value) => updateSelectedTemplate({ display_label: value })}
           />
           <ToolbarNumberInput
+            label="Style size"
+            value={selectedTemplate.font_size_px}
+            min={8}
+            max={48}
+            disabled={styleSaveMutation.isPending}
+            onChange={(value) =>
+              updateSelectedTemplate({
+                font_size_px: value,
+                docx_font_size_pt: pxToDocxPt(value, 6, 32),
+              })
+            }
+          />
+          <ToolbarTextInput
+            label="Style font"
+            value={selectedTemplate.font_family}
+            disabled={styleSaveMutation.isPending}
+            onChange={(value) => updateSelectedTemplate({ font_family: value })}
+          />
+          <ToolbarNumberInput
             label="Spacing"
             value={selectedTemplate.paragraph_spacing_px}
             min={0}
@@ -730,6 +771,28 @@ export function WordLikeTranslationToolbar({
               onChange={(event) => updateSelectedTemplate({ border_left: event.target.checked })}
             />
           </label>
+          {!styleOnly && (
+            <>
+              <label className="flex items-center justify-between gap-2 rounded border bg-background px-2 py-1">
+                <span>Style bold</span>
+                <input
+                  type="checkbox"
+                  checked={selectedTemplate.bold}
+                  disabled={styleSaveMutation.isPending}
+                  onChange={(event) => updateSelectedTemplate({ bold: event.target.checked })}
+                />
+              </label>
+              <label className="flex items-center justify-between gap-2 rounded border bg-background px-2 py-1">
+                <span>Style italic</span>
+                <input
+                  type="checkbox"
+                  checked={selectedTemplate.italic}
+                  disabled={styleSaveMutation.isPending}
+                  onChange={(event) => updateSelectedTemplate({ italic: event.target.checked })}
+                />
+              </label>
+            </>
+          )}
         </div>
       </details>
       {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
@@ -904,22 +967,73 @@ const StyledParagraph = Paragraph.extend({
   },
 });
 
+const InlineFontFamily = Mark.create({
+  name: "inlineFontFamily",
+
+  addAttributes() {
+    return {
+      fontFamily: {
+        default: null,
+        parseHTML: (element) => element.style.fontFamily.replace(/['"]/g, ""),
+        renderHTML: (attributes) =>
+          attributes.fontFamily
+            ? { style: `font-family: "${String(attributes.fontFamily)}"` }
+            : {},
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ style: "font-family" }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ["span", mergeAttributes(HTMLAttributes), 0];
+  },
+});
+
+const InlineFontSize = Mark.create({
+  name: "inlineFontSize",
+
+  addAttributes() {
+    return {
+      fontSize: {
+        default: null,
+        parseHTML: (element) => Number.parseFloat(element.style.fontSize),
+        renderHTML: (attributes) =>
+          attributes.fontSize ? { style: `font-size: ${Number(attributes.fontSize)}px` } : {},
+      },
+    };
+  },
+
+  parseHTML() {
+    return [{ style: "font-size" }];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ["span", mergeAttributes(HTMLAttributes), 0];
+  },
+});
+
 interface TipTapParagraphState {
   text: string;
   styleKey: TranslationStyleKey;
+  satzUuid: string;
 }
 
 function entriesToTipTapDoc(entries: TranslationPageEntry[]): JSONContent {
   return {
     type: "doc",
-    content: entries.map((entry) => ({
-      type: "paragraph",
-      attrs: {
-        satzUuid: entry.segment.satz_uuid,
-        styleKey: entry.styleKey,
-      },
-      content: textToTipTapNodes(entry.translation),
-    })),
+    content: entries.flatMap((entry) =>
+      styledParagraphsFromStoredText(entry.translation, entry.styleKey).map((paragraph) => ({
+        type: "paragraph",
+        attrs: {
+          satzUuid: entry.segment.satz_uuid,
+          styleKey: paragraph.styleKey,
+        },
+        content: textToTipTapNodes(paragraph.text),
+      })),
+    ),
   };
 }
 
@@ -928,37 +1042,211 @@ function textToTipTapNodes(text: string): JSONContent[] | undefined {
   const nodes: JSONContent[] = [];
   text.split("\n").forEach((line, index) => {
     if (index > 0) nodes.push({ type: "hardBreak" });
-    if (line) nodes.push({ type: "text", text: line });
+    nodes.push(...inlineMarkedTextToTipTapNodes(line));
   });
   return nodes.length > 0 ? nodes : undefined;
 }
 
-function paragraphsFromTipTapDoc(doc: JSONContent, expectedCount: number): TipTapParagraphState[] {
+function paragraphsFromTipTapDoc(
+  doc: JSONContent,
+  entries: TranslationPageEntry[],
+): TipTapParagraphState[] {
   const paragraphs = (doc.content ?? []).filter((node) => node.type === "paragraph");
-  const anchored = paragraphs.filter((node) => typeof node.attrs?.satzUuid === "string");
-  if (anchored.length !== expectedCount) {
+  const states = paragraphs
+    .filter((node) => typeof node.attrs?.satzUuid === "string")
+    .map((node) => ({
+      text: textFromTipTapNodes(node.content ?? []),
+      styleKey: normalizeTranslationStyleKey(String(node.attrs?.styleKey ?? "body_de")),
+      satzUuid: String(node.attrs?.satzUuid),
+    }));
+  const entryIds = new Set(entries.map((entry) => entry.segment.satz_uuid));
+  const seenIds = new Set(states.map((state) => state.satzUuid));
+  const missing = [...entryIds].filter((id) => !seenIds.has(id));
+  if (missing.length > 0) {
     throw new Error(
-      `This page has ${expectedCount} internal translation anchors. Keep the existing anchored paragraphs while editing, or reset changes before saving.`,
+      `This page is missing ${missing.length} internal translation anchor${missing.length === 1 ? "" : "s"}. Keep the existing anchored paragraphs while editing, or reset changes before saving.`,
     );
   }
-  return anchored.map((node) => ({
-    text: textFromTipTapNodes(node.content ?? []),
-    styleKey: normalizeTranslationStyleKey(String(node.attrs?.styleKey ?? "body_de")),
-  }));
+  return states;
 }
 
 function textFromTipTapNodes(nodes: JSONContent[]): string {
   return nodes
     .map((node) => {
-      if (node.type === "text") return node.text ?? "";
+      if (node.type === "text") return tipTapTextNodeToInlineMarkedText(node);
       if (node.type === "hardBreak") return "\n";
       return textFromTipTapNodes(node.content ?? []);
     })
     .join("");
 }
 
+type InlineMarkName = "bold" | "italic" | "underline" | "strike";
+
+interface InlineMarkState {
+  marks: Set<InlineMarkName>;
+  fontFamily: string | null;
+  fontSize: number | null;
+}
+
+const INLINE_MARKERS: Record<InlineMarkName, { open: string; close: string }> = {
+  bold: { open: "[[b]]", close: "[[/b]]" },
+  italic: { open: "[[i]]", close: "[[/i]]" },
+  underline: { open: "[[u]]", close: "[[/u]]" },
+  strike: { open: "[[s]]", close: "[[/s]]" },
+};
+
+const INLINE_MARKER_TOKEN_RE =
+  /\[\[(font:[^\]]+|\/font|size:\d+(?:\.\d+)?|\/size|\/?(?:b|i|u|s))\]\]/g;
+const INLINE_MARKER_TO_NAME: Record<string, InlineMarkName | undefined> = {
+  "[[b]]": "bold",
+  "[[/b]]": "bold",
+  "[[i]]": "italic",
+  "[[/i]]": "italic",
+  "[[u]]": "underline",
+  "[[/u]]": "underline",
+  "[[s]]": "strike",
+  "[[/s]]": "strike",
+};
+
+function inlineMarkedTextToTipTapNodes(text: string): JSONContent[] {
+  const nodes: JSONContent[] = [];
+  const active: InlineMarkState = {
+    marks: new Set<InlineMarkName>(),
+    fontFamily: null,
+    fontSize: null,
+  };
+  let cursor = 0;
+  for (const match of text.matchAll(INLINE_MARKER_TOKEN_RE)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      nodes.push(tipTapTextNode(text.slice(cursor, index), active));
+    }
+    const token = match[0];
+    const name = INLINE_MARKER_TO_NAME[token];
+    if (name !== undefined) {
+      if (token.startsWith("[[/")) active.marks.delete(name);
+      else active.marks.add(name);
+    } else if (token.startsWith("[[font:")) {
+      active.fontFamily = token.slice("[[font:".length, -2);
+    } else if (token === "[[/font]]") {
+      active.fontFamily = null;
+    } else if (token.startsWith("[[size:")) {
+      active.fontSize = Number(token.slice("[[size:".length, -2));
+    } else if (token === "[[/size]]") {
+      active.fontSize = null;
+    }
+    cursor = index + token.length;
+  }
+  if (cursor < text.length) {
+    nodes.push(tipTapTextNode(text.slice(cursor), active));
+  }
+  return nodes.filter((node) => node.text);
+}
+
+function tipTapTextNode(text: string, active: InlineMarkState): JSONContent {
+  const marks: NonNullable<JSONContent["marks"]> = [...active.marks].map((type) => ({ type }));
+  if (active.fontFamily) {
+    marks.push({ type: "inlineFontFamily", attrs: { fontFamily: active.fontFamily } });
+  }
+  if (active.fontSize !== null && Number.isFinite(active.fontSize)) {
+    marks.push({ type: "inlineFontSize", attrs: { fontSize: active.fontSize } });
+  }
+  return {
+    type: "text",
+    text,
+    marks,
+  };
+}
+
+function tipTapTextNodeToInlineMarkedText(node: JSONContent): string {
+  const text = node.text ?? "";
+  const marks = node.marks ?? [];
+  const markNames = new Set(
+    marks.map((mark) => mark.type).filter((type): type is InlineMarkName => isInlineMarkName(type)),
+  );
+  const fontFamily = marks.find((mark) => mark.type === "inlineFontFamily")?.attrs?.fontFamily;
+  const fontSize = marks.find((mark) => mark.type === "inlineFontSize")?.attrs?.fontSize;
+  const order: InlineMarkName[] = ["bold", "italic", "underline", "strike"];
+  const opening =
+    `${typeof fontFamily === "string" ? `[[font:${fontFamily}]]` : ""}` +
+    `${typeof fontSize === "number" ? `[[size:${fontSize}]]` : ""}` +
+    order
+      .filter((type) => markNames.has(type))
+      .map((type) => INLINE_MARKERS[type].open)
+      .join("");
+  const closing =
+    order
+      .filter((type) => markNames.has(type))
+      .reverse()
+      .map((type) => INLINE_MARKERS[type].close)
+      .join("") +
+    `${typeof fontSize === "number" ? "[[/size]]" : ""}` +
+    `${typeof fontFamily === "string" ? "[[/font]]" : ""}`;
+  return `${opening}${text}${closing}`;
+}
+
+function isInlineMarkName(value: string | undefined): value is InlineMarkName {
+  return value === "bold" || value === "italic" || value === "underline" || value === "strike";
+}
+
+const PARAGRAPH_STYLE_MARKER_RE = /^\[\[style:([a-z0-9_]+)\]\]\s*/;
+
+interface StyledStoredParagraph {
+  text: string;
+  styleKey: TranslationStyleKey;
+}
+
+export function styledParagraphsFromStoredText(
+  text: string,
+  fallbackStyleKey: TranslationStyleKey,
+): StyledStoredParagraph[] {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const parts = normalized
+    ? normalized.split(/\n+/).map((part) => part.trim()).filter(Boolean)
+    : [""];
+  return parts.map((raw) => {
+    const match = raw.match(PARAGRAPH_STYLE_MARKER_RE);
+    return {
+      text: match ? raw.slice(match[0].length) : raw,
+      styleKey: match ? normalizeTranslationStyleKey(match[1]) : fallbackStyleKey,
+    };
+  });
+}
+
+function serializeStyledParagraphs(
+  paragraphs: TipTapParagraphState[],
+  fallbackStyleKey: TranslationStyleKey,
+): string {
+  return paragraphs
+    .map((paragraph) => {
+      const text = paragraph.text.trim();
+      if (!text) return "";
+      const marker = paragraph.styleKey === fallbackStyleKey ? "" : `[[style:${paragraph.styleKey}]] `;
+      return `${marker}${text}`;
+    })
+    .join("\n");
+}
+
 function activeParagraphStyleKey(attrs: Record<string, unknown>): TranslationStyleKey {
   return normalizeTranslationStyleKey(String(attrs.styleKey ?? "body_de"));
+}
+
+function applyStyleToCurrentParagraph(editor: Editor, styleKey: TranslationStyleKey): void {
+  const { state, view } = editor;
+  const { $from } = state.selection;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const node = $from.node(depth);
+    if (node.type.name !== "paragraph") continue;
+    const pos = $from.before(depth);
+    view.dispatch(
+      state.tr.setNodeMarkup(pos, undefined, {
+        ...node.attrs,
+        styleKey,
+      }),
+    );
+    editor.commands.focus();
+    return;
+  }
 }
 
 function applyStyleSequenceToAnchoredParagraphs(
@@ -967,7 +1255,7 @@ function applyStyleSequenceToAnchoredParagraphs(
 ): void {
   const paragraphs: Array<{ pos: number; attrs: Record<string, unknown> }> = [];
   editor.state.doc.descendants((node, pos) => {
-    if (node.type.name !== "paragraph" || typeof node.attrs.satzUuid !== "string") return;
+    if (node.type.name !== "paragraph") return;
     paragraphs.push({ pos, attrs: { ...node.attrs } });
   });
   const currentPos = editor.state.selection.$from.before(1);
@@ -1105,10 +1393,10 @@ function TranslationPageAnchor({
 
 function TranslationText({
   entry,
-  paragraphStyle,
+  styleProfile,
 }: {
   entry: TranslationPageEntry;
-  paragraphStyle: CSSProperties;
+  styleProfile: ProjectStyleProfile;
 }): JSX.Element {
   const [referenceOpen, setReferenceOpen] = useState(false);
   const canOpenProtectedReference = Boolean(entry.protectedReference && entry.translation);
@@ -1123,27 +1411,30 @@ function TranslationText({
 
   return (
     <>
-      {splitAlignedText(entry.translation).map((block, index) => (
-        <p
-          key={`${index}-${block.text.slice(0, 18)}`}
-          className={cn(
-            "whitespace-pre-line",
-            entry.stale && "text-amber-950",
-            canOpenProtectedReference &&
-              "cursor-pointer underline decoration-dotted underline-offset-4",
-          )}
-          style={{
-            ...paragraphStyle,
-            textAlign: block.alignment,
-          }}
-          title={entry.protectedReference?.hoverText}
-          onClick={() => {
-            if (canOpenProtectedReference) setReferenceOpen(true);
-          }}
-        >
-          {block.text}
-        </p>
-      ))}
+      {styledParagraphsFromStoredText(entry.translation, entry.styleKey).flatMap(
+        (paragraph, paragraphIndex) =>
+          splitAlignedText(paragraph.text).map((block, blockIndex) => (
+            <p
+              key={`${paragraphIndex}-${blockIndex}-${block.text.slice(0, 18)}`}
+              className={cn(
+                "whitespace-pre-line",
+                entry.stale && "text-amber-950",
+                canOpenProtectedReference &&
+                  "cursor-pointer underline decoration-dotted underline-offset-4",
+              )}
+              style={{
+                ...translationStyleCss(styleProfile, paragraph.styleKey),
+                textAlign: block.alignment,
+              }}
+              title={entry.protectedReference?.hoverText}
+              onClick={() => {
+                if (canOpenProtectedReference) setReferenceOpen(true);
+              }}
+            >
+              <InlineMarkedText text={block.text} />
+            </p>
+          )),
+      )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
         {entry.protectedReference && (
@@ -1176,6 +1467,71 @@ function TranslationText({
         />
       )}
     </>
+  );
+}
+
+export function InlineMarkedText({ text }: { text: string }): JSX.Element {
+  const nodes = inlineMarkedTextToReactNodes(text);
+  return <>{nodes}</>;
+}
+
+function inlineMarkedTextToReactNodes(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const active: InlineMarkState = {
+    marks: new Set<InlineMarkName>(),
+    fontFamily: null,
+    fontSize: null,
+  };
+  let cursor = 0;
+  let key = 0;
+  for (const match of text.matchAll(INLINE_MARKER_TOKEN_RE)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      nodes.push(renderInlineMarkedSpan(text.slice(cursor, index), active, key++));
+    }
+    const token = match[0];
+    const name = INLINE_MARKER_TO_NAME[token];
+    if (name !== undefined) {
+      if (token.startsWith("[[/")) active.marks.delete(name);
+      else active.marks.add(name);
+    } else if (token.startsWith("[[font:")) {
+      active.fontFamily = token.slice("[[font:".length, -2);
+    } else if (token === "[[/font]]") {
+      active.fontFamily = null;
+    } else if (token.startsWith("[[size:")) {
+      active.fontSize = Number(token.slice("[[size:".length, -2));
+    } else if (token === "[[/size]]") {
+      active.fontSize = null;
+    }
+    cursor = index + token.length;
+  }
+  if (cursor < text.length) {
+    nodes.push(renderInlineMarkedSpan(text.slice(cursor), active, key++));
+  }
+  return nodes;
+}
+
+function renderInlineMarkedSpan(text: string, active: InlineMarkState, key: number): ReactNode {
+  if (active.marks.size === 0 && !active.fontFamily && active.fontSize === null) return text;
+  return (
+    <span
+      key={key}
+      className={cn(
+        active.marks.has("bold") && "font-semibold",
+        active.marks.has("italic") && "italic",
+        active.marks.has("underline") && "underline underline-offset-2",
+        active.marks.has("strike") && "line-through",
+      )}
+      style={{
+        fontFamily: active.fontFamily ? `"${active.fontFamily}", sans-serif` : undefined,
+        fontSize:
+          active.fontSize !== null && Number.isFinite(active.fontSize)
+            ? `${active.fontSize}px`
+            : undefined,
+      }}
+    >
+      {text}
+    </span>
   );
 }
 
@@ -1367,8 +1723,13 @@ export function styleKindForBlock(
 }
 
 function shallowEqualProfile(a: ProjectStyleProfile, b: ProjectStyleProfile): boolean {
-  return Object.keys(DEFAULT_STYLE_PROFILE).every(
+  const scalarKeysEqual = Object.keys(DEFAULT_STYLE_PROFILE).every(
     (key) => a[key as keyof ProjectStyleProfile] === b[key as keyof ProjectStyleProfile],
+  );
+  return (
+    scalarKeysEqual &&
+    JSON.stringify(effectiveTranslationStyleTemplates(a)) ===
+      JSON.stringify(effectiveTranslationStyleTemplates(b))
   );
 }
 

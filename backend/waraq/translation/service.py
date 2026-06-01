@@ -664,7 +664,37 @@ async def _execute(
             elif is_pagination_or_marker_text(input_text):
                 output_text = input_text
             else:
-                output_text = await translator(input_text, chunk_context)
+                try:
+                    output_text = await translator(input_text, chunk_context)
+                except Exception as exc:
+                    reason = f"translation_failed:{type(exc).__name__}: {exc!s}"[:500]
+                    chunks.append(
+                        TranslatedChunk(
+                            satz_uuid=satz_uuid,
+                            input_text=input_text,
+                            output_text=None,
+                            skipped=True,
+                            skip_reason=reason,
+                        )
+                    )
+                    skipped.append(SkippedSegment(satz_uuid=satz_uuid, reason=reason))
+                    await _persist_chunk_checkpoint(
+                        session=session,
+                        job=job,
+                        chunk_index=idx + 1,
+                        context=context,
+                        skipped_so_far=skipped,
+                    )
+                    _write_progress(
+                        job,
+                        total=len(segment_uuids),
+                        translated=sum(1 for c in chunks if not c.skipped),
+                        processed=idx + 1,
+                    )
+                    await session.flush()
+                    if commit_per_chunk:
+                        await session.commit()
+                    continue
 
             # T-7.1.2 / T-7.2.1 plug their writers in here. The hook runs
             # in the same transaction as the checkpoint; partial-failure

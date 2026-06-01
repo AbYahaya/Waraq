@@ -8,14 +8,18 @@
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { Columns2, Download, Languages } from "lucide-react";
 
 import {
   DEFAULT_STYLE_PROFILE,
+  InlineMarkedText,
   WordLikeTranslationToolbar,
   splitAlignedText,
   styleKindForBlock,
+  styledParagraphsFromStoredText,
   translationTextStyle,
 } from "@/components/TranslationPane";
+import { Button } from "@/components/ui/button";
 import { queries, type SegmentHistoryDto } from "@/lib/queries";
 import {
   getLatestProtectedReference,
@@ -43,6 +47,8 @@ interface PreviewSegment {
   styleKey?: TranslationStyleKey;
 }
 
+type PreviewMode = "translation" | "bilingual";
+
 export function BookPreview({
   projectUuid,
   projectName,
@@ -52,6 +58,7 @@ export function BookPreview({
   const persistedStyle = styleQ.data ?? DEFAULT_STYLE_PROFILE;
   const [styleDraft, setStyleDraft] = useState<ProjectStyleProfile>(persistedStyle);
   const [selectedStyleKey, setSelectedStyleKey] = useState<TranslationStyleKey>("body_de");
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("translation");
 
   useEffect(() => {
     setStyleDraft(persistedStyle);
@@ -111,9 +118,14 @@ export function BookPreview({
     Boolean(getLatestTranslationRevision(entry.history)?.text),
   ).length;
   const staleCount = entries.filter((entry) => isTranslationStale(entry.history)).length;
+  const printPreview = (mode: PreviewMode) => {
+    setPreviewMode(mode);
+    window.setTimeout(() => window.print(), 80);
+  };
 
   return (
     <div className="h-full overflow-auto bg-[#efe7d8] px-3 py-4">
+      <BookPreviewPrintStyles />
       <div className="mx-auto max-w-[72rem] space-y-5">
         <WordLikeTranslationToolbar
           editor={null}
@@ -130,7 +142,53 @@ export function BookPreview({
           onReset={() => setStyleDraft(persistedStyle)}
           styleOnly
         />
-        <header className="rounded-[1.75rem] border border-[#e0d5c4] bg-[#fffdf8] px-6 py-6 shadow-sm">
+        <div className="book-preview-toolbar flex flex-col gap-3 rounded-[1.25rem] border border-[#e0d5c4] bg-[#fffdf8] px-4 py-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+          <div className="inline-flex w-full rounded-lg border border-[#d8cbb8] bg-[#f8f3ea] p-1 sm:w-auto">
+            <Button
+              type="button"
+              size="sm"
+              variant={previewMode === "translation" ? "default" : "ghost"}
+              className="min-w-0 flex-1 gap-2 sm:flex-none"
+              onClick={() => setPreviewMode("translation")}
+            >
+              <Languages className="h-4 w-4 shrink-0" />
+              <span className="truncate">Translation only</span>
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={previewMode === "bilingual" ? "default" : "ghost"}
+              className="min-w-0 flex-1 gap-2 sm:flex-none"
+              onClick={() => setPreviewMode("bilingual")}
+            >
+              <Columns2 className="h-4 w-4 shrink-0" />
+              <span className="truncate">OCR + translation</span>
+            </Button>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={() => printPreview("translation")}
+            >
+              <Download className="h-4 w-4 shrink-0" />
+              <span>Translated PDF</span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={() => printPreview("bilingual")}
+            >
+              <Download className="h-4 w-4 shrink-0" />
+              <span>OCR + translation PDF</span>
+            </Button>
+          </div>
+        </div>
+        <header className="book-preview-header rounded-[1.75rem] border border-[#e0d5c4] bg-[#fffdf8] px-6 py-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <p className="text-[10px] uppercase tracking-[0.28em] text-muted-foreground">
@@ -138,8 +196,8 @@ export function BookPreview({
               </p>
               <h2 className="mt-1 text-3xl font-semibold text-[#1d221d]">{projectName}</h2>
               <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-                Previewing saved style, OCR source, translation paragraphs, headings,
-                quotes, protected passages, and stale translation state before export.
+                Previewing saved style, translation paragraphs, headings, quotes,
+                protected passages, and stale translation state before export.
               </p>
             </div>
             <div className="grid grid-cols-3 gap-2 text-center">
@@ -150,16 +208,19 @@ export function BookPreview({
           </div>
         </header>
 
-        {pages.map((page) => (
-          <PreviewPage
-            key={page.page_uuid}
-            page={page}
-            entries={entries.filter((entry) => entry.page.page_uuid === page.page_uuid)}
-            styleProfile={styleDraft}
-            translationStyle={textStyle}
-            arabicStyle={arabicStyle}
-          />
-        ))}
+        <div className="space-y-5" data-book-preview-print>
+          {pages.map((page) => (
+            <PreviewPage
+              key={page.page_uuid}
+              page={page}
+              entries={entries.filter((entry) => entry.page.page_uuid === page.page_uuid)}
+              styleProfile={styleDraft}
+              translationStyle={textStyle}
+              arabicStyle={arabicStyle}
+              previewMode={previewMode}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -200,6 +261,7 @@ interface PreviewPageProps {
   styleProfile: ProjectStyleProfile;
   translationStyle: CSSProperties;
   arabicStyle: CSSProperties;
+  previewMode: PreviewMode;
 }
 
 function PreviewPage({
@@ -208,13 +270,14 @@ function PreviewPage({
   styleProfile,
   translationStyle,
   arabicStyle,
+  previewMode,
 }: PreviewPageProps): JSX.Element {
   return (
     <article
-      className="mx-auto rounded-[1.75rem] border border-[#e0d5c4] bg-[#fffdf8] px-6 py-8 shadow-sm sm:px-10"
+      className="book-preview-page mx-auto rounded-[1.75rem] border border-[#e0d5c4] bg-[#fffdf8] px-6 py-8 shadow-sm sm:px-10"
       style={{ maxWidth: `${styleProfile.page_max_width_rem}rem` }}
     >
-      <div className="mb-6 flex items-center justify-between border-b border-[#eee5d6] pb-3">
+      <div className="book-preview-page-meta mb-6 flex items-center justify-between border-b border-[#eee5d6] pb-3">
         <h3 className="text-lg font-semibold text-[#1d221d]">Page {page.page_index}</h3>
         <span className="text-[11px] text-muted-foreground">{entries.length} anchor(s)</span>
       </div>
@@ -228,7 +291,7 @@ function PreviewPage({
             const stale = isTranslationStale(entry.history);
             return (
               <section key={entry.segment.satz_uuid} className="space-y-3">
-                {source && (
+                {previewMode === "bilingual" && source && (
                   <p
                     dir="rtl"
                     className="whitespace-pre-wrap text-right text-[#1d221d]"
@@ -245,11 +308,10 @@ function PreviewPage({
                     text={translation}
                     stale={stale}
                     translationStyle={translationStyle}
-                    paragraphStyle={translationStyleCss(
-                      styleProfile,
-                      entry.styleKey ??
-                        defaultTranslationStyleKey(entry.segment.block_type, false),
-                    )}
+                    styleProfile={styleProfile}
+                    fallbackStyleKey={
+                      entry.styleKey ?? defaultTranslationStyleKey(entry.segment.block_type, false)
+                    }
                   />
                 ) : (
                   <p className="text-sm italic text-muted-foreground">No translation yet.</p>
@@ -267,19 +329,21 @@ function StyledTranslationPreview({
   text,
   stale,
   translationStyle,
-  paragraphStyle,
+  styleProfile,
+  fallbackStyleKey,
 }: {
   text: string;
   stale: boolean;
   translationStyle: CSSProperties;
-  paragraphStyle: CSSProperties;
+  styleProfile: ProjectStyleProfile;
+  fallbackStyleKey: TranslationStyleKey;
 }): JSX.Element {
-  const paragraphs = splitPreviewParagraphs(text);
-  const alignedBlocks = splitAlignedText(text);
-  const blocks =
-    alignedBlocks.length > 1 || alignedBlocks[0]?.alignment
-      ? alignedBlocks
-      : paragraphs.map((paragraph) => ({ text: paragraph, alignment: undefined }));
+  const blocks = styledParagraphsFromStoredText(text, fallbackStyleKey).flatMap((paragraph) =>
+    splitAlignedText(paragraph.text).map((block) => ({
+      ...block,
+      styleKey: paragraph.styleKey,
+    })),
+  );
 
   return (
     <div
@@ -291,26 +355,19 @@ function StyledTranslationPreview({
           key={`${index}-${block.text.slice(0, 18)}`}
           className="whitespace-pre-line"
           style={{
-            ...paragraphStyle,
+            ...translationStyleCss(styleProfile, block.styleKey),
             textAlign: block.alignment,
             marginBottom:
-              index === blocks.length - 1 ? 0 : paragraphStyle.marginBottom,
+              index === blocks.length - 1
+                ? 0
+                : translationStyleCss(styleProfile, block.styleKey).marginBottom,
           }}
         >
-          {block.text}
+          <InlineMarkedText text={block.text} />
         </p>
       ))}
     </div>
   );
-}
-
-function splitPreviewParagraphs(text: string): string[] {
-  const normalized = text.replace(/\r\n/g, "\n").trim();
-  if (!normalized) return [];
-  return normalized
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
 }
 
 function arabicTextStyle(profile: ProjectStyleProfile): CSSProperties {
@@ -352,4 +409,59 @@ function arabicBlockTextStyle(
     };
   }
   return {};
+}
+
+function BookPreviewPrintStyles(): JSX.Element {
+  return (
+    <style>
+      {`
+        @media print {
+          @page {
+            size: A4;
+            margin: 18mm;
+          }
+
+          body * {
+            visibility: hidden !important;
+          }
+
+          [data-book-preview-print],
+          [data-book-preview-print] * {
+            visibility: visible !important;
+          }
+
+          [data-book-preview-print] {
+            position: absolute !important;
+            inset: 0 !important;
+            width: 100% !important;
+            max-width: none !important;
+            background: #ffffff !important;
+          }
+
+          .book-preview-toolbar,
+          .book-preview-header,
+          .book-preview-page-meta {
+            display: none !important;
+          }
+
+          .book-preview-page {
+            max-width: none !important;
+            min-height: auto !important;
+            break-after: page;
+            page-break-after: always;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+          }
+
+          .book-preview-page:last-child {
+            break-after: auto;
+            page-break-after: auto;
+          }
+        }
+      `}
+    </style>
+  );
 }

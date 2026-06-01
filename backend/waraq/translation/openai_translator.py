@@ -181,8 +181,9 @@ def make_openai_translator(
             max_chars=batch_max_chars,
         )
         normalized_output_lines: list[str] = []
-        last_exc: Exception | None = None
-        for batch in batches:
+
+        async def _translate_batch(batch) -> list[str]:
+            last_exc: Exception | None = None
             for _attempt in range(1, protocol_attempts + 1):
                 try:
                     resp = await client.chat.completions.create(
@@ -195,20 +196,34 @@ def make_openai_translator(
                     )
                     raw_output = (resp.choices[0].message.content or "").strip()
                     translated_lines = parse_tagged_translation_output(raw_output, batch)
-                    normalized_output_lines.extend(
-                        [
-                            apply_canon_rules(line)
-                            if line != source_line.source_text or source_line.kind == "text"
-                            else line
-                            for line, source_line in zip(translated_lines, batch.lines, strict=True)
-                        ]
-                    )
-                    last_exc = None
-                    break
+                    return [
+                        apply_canon_rules(line)
+                        if line != source_line.source_text or source_line.kind == "text"
+                        else line
+                        for line, source_line in zip(translated_lines, batch.lines, strict=True)
+                    ]
                 except Exception as exc:
                     last_exc = exc
-            if last_exc is not None:
-                raise last_exc
+
+            if len(batch.lines) > 1:
+                recovered: list[str] = []
+                for line in batch.lines:
+                    single = type(batch)(
+                        lines=(line,),
+                        prompt_text=(
+                            f"[[{line.tag}]] <BLANK_LINE>"
+                            if line.kind == "blank"
+                            else f"[[{line.tag}]] {line.source_text}"
+                        ),
+                    )
+                    recovered.extend(await _translate_batch(single))
+                return recovered
+
+            assert last_exc is not None
+            raise last_exc
+
+        for batch in batches:
+            normalized_output_lines.extend(await _translate_batch(batch))
         return "\n".join(normalized_output_lines)
 
     return _translate

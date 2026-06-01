@@ -262,6 +262,40 @@ class TestSkippedSegmentsReported:
         assert job.result["chunks_skipped"] == 2
         assert len(job.result["skipped_segments"]) == 2
 
+    async def test_translator_failure_skips_segment_and_continues(
+        self, db_session: AsyncSession
+    ) -> None:
+        project, segments = await _seed_project_with_segments(db_session, n=3)
+        await start_translation(session=db_session, project_uuid=project.project_uuid)
+
+        async def flaky_translator(text: str, ctx: TranslationContext) -> str:
+            if text == "input-1":
+                raise ValueError("missing translation line tag L0012")
+            return f"DE: {text}"
+
+        job = await start_translation_job(
+            session=db_session,
+            project_uuid=project.project_uuid,
+            segment_uuids=[s.satz_uuid for s in segments],
+        )
+        result = await run_translation_job(
+            session=db_session, job=job, translator=flaky_translator
+        )
+
+        assert job.state == JobState.COMPLETED.value
+        assert [chunk.output_text for chunk in result.chunks] == [
+            "DE: input-0",
+            None,
+            "DE: input-2",
+        ]
+        assert len(result.skipped) == 1
+        assert result.skipped[0].satz_uuid == segments[1].satz_uuid
+        assert "missing translation line tag L0012" in result.skipped[0].reason
+        assert job.result["chunks_total"] == 3
+        assert job.result["chunks_translated"] == 2
+        assert job.result["chunks_skipped"] == 1
+        assert job.result["skipped_segments"][0]["satz_uuid"] == str(segments[1].satz_uuid)
+
 
 # --- Checkpoint per chunk + resumption (T-REC-03) ------------------
 

@@ -57,6 +57,8 @@ class TranslationDocxConfig:
     header_heading_level: int = 1
     chapter_break_heading_level: int = 1
     toc_position: TocPosition = "front"
+    # Legacy field name kept for preflight/export protocol compatibility.
+    # It now controls whether Arabic/OCR source text is included at all.
     display_arabic_chapter_headings: bool = True
     style_profile: Mapping[str, Any] = field(default_factory=dict)
 
@@ -327,6 +329,10 @@ _ALIGNMENT_MARKER_RE = re.compile(
     r"\[\[(left|center|justify)\]\](.*?)\[\[/\1\]\]",
     flags=re.DOTALL,
 )
+_PARAGRAPH_STYLE_MARKER_RE = re.compile(r"^\[\[style:([a-z0-9_]+)\]\]\s*")
+_INLINE_MARKER_TOKEN_RE = re.compile(
+    r"\[\[(font:[^\]]+|/font|size:\d+(?:\.\d+)?|/size|/?(?:b|i|u|s))\]\]"
+)
 
 
 def _docx_alignment(alignment: InlineAlignment | None) -> WD_PARAGRAPH_ALIGNMENT:
@@ -357,7 +363,27 @@ def _style_template(profile: Mapping[str, Any], style_key: str | None) -> Mappin
     return template if isinstance(template, Mapping) else None
 
 
-def _iter_aligned_blocks(text: str) -> list[tuple[str, InlineAlignment | None]]:
+@dataclass(frozen=True, slots=True)
+class InlineRun:
+    text: str
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    strike: bool = False
+    font_family: str | None = None
+    font_size_px: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationParagraphBlock:
+    text: str
+    alignment: InlineAlignment | None
+    style_key: str | None
+
+
+def _iter_aligned_blocks(
+    text: str, *, style_key: str | None = None
+) -> list[TranslationParagraphBlock]:
     blocks: list[tuple[str, InlineAlignment | None]] = []
     last = 0
     for match in _ALIGNMENT_MARKER_RE.finditer(text):
@@ -367,7 +393,123 @@ def _iter_aligned_blocks(text: str) -> list[tuple[str, InlineAlignment | None]]:
         last = match.end()
     if last < len(text):
         blocks.append((text[last:], None))
-    return [(block, alignment) for block, alignment in blocks if block.strip()]
+    return [
+        TranslationParagraphBlock(block, alignment, style_key)
+        for block, alignment in blocks
+        if block.strip()
+    ]
+
+
+def _iter_styled_translation_blocks(
+    text: str, *, fallback_style_key: str | None = None
+) -> list[TranslationParagraphBlock]:
+    normalized = text.replace("\r\n", "\n")
+    parts = [part.strip() for part in re.split(r"\n+", normalized) if part.strip()]
+    if not parts and text.strip():
+        parts = [text.strip()]
+    blocks: list[TranslationParagraphBlock] = []
+    for raw in parts:
+        match = _PARAGRAPH_STYLE_MARKER_RE.match(raw)
+        style_key = match.group(1) if match else fallback_style_key
+        content = raw[match.end() :] if match else raw
+        blocks.extend(_iter_aligned_blocks(content, style_key=style_key))
+    return blocks
+
+
+def _iter_inline_runs(text: str) -> list[InlineRun]:
+    runs: list[InlineRun] = []
+    bold = italic = underline = strike = False
+    font_family: str | None = None
+    font_size_px: float | None = None
+    cursor = 0
+    for match in _INLINE_MARKER_TOKEN_RE.finditer(text):
+        if match.start() > cursor:
+            runs.append(
+                InlineRun(
+                    text[cursor : match.start()],
+                    bold=bold,
+                    italic=italic,
+                    underline=underline,
+                    strike=strike,
+                    font_family=font_family,
+                    font_size_px=font_size_px,
+                )
+            )
+        token = match.group(1)
+        if token == "b":
+            bold = True
+        elif token == "/b":
+            bold = False
+        elif token == "i":
+            italic = True
+        elif token == "/i":
+            italic = False
+        elif token == "u":
+            underline = True
+        elif token == "/u":
+            underline = False
+        elif token == "s":
+            strike = True
+        elif token == "/s":
+            strike = False
+        elif token.startswith("font:"):
+            font_family = token.removeprefix("font:")
+        elif token == "/font":
+            font_family = None
+        elif token.startswith("size:"):
+            try:
+                font_size_px = float(token.removeprefix("size:"))
+            except ValueError:
+                font_size_px = None
+        elif token == "/size":
+            font_size_px = None
+        cursor = match.end()
+    if cursor < len(text):
+        runs.append(
+            InlineRun(
+                text[cursor:],
+                bold=bold,
+                italic=italic,
+                underline=underline,
+                strike=strike,
+                font_family=font_family,
+                font_size_px=font_size_px,
+            )
+        )
+    return [run for run in runs if run.text]
+
+
+def _apply_inline_run_format(
+    run: Any,
+    inline: InlineRun,
+    *,
+    template: Mapping[str, Any] | None,
+    profile: Mapping[str, Any],
+    block_type: str | None,
+) -> None:
+    run.bold = bool(template.get("bold", False)) if template else False
+    run.italic = bool(template.get("italic", False)) if template else False
+    if inline.bold:
+        run.bold = True
+    if inline.italic:
+        run.italic = True
+    if inline.underline:
+        run.underline = True
+    if inline.strike:
+        run.font.strike = True
+    run.font.name = inline.font_family or str(
+        template.get("font_family") if template else profile["docx_translation_font_family"]
+    )
+    font_size_pt = (
+        max(6, min(32, round(inline.font_size_px * 0.65)))
+        if inline.font_size_px is not None
+        else int(
+            template.get("docx_font_size_pt")
+            if template
+            else _docx_font_size_for_block(profile, block_type=block_type, source=False)
+        )
+    )
+    run.font.size = Pt(font_size_pt)
 
 
 def _add_translation_paragraphs(
@@ -379,18 +521,30 @@ def _add_translation_paragraphs(
     block_type: str | None,
     internal_style_key: str | None = None,
 ) -> None:
-    blocks = _iter_aligned_blocks(text)
+    blocks = _iter_styled_translation_blocks(text, fallback_style_key=internal_style_key)
     if not blocks:
-        blocks = [(text, None)]
-    for block_text, alignment in blocks:
-        paragraph = document.add_paragraph(block_text, style=style)
+        blocks = [TranslationParagraphBlock(text, None, internal_style_key)]
+    for block in blocks:
+        block_style = block.style_key or internal_style_key
+        paragraph = document.add_paragraph(style=style)
+        profile = _effective_style_profile(config)
+        template = _style_template(profile, block_style)
         _apply_translation_layout(
             paragraph,
             config,
             block_type=block_type,
-            alignment=alignment,
-            internal_style_key=internal_style_key,
+            alignment=block.alignment,
+            internal_style_key=block_style,
         )
+        for inline in _iter_inline_runs(block.text):
+            run = paragraph.add_run(inline.text)
+            _apply_inline_run_format(
+                run,
+                inline,
+                template=template,
+                profile=profile,
+                block_type=block_type,
+            )
 
 
 def _heading_level(value: object, default: int = 1) -> int:
@@ -612,7 +766,7 @@ def _block_type_for_style_key(block_type: str, internal_style_key: str | None) -
 
 
 def _include_source_for_block(block_type: str, config: TranslationDocxConfig) -> bool:
-    return not (block_type in {"UE", "HD"} and not config.display_arabic_chapter_headings)
+    return config.display_arabic_chapter_headings
 
 
 def _add_title_page(document: Any, *, project_title: str, config: TranslationDocxConfig) -> None:
