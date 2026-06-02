@@ -75,7 +75,15 @@ Important visual assets:
 
 4. TOC / IVZ review screen
    - Implemented in `Waraq/frontend/src/components/TocPanel.tsx`, `Waraq/backend/waraq/toc/service.py`, and `Waraq/backend/waraq/api/routers/toc_router.py`.
-   - Rebuilt from the mockup as a structural manuscript review station.
+   - Rebuilt from the mockup as a structural manuscript review station, then corrected after user testing to start with TOC source-page detection/confirmation instead of dumping page-by-page fallback rows.
+   - Backend now scores pages for TOC-likeness using title, line-ending page number, dot-leader, short-line density, and adjacent-page continuity signals.
+   - `GET /projects/{project_uuid}/toc` now returns `source_candidates`, `selected_source_page_indices`, and `source_selection_state`.
+   - Added `POST /projects/{project_uuid}/toc/source-decision` for accepting detected source pages, setting a manual source-page range, choosing no TOC/page-by-page fallback, or returning to auto detection.
+   - Confirmed/detected TOC source pages are parsed into editable source lines and structured entries, then matched to nearby body headings using target page and fuzzy heading-text similarity.
+   - If no TOC is detected, the UI now shows a clear no-TOC state with "Use page-by-page fallback" instead of a confusing 1-row-per-page active table.
+   - Release gate now blocks translation while detected/source-page TOC structure requires Phase 4 confirmation.
+   - Step 2 final translated TOC review now has a persisted confirmation endpoint and UI action; export preflight blocks when translated TOC review is required but unconfirmed.
+   - TOC export settings now prefill the Translate & Export preflight Pflichtfragen, while preserving the required active per-export confirmation.
    - Includes top workflow steps, original scan panel, editable TOC OCR text, structured TOC table, issue resolution, release gate, export settings, and heading-style customization.
    - Original scan panel supports page render, zoom, previous/next line navigation, selected-line highlight, and re-detect messaging.
    - OCR text panel persists save/cancel correction, split, merge-next, mark TOC, mark not TOC, and protected/manual correction indicators via TOC Decision Events.
@@ -118,5 +126,31 @@ Important visual assets:
 - Keep UI copy in English.
 - Keep canonical internal style keys stable even when user-facing labels are editable.
 - Do not reintroduce items from the first observations document unless they are also present in the second document or the user explicitly asks for them.
+- Main sidebar navigation now uses `Workspace` instead of `Projects`. It opens the last remembered `/projects/...` workspace URL from `frontend/src/lib/workspace-memory.ts`; if no valid remembered workspace exists, it stays disabled.
+- Project workspace sidebar intentionally includes a `Dashboard` shortcut beneath the project difficulty badge.
+- Project workspace sidebar is internally scrollable so added controls do not compress the page list or overflow awkwardly.
+- View state that should survive refresh is stored in URL params. Workspace uses `view`, `pane`, `edit`, and `panel`; Book Preview uses `preview` and `preview_style`; TOC uses `toc_phase`; DPI Compare uses `ref_dpi`, `retry_dpi`, `dpi_zoom`, and `dpi_engine`; Audit uses `tab`, `filter`, and `resolved`; Admin uses `account`.
+- Workspace view state is URL-derived in `ProjectWorkspace.tsx`; do not reintroduce mirrored React state plus URL-sync effects for `view`/`pane`/`edit`/`panel`, because clicking another page can otherwise cause a Solo/Double oscillation. `PageList.tsx` preserves `location.search` when navigating between project pages.
+- Unsaved action/draft state such as dialog contents, passwords, OCR retry crop boxes, and unaccepted OCR candidates is intentionally not persisted unless it becomes server-backed.
 - Before implementing, inspect existing frontend components in `Waraq/frontend/src/components/` and related backend routers/services in `Waraq/backend/waraq/`.
 - The second observations document includes images; local rendered versions are already saved under `Waraq/docs/ui-followup/assets/`.
+- Reference stack gap pass, 2026-06-01:
+  - Added `backend/waraq/hadith/citation_extract.py` for sunnah.com citation extraction.
+  - `backend/waraq/api/routers/hadith_router.py` now reads sunnah.com API key through `get_settings()`, infers direct sunnah.com lookups from segment text, creates open hadith status rows after verification, and exposes `/review` plus `/status/{hadith_status_uuid}/decision` endpoints.
+  - `backend/waraq/translation/protected_passages.py` now tries sunnah.com when a citation is present, records/reuses hadith statuses, and can select `english_rwwad` for protected Qur'an translations when a caller passes an English target language. Current translation jobs still do not pass a target language, so default behavior remains German.
+  - `backend/waraq/hadith/consensus.py` now uses CAMeL lexeme refinement for vocalization comparison when available.
+  - `backend/waraq/api/routers/diagnostics_router.py` now reports sunnah.com key presence from the app settings loader.
+  - `backend/waraq/db/session.py` now explicitly includes `backend/.env` as a settings source, avoiding false "not wired" diagnostics when the backend process is started from another working directory. Existing running servers still need restart after `.env` edits because settings are cached.
+  - Verified with backend py_compile and API import. Targeted hadith-router pytest timed out after collection under `timeout 30`; no traceback.
+  - Follow-ups: frontend Hadith Review panel, first-class project/job target-language setting, and concrete E-5 Official Live API integration once API contract/key details are available.
+- Hadith detector follow-up, 2026-06-02:
+  - User tested segment `e9827205-6ba9-4fbd-90af-3c41087ae75d`; `/hadith/review` returned `aggregate_uuid: null`.
+  - Root cause found in `translation/protected_passages.py`: protected translation marker detection did not catch phrasing like `أن رسول الله ﷺ قال` / `وفي رواية`.
+  - Expanded `_looks_like_hadith` markers and added regression assertions in `backend/tests/translation/test_protected_passages.py`.
+  - Verified with `py_compile waraq/translation/protected_passages.py` and `pytest tests/translation/test_protected_passages.py -q`.
+- Hadith no-candidate behavior, 2026-06-02:
+  - User manually verified the same segment and got `mandatory_count: 0`, `extended_count: 0`, `sunnah_no_lookup_address`, `dorar_unreachable:ModelUClassA`, and `run: null`.
+  - Added shared `backend/waraq/hadith/detection.py`.
+  - Protected translation now records H-2/N-7 and skips with `hadith_external_verification_unavailable` when hadith-like text has no external candidates, preventing silent ordinary LLM translation.
+  - Manual hadith verification now records H-2/N-7 in the no-candidate hadith-like/manual-extended case, so `/hadith/review` can show an open status even without aggregate/source rows.
+  - Verified with py_compile, `pytest tests/translation/test_protected_passages.py -q`, and API import.

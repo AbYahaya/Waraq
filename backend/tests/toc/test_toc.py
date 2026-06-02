@@ -80,11 +80,8 @@ class TestNoTocFallback:
         assert result.fallback_kind == TocFallbackKind.PAGE_BY_PAGE
         assert result.detected_heading_count == 0
         assert result.page_count == 2
-        assert len(result.entries) == 2
-        # Fallback entries lack a real segment.
-        assert all(e.satz_uuid is None and e.block_uuid is None for e in result.entries)
-        assert result.entries[0].page_index == 1
-        assert result.entries[1].page_index == 2
+        assert result.entries == []
+        assert result.ocr_lines == []
 
 
 @pytest.mark.asyncio

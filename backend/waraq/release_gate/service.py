@@ -245,6 +245,13 @@ async def evaluate_gate(
     blocking.extend(await _check_no_open_conflicts(session, project_uuid=project_uuid))
     blocking.extend(await _check_glossary_integrity(session, project_uuid=project_uuid))
     blocking.extend(await _check_project_metadata(session, project_uuid=project_uuid))
+    from waraq.toc import toc_structure_blocks_translation
+
+    toc_blocker = await toc_structure_blocks_translation(
+        session=session, project_uuid=project_uuid
+    )
+    if toc_blocker:
+        blocking.append(toc_blocker)
 
     warnings = await _collect_warnings(session, project_uuid=project_uuid)
 

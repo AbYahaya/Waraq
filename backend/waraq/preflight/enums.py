@@ -40,6 +40,7 @@ class BlockingReason(StrEnum):
     P_04_HOCH_PFLICHTHINWEIS = "p_04_hoch_pflichthinweis"
     HADITH_H2 = "hadith_h2"
     KONFIGURATIONSSCHICHT_UNVOLLSTAENDIG = "konfigurationsschicht_unvollstaendig"
+    TOC_TRANSLATED_REVIEW_UNCONFIRMED = "toc_translated_review_unconfirmed"
 
 
 class WarningSlot(StrEnum):

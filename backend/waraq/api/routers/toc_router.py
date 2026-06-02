@@ -19,12 +19,14 @@ from waraq.invariant.exceptions import H1H2Violation
 from waraq.notifications.events import notify_project_event, project_workspace_url
 from waraq.toc import (
     confirm_toc_final_review,
+    confirm_toc_translated_review,
     detect_toc,
     edit_toc_entry_heading,
     record_toc_entry_decision,
     record_toc_export_settings,
     record_toc_line_decision,
     record_toc_redetect_request,
+    record_toc_source_decision,
 )
 
 router = APIRouter(tags=["toc"])
@@ -62,6 +64,14 @@ class TocOcrLineDto(BaseModel):
     source_kind: str
 
 
+class TocSourceCandidateDto(BaseModel):
+    page_index: int
+    page_uuid: _uuid.UUID
+    score: float
+    reason: str
+    selected: bool
+
+
 class TocResponse(BaseModel):
     entries: list[TocEntryDto]
     ocr_lines: list[TocOcrLineDto]
@@ -75,6 +85,12 @@ class TocResponse(BaseModel):
     confirmed_at: str | None
     confirmed_by_decision_event_uuid: _uuid.UUID | None
     export_settings_summary: dict[str, str | int | bool]
+    source_candidates: list[TocSourceCandidateDto]
+    selected_source_page_indices: list[int]
+    source_selection_state: str
+    translated_review_required: bool
+    translated_review_state: str
+    translated_review_confirmed_at: str | None
 
 
 @router.get("/projects/{project_uuid}/toc", response_model=TocResponse)
@@ -132,6 +148,21 @@ async def get_project_toc(
         confirmed_at=result.confirmed_at,
         confirmed_by_decision_event_uuid=result.confirmed_by_decision_event_uuid,
         export_settings_summary=result.export_settings_summary,
+        source_candidates=[
+            TocSourceCandidateDto(
+                page_index=candidate.page_index,
+                page_uuid=candidate.page_uuid,
+                score=candidate.score,
+                reason=candidate.reason,
+                selected=candidate.selected,
+            )
+            for candidate in result.source_candidates
+        ],
+        selected_source_page_indices=result.selected_source_page_indices,
+        source_selection_state=result.source_selection_state,
+        translated_review_required=result.translated_review_required,
+        translated_review_state=result.translated_review_state,
+        translated_review_confirmed_at=result.translated_review_confirmed_at,
     )
 
 
@@ -139,9 +170,38 @@ class TocConfirmRequest(BaseModel):
     note: str | None = None
 
 
+class TocSourceDecisionRequest(BaseModel):
+    action: str
+    page_indices: list[int] = []
+
+
 class TocConfirmResponse(BaseModel):
     decision_event_uuid: _uuid.UUID
     workflow_state: str
+
+
+@router.post(
+    "/projects/{project_uuid}/toc/translated-review/confirm",
+    response_model=TocConfirmResponse,
+)
+async def confirm_project_translated_toc(
+    project_uuid: _uuid.UUID,
+    req: TocConfirmRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> TocConfirmResponse:
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    decision = await confirm_toc_translated_review(
+        session=session,
+        project_uuid=project_uuid,
+        actor_uuid=current.account_uuid,
+        note=req.note,
+    )
+    result = await detect_toc(session=session, project_uuid=project_uuid)
+    return TocConfirmResponse(
+        decision_event_uuid=decision.decision_event_uuid,
+        workflow_state=result.workflow_state.value,
+    )
 
 
 @router.post(
@@ -190,6 +250,33 @@ class TocLineDecisionRequest(BaseModel):
 class TocDecisionResponse(BaseModel):
     decision_event_uuid: _uuid.UUID
     workflow_state: str
+
+
+@router.post(
+    "/projects/{project_uuid}/toc/source-decision",
+    response_model=TocDecisionResponse,
+)
+async def save_toc_source_decision(
+    project_uuid: _uuid.UUID,
+    req: TocSourceDecisionRequest,
+    session: DbSession,
+    current: CurrentAccount,
+) -> TocDecisionResponse:
+    await owned_project_or_404(session, project_uuid, current.account_uuid)
+    if req.action not in {"confirm_source_pages", "set_source_pages", "no_toc", "auto"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown TOC source action")
+    decision = await record_toc_source_decision(
+        session=session,
+        project_uuid=project_uuid,
+        actor_uuid=current.account_uuid,
+        action=req.action,
+        page_indices=req.page_indices,
+    )
+    result = await detect_toc(session=session, project_uuid=project_uuid)
+    return TocDecisionResponse(
+        decision_event_uuid=decision.decision_event_uuid,
+        workflow_state=result.workflow_state.value,
+    )
 
 
 @router.post(

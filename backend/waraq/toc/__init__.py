@@ -36,12 +36,16 @@ from waraq.toc.service import (
     TocResult,
     TocWorkflowState,
     confirm_toc_final_review,
+    confirm_toc_translated_review,
     detect_toc,
     edit_toc_entry_heading,
     record_toc_entry_decision,
     record_toc_export_settings,
     record_toc_line_decision,
     record_toc_redetect_request,
+    record_toc_source_decision,
+    toc_structure_blocks_translation,
+    toc_translated_review_blocks_export,
 )
 
 __all__ = [
@@ -51,10 +55,14 @@ __all__ = [
     "TocResult",
     "TocWorkflowState",
     "confirm_toc_final_review",
+    "confirm_toc_translated_review",
     "detect_toc",
     "edit_toc_entry_heading",
     "record_toc_entry_decision",
     "record_toc_export_settings",
     "record_toc_line_decision",
     "record_toc_redetect_request",
+    "record_toc_source_decision",
+    "toc_structure_blocks_translation",
+    "toc_translated_review_blocks_export",
 ]

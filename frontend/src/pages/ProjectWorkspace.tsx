@@ -9,9 +9,9 @@
  * comparison panes broadcasts a cross-pane scroll-sync event.
  */
 
-import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 
 import {
   ComparisonModeSelector,
@@ -34,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ApiError } from "@/lib/api";
 import { queries } from "@/lib/queries";
+import { rememberWorkspaceUrl } from "@/lib/workspace-memory";
 
 export function ProjectWorkspacePage(): JSX.Element {
   const { projectUuid, pageUuid } = useParams<{
@@ -41,7 +42,8 @@ export function ProjectWorkspacePage(): JSX.Element {
     pageUuid?: string;
   }>();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   if (projectUuid === undefined) {
     return <Navigate to="/" replace />;
@@ -55,12 +57,45 @@ export function ProjectWorkspacePage(): JSX.Element {
     enabled: pageUuid !== undefined,
   });
 
-  const [comparisonMode, setComparisonMode] = useState<ComparisonMode>("ocr_translation");
-  const [singlePaneSelection, setSinglePaneSelection] = useState<SinglePane>("ocr");
-  const [editMode, setEditMode] = useState<boolean>(false);
-  const [dpiCompareOpen, setDpiCompareOpen] = useState<boolean>(false);
-  const [tocOpen, setTocOpen] = useState<boolean>(false);
-  const [bookPreviewOpen, setBookPreviewOpen] = useState<boolean>(false);
+  const comparisonMode = parseComparisonMode(searchParams.get("view"));
+  const singlePaneSelection = parseSinglePane(searchParams.get("pane"));
+  const editMode = searchParams.get("edit") === "1";
+  const activePanel = searchParams.get("panel");
+  const dpiCompareOpen = activePanel === "dpi";
+  const tocOpen = activePanel === "toc";
+  const bookPreviewOpen = activePanel === "book";
+
+  const updateWorkspaceSearch = (updates: Record<string, string | null>): void => {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, value] of Object.entries(updates)) {
+      setOrDelete(next, key, value);
+    }
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  };
+
+  const setComparisonMode = (mode: ComparisonMode): void => {
+    updateWorkspaceSearch({
+      view: mode === "ocr_translation" ? null : mode,
+      pane: mode === "single_fullscreen" ? singlePaneSelection : null,
+    });
+  };
+
+  const setSinglePaneSelection = (pane: SinglePane): void => {
+    updateWorkspaceSearch({
+      view: "single_fullscreen",
+      pane,
+    });
+  };
+
+  const setEditMode = (nextEditMode: boolean): void => {
+    updateWorkspaceSearch({ edit: nextEditMode ? "1" : null });
+  };
+
+  const setActivePanel = (panel: "book" | "dpi" | "toc" | null): void => {
+    updateWorkspaceSearch({ panel });
+  };
 
   // Sub-batch O — the bulk OCR mutation is replaced by OcrAutoRunPanel,
   // which polls the new BackgroundTask-driven /ocr/ocr-jobs/{u} endpoint
@@ -69,18 +104,17 @@ export function ProjectWorkspacePage(): JSX.Element {
   // Auto-redirect to first page when none is selected.
   useEffect(() => {
     if (pageUuid === undefined && logicalPages.length > 0) {
-      navigate(`/projects/${projectUuid}/pages/${logicalPages[0].page_uuid}`, {
-        replace: true,
-      });
+      const qs = searchParams.toString();
+      navigate(
+        `/projects/${projectUuid}/pages/${logicalPages[0].page_uuid}${qs ? `?${qs}` : ""}`,
+        { replace: true },
+      );
     }
-  }, [pageUuid, logicalPages, projectUuid, navigate]);
+  }, [pageUuid, logicalPages, projectUuid, navigate, searchParams]);
 
   useEffect(() => {
-    if (searchParams.get("panel") !== "dpi") return;
-    setDpiCompareOpen(true);
-    setTocOpen(false);
-    setBookPreviewOpen(false);
-  }, [searchParams]);
+    rememberWorkspaceUrl(`${location.pathname}${location.search}`);
+  }, [location.pathname, location.search]);
 
   const attentionReturnUrl = useMemo(() => {
     if (searchParams.get("from") !== "attention") return null;
@@ -201,11 +235,7 @@ export function ProjectWorkspacePage(): JSX.Element {
                 type="button"
                 size="sm"
                 variant={dpiCompareOpen ? "default" : "outline"}
-                onClick={() => {
-                  setDpiCompareOpen((v) => !v);
-                  if (tocOpen) setTocOpen(false);
-                  if (bookPreviewOpen) setBookPreviewOpen(false);
-                }}
+                onClick={() => setActivePanel(dpiCompareOpen ? null : "dpi")}
                 className="text-xs"
                 title="Render this page at low + high DPI side-by-side"
               >
@@ -215,11 +245,7 @@ export function ProjectWorkspacePage(): JSX.Element {
                 type="button"
                 size="sm"
                 variant={tocOpen ? "default" : "outline"}
-                onClick={() => {
-                  setTocOpen((v) => !v);
-                  if (dpiCompareOpen) setDpiCompareOpen(false);
-                  if (bookPreviewOpen) setBookPreviewOpen(false);
-                }}
+                onClick={() => setActivePanel(tocOpen ? null : "toc")}
                 className="text-xs"
                 title="Show the project's auto-detected table of contents"
               >
@@ -229,11 +255,7 @@ export function ProjectWorkspacePage(): JSX.Element {
                 type="button"
                 size="sm"
                 variant={bookPreviewOpen ? "default" : "outline"}
-                onClick={() => {
-                  setBookPreviewOpen((v) => !v);
-                  if (dpiCompareOpen) setDpiCompareOpen(false);
-                  if (tocOpen) setTocOpen(false);
-                }}
+                onClick={() => setActivePanel(bookPreviewOpen ? null : "book")}
                 className="text-xs"
                 title="Preview the project as a styled book before export"
               >
@@ -285,4 +307,36 @@ function dedupePagesByIndex<T extends { page_index: number }>(pages: T[]): T[] {
     seen.add(page.page_index);
     return true;
   });
+}
+
+function parseComparisonMode(value: string | null): ComparisonMode {
+  switch (value) {
+    case "original_ocr":
+    case "original_translation":
+    case "ocr_translation":
+    case "triple":
+    case "single_fullscreen":
+      return value;
+    default:
+      return "ocr_translation";
+  }
+}
+
+function parseSinglePane(value: string | null): SinglePane {
+  switch (value) {
+    case "original":
+    case "ocr":
+    case "translation":
+      return value;
+    default:
+      return "ocr";
+  }
+}
+
+function setOrDelete(params: URLSearchParams, key: string, value: string | null): void {
+  if (value === null || value === "") {
+    params.delete(key);
+    return;
+  }
+  params.set(key, value);
 }

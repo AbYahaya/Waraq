@@ -155,6 +155,8 @@ const PREFLIGHT_LABELS: Record<string, string> = {
   hadith_h2: "A hadith reference check is blocking export.",
   konfigurationsschicht_unvollstaendig:
     "All four export setup questions must be confirmed for this run.",
+  toc_translated_review_unconfirmed:
+    "Final translated TOC review must be confirmed before export.",
   w_01_mittel_audit: "Medium audit findings need acknowledgement before export.",
   w_02_konsistenz: "Consistency findings need acknowledgement before export.",
   w_03_formatvorlagen_graduell:
@@ -248,6 +250,35 @@ export function TranslationExportDialog({
     queryFn: () =>
       api.get<GuardNearResponse>(`/projects/${projectUuid}/preflight/guard-near`),
   });
+
+  const tocQ = useQuery({
+    ...queries.projectToc(projectUuid),
+    enabled: open,
+  });
+
+  useEffect(() => {
+    if (!open || preflightRunUuid || !tocQ.data) return;
+    const settings = tocQ.data.export_settings_summary;
+    setPflichtfragenAnswers((prev) => ({
+      ...prev,
+      header_heading_level:
+        typeof settings.header_heading_level === "number"
+          ? settings.header_heading_level
+          : prev.header_heading_level,
+      chapter_break_heading_level:
+        typeof settings.chapter_break_heading_level === "number"
+          ? settings.chapter_break_heading_level
+          : prev.chapter_break_heading_level,
+      toc_position:
+        settings.toc_position === "front" || settings.toc_position === "back"
+          ? settings.toc_position
+          : prev.toc_position,
+      display_arabic_chapter_headings:
+        typeof settings.display_arabic_chapter_headings === "boolean"
+          ? settings.display_arabic_chapter_headings
+          : prev.display_arabic_chapter_headings,
+    }));
+  }, [open, preflightRunUuid, tocQ.data]);
 
   // Collect every segment UUID across all pages — translation runs
   // project-wide.

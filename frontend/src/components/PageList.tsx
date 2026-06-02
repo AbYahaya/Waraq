@@ -3,7 +3,7 @@
  * OCR status badge, and highlights the active page.
  */
 
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { queries } from "@/lib/queries";
@@ -32,6 +32,7 @@ export interface PageListProps {
 }
 
 export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.Element {
+  const location = useLocation();
   const q = useQuery(queries.projectPages(projectUuid));
   const pages = dedupePagesByIndex(q.data ?? []);
 
@@ -65,7 +66,7 @@ export function PageList({ projectUuid, activePageUuid }: PageListProps): JSX.El
         return (
           <li key={p.page_uuid}>
             <Link
-              to={`/projects/${projectUuid}/pages/${p.page_uuid}`}
+              to={`/projects/${projectUuid}/pages/${p.page_uuid}${location.search}`}
               className={cn(
                 "block rounded-xl border border-transparent px-2.5 py-2 text-sm transition hover:border-border/70 hover:bg-accent/40",
                 isActive && "border-border/80 bg-accent/50 shadow-sm",

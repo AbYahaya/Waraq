@@ -11,6 +11,7 @@ Authoritative implementation scope:
 - OCR Review, Attention List, and issue lifecycle
 - TOC / IVZ review screen
 - DPI Compare / OCR retry recovery
+- Reference stack wiring: sunnah.com, Shamela, dorar.net, CAMeL morphology, protected Qur'an carrier selection, and Hadith review decisions
 
 ## 0. Pre-Test Setup
 
@@ -847,7 +848,273 @@ Expected result:
 - TOC/heading choices are reflected where the preview/export path consumes them.
 - General translation body styles remain controlled from the Translation editor/style system.
 
-## 7. Known Acceptable Limitations During This Test Round
+## 7. Reference Stack: sunnah.com, Shamela, dorar.net, CAMeL, Qur'an Carrier, and Hadith Review
+
+Goal: verify the latest reference-stack fixes are wired end to end, visible in diagnostics, and usable by production hadith/protected-passage flows.
+
+### 7.1 Environment and Settings Loader
+
+Action:
+
+- Confirm `SUNNAH_COM_API_KEY` is present in `backend/.env`.
+- Restart the backend after editing `.env`.
+- Open Diagnostics.
+- Inspect the Environment status section.
+- From `backend`, optionally run:
+
+```bash
+.venv/bin/python -c "from waraq.db.session import get_settings; print(bool(get_settings().sunnah_com_api_key))"
+```
+
+Expected result:
+
+- Diagnostics shows `SUNNAH_COM_API_KEY (P-1 hadith)` as ready/wired.
+- The backend command prints `True`.
+- The app does not require starting the backend from the `backend` directory for `backend/.env` to be loaded.
+- If the key is edited while the backend is already running, the old value remains until backend restart; this is expected because settings are cached.
+
+### 7.2 Diagnostics Operational Overview
+
+Action:
+
+- Open Diagnostics.
+- Inspect the Operational status overview.
+- Compare it with the Environment status pills.
+
+Expected result:
+
+- Reference status reflects the sunnah.com key presence.
+- The UI does not say sunnah.com is unwired when `sunnah_com_api_key_present` is true.
+- No secret value is displayed anywhere; only presence/absence is shown.
+
+### 7.3 Hadith Verification Without Manual sunnah.com Lookup Body
+
+Action:
+
+- Find or create a segment containing a recognizable hadith citation, for example `Sahih al-Bukhari 1`, `Bukhari, no. 1`, or an Arabic equivalent.
+- In Diagnostics, paste that segment UUID into Hadith verification.
+- Do not provide any manual sunnah lookup object.
+- Click Verify.
+
+Expected result:
+
+- The backend infers the sunnah.com lookup from the segment text.
+- `sources_skipped` does not include `sunnah_no_lookup_address` for a recognizable citation.
+- If the key is valid and upstream is reachable, mandatory sources include a sunnah.com candidate.
+- If sunnah.com is unreachable, the response records a clear `sunnah_unreachable:*` skip instead of crashing the verification flow.
+
+### 7.4 Hadith Verification With No Recognizable sunnah.com Citation
+
+Action:
+
+- Use a segment that looks like hadith text but does not include a direct sunnah.com-style collection/number citation.
+- Run Diagnostics Hadith verification.
+
+Expected result:
+
+- Verification still runs Shamela P-2 and dorar.net P-3 where possible.
+- `sources_skipped` includes `sunnah_no_lookup_address`.
+- The route returns a structured response rather than failing.
+- If Shamela or dorar.net produce candidates, consensus and persistence continue without sunnah.com.
+
+### 7.5 Shamela P-2 Lookup
+
+Action:
+
+- In Diagnostics, use the Shamela search section with Arabic hadith text known to exist in the local Shamela/Kutub-as-Sitta corpus.
+- Run skeleton search.
+- Then run Hadith verification on a segment containing the same or similar text.
+
+Expected result:
+
+- Shamela diagnostics returns local matches.
+- Hadith verification includes Shamela candidates when local matches exist.
+- Shamela remains usable without external network calls or API keys.
+- Lack of a sunnah.com or dorar.net result does not stop Shamela-backed verification.
+
+### 7.6 dorar.net P-3 Lookup
+
+Action:
+
+- Use a hadith-like segment suitable for dorar.net search.
+- Run Hadith verification.
+- Repeat once with normal network/API availability and once in a known unreachable/invalid configuration if practical.
+
+Expected result:
+
+- When dorar.net is reachable, dorar.net candidates can appear as mandatory hits.
+- When dorar.net is unreachable or returns a Model U failure, the response includes a `dorar_unreachable:*` skip reason.
+- dorar.net failure does not stop Shamela or sunnah.com candidates from being processed.
+
+### 7.7 Mandatory Source Consensus and Persistence
+
+Action:
+
+- Run Hadith verification on a segment that returns at least one mandatory candidate.
+- Note the returned `aggregate_uuid` and `single_source_uuids`.
+- Refresh the page or call verification/review again.
+
+Expected result:
+
+- Verification returns a `run` object when candidates exist.
+- `mandatory_count` reflects gathered P-1/P-2/P-3 hits.
+- An active `HadithAggregateResult` is persisted.
+- Source rows are persisted and linked to the aggregate.
+- A new verification round supersedes prior active aggregate results instead of mutating old source rows.
+
+### 7.8 Hadith Review Endpoint
+
+Action:
+
+- After a successful hadith verification, call:
+
+```text
+GET /segments/{satz_uuid}/hadith/review
+```
+
+- Inspect the returned aggregate, source rows, status, and extended source metadata.
+
+Expected result:
+
+- Response includes the active `aggregate_uuid`.
+- Response includes source rows with source name, role, excerpt, locator where available, and reference flags.
+- Response includes an open status when verification created one.
+- Response includes available action types for the status class.
+- Response includes extended source state metadata for E-1 through E-5.
+
+### 7.9 Hadith H-1 Warning Decision
+
+Action:
+
+- Use or create a hadith verification result that produces an H-1/open warning status.
+- Call:
+
+```text
+POST /segments/{satz_uuid}/hadith/status/{hadith_status_uuid}/decision
+```
+
+- Use body:
+
+```json
+{
+  "action_type": "go_with_warning",
+  "note": "E2E test acknowledgement"
+}
+```
+
+Expected result:
+
+- Response includes a `decision_event_uuid`.
+- Status changes from `offen` to `quittiert`.
+- The decision is recorded with `preflight_confirmation` semantics.
+- Repeating the same decision on the already-acknowledged status returns a clear error rather than creating a duplicate decision.
+
+### 7.10 Hadith H-2 Resolution Decision
+
+Action:
+
+- Use or create a hadith verification result with an H-2/open blocking status, for example a vocalization conflict.
+- Call:
+
+```text
+POST /segments/{satz_uuid}/hadith/status/{hadith_status_uuid}/decision
+```
+
+- Use one canonical action type, for example:
+
+```json
+{
+  "action_type": "vokalisierungskonflikt_manuell_entscheiden",
+  "note": "E2E test resolution"
+}
+```
+
+Expected result:
+
+- Response includes a `decision_event_uuid`.
+- Status changes from `offen` to `aufgeloest`.
+- Unknown action types are rejected with a clear 400-level error.
+- H-2 cannot be acknowledged with `go_with_warning`; it must use one of the seven canonical resolution action types.
+
+### 7.11 CAMeL Morphology in Vocalization Comparison
+
+Action:
+
+- In Diagnostics, check morphology availability.
+- Use the morphology diagnostic endpoint on an Arabic word that should return analyses.
+- Run hadith verification on a case with vocalized variants if available.
+
+Expected result:
+
+- If CAMeL morphology DB is installed, diagnostics shows it as available and word analysis returns rows.
+- Hadith consensus uses CAMeL lexeme refinement during vocalization comparison.
+- If CAMeL is unavailable or has no useful analysis for a word, verification still works using text-only comparison.
+- No hadith verification flow fails only because morphology data is missing.
+
+### 7.12 Protected Hadith Translation Reference Payload
+
+Action:
+
+- Use a page/segment containing hadith text with a recognizable citation.
+- Start translation for that page/project.
+- Inspect the translation result/provenance context where available, or inspect persisted hadith aggregate/source rows after translation.
+
+Expected result:
+
+- Protected-passage handling tries hadith verification before general LLM translation handling for that segment.
+- sunnah.com is attempted automatically when the segment includes a recognizable citation.
+- Shamela and dorar.net candidates are still gathered according to availability.
+- The translation provenance/reference payload identifies verified hadith sources.
+- The flow does not silently fail the whole translation if one hadith source is unavailable.
+
+### 7.13 Protected Qur'an Target Carrier Selection
+
+Action:
+
+- Use or create a segment containing a recognized Qur'an passage.
+- Run the current translation flow normally.
+- If a future target-language field is available, repeat with English target language.
+
+Expected result:
+
+- Current default behavior continues to use the German RWWAD carrier.
+- When an English target language is passed by the backend caller, protected Qur'an translation selects `english_rwwad`.
+- Existing project Qur'an snapshots are not reused when their stored `translation_key` differs from the requested target carrier.
+- Missing local Qur'an carrier data returns a protected skip reason instead of sending Qur'an text to general LLM translation.
+
+### 7.14 E-5 Extended Source State
+
+Action:
+
+- Run Hadith verification with manual extended set enabled.
+- Inspect the returned `extended_sources_invoked` and Hadith Review extended source metadata.
+
+Expected result:
+
+- E-1 through E-4 remain visible as suspended structural sources.
+- E-5 is visible as active special role metadata.
+- Current E-5 runtime fetcher may return no hits until Official Live API details are implemented.
+- The absence of E-5 hits is not treated as a crash.
+
+### 7.15 Reference Stack Regression After Backend Restart
+
+Action:
+
+- Stop the backend.
+- Start the backend from the repo root.
+- Open Diagnostics and rerun Environment, Shamela search, morphology diagnostic, and Hadith verification.
+- Stop the backend.
+- Start the backend from the `backend` directory.
+- Repeat the same checks.
+
+Expected result:
+
+- `backend/.env` is loaded in both startup locations.
+- sunnah.com key presence is consistent.
+- Shamela, CAMeL, and dorar.net behavior does not change only because the backend working directory changed.
+- No diagnostics section reports a false "not wired" state caused by path resolution.
+
+## 8. Known Acceptable Limitations During This Test Round
 
 These are not failures against Observations and Changes2 unless the product scope is expanded.
 
@@ -859,8 +1126,11 @@ These are not failures against Observations and Changes2 unless the product scop
   - `Traditional Naskh`
   - `Calibri`
 - Frontend build may warn about large chunks because of TipTap.
+- E-5 is structurally represented but the concrete Official Live API integration remains a follow-up until API contract/key details are available.
+- Protected Qur'an target-language carrier selection is implemented internally, but user-facing project/job target-language selection is still a follow-up.
+- The backend Hadith Review endpoints are implemented; a dedicated frontend Hadith Review panel may still need UI work if it has not been added by the time this test is run.
 
-## 8. Pass / Fail Summary Template
+## 9. Pass / Fail Summary Template
 
 Use this section while testing.
 
@@ -872,5 +1142,5 @@ Use this section while testing.
 | OCR review/attention lifecycle |  |  |
 | DPI retry recovery |  |  |
 | TOC / IVZ review |  |  |
+| Reference stack |  |  |
 | Cross-workflow regressions |  |  |
-

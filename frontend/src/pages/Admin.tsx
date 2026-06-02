@@ -7,9 +7,9 @@
  * 403 if a non-admin hits the page directly).
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,11 +33,14 @@ interface AdminProject {
 }
 
 export function AdminPage(): JSX.Element {
+  const [searchParams, setSearchParams] = useSearchParams();
   const accountsQ = useQuery({
     queryKey: ["admin", "accounts"],
     queryFn: () => api.get<AdminAccount[]>("/admin/accounts"),
   });
-  const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
+  const [selectedAccount, setSelectedAccount] = useState<string | null>(
+    searchParams.get("account") || null,
+  );
 
   const projectsQ = useQuery({
     queryKey: ["admin", "projects", selectedAccount],
@@ -48,6 +51,28 @@ export function AdminPage(): JSX.Element {
           : "/admin/projects",
       ),
   });
+
+  useEffect(() => {
+    setSelectedAccount(searchParams.get("account") || null);
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!accountsQ.data || selectedAccount === null) return;
+    if (accountsQ.data.some((account) => account.account_uuid === selectedAccount)) return;
+    setSelectedAccount(null);
+  }, [accountsQ.data, selectedAccount]);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (selectedAccount === null) {
+      next.delete("account");
+    } else {
+      next.set("account", selectedAccount);
+    }
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, selectedAccount, setSearchParams]);
 
   return (
     <div className="space-y-8">

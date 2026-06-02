@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { Columns2, Download, Languages } from "lucide-react";
 
 import {
@@ -49,20 +50,51 @@ interface PreviewSegment {
 
 type PreviewMode = "translation" | "bilingual";
 
+function parsePreviewMode(value: string | null): PreviewMode {
+  return value === "bilingual" ? "bilingual" : "translation";
+}
+
 export function BookPreview({
   projectUuid,
   projectName,
 }: BookPreviewProps): JSX.Element {
+  const [searchParams, setSearchParams] = useSearchParams();
   const pagesQ = useQuery(queries.projectPages(projectUuid));
   const styleQ = useQuery(queries.projectStyleProfile(projectUuid));
   const persistedStyle = styleQ.data ?? DEFAULT_STYLE_PROFILE;
   const [styleDraft, setStyleDraft] = useState<ProjectStyleProfile>(persistedStyle);
-  const [selectedStyleKey, setSelectedStyleKey] = useState<TranslationStyleKey>("body_de");
-  const [previewMode, setPreviewMode] = useState<PreviewMode>("translation");
+  const [selectedStyleKey, setSelectedStyleKey] = useState<TranslationStyleKey>(() =>
+    normalizeTranslationStyleKey(searchParams.get("preview_style") ?? "body_de"),
+  );
+  const [previewMode, setPreviewMode] = useState<PreviewMode>(() =>
+    parsePreviewMode(searchParams.get("preview")),
+  );
 
   useEffect(() => {
     setStyleDraft(persistedStyle);
   }, [persistedStyle]);
+
+  useEffect(() => {
+    setSelectedStyleKey(normalizeTranslationStyleKey(searchParams.get("preview_style") ?? "body_de"));
+    setPreviewMode(parsePreviewMode(searchParams.get("preview")));
+  }, [searchParams]);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (previewMode === "translation") {
+      next.delete("preview");
+    } else {
+      next.set("preview", previewMode);
+    }
+    if (selectedStyleKey === "body_de") {
+      next.delete("preview_style");
+    } else {
+      next.set("preview_style", selectedStyleKey);
+    }
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [previewMode, searchParams, selectedStyleKey, setSearchParams]);
 
   const pages = pagesQ.data ?? [];
   const segmentQueries = useQueries({

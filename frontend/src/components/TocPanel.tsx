@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import {
   Check,
   FileSearch,
@@ -63,11 +64,16 @@ const BASE_HEADING_STYLE = {
   docx_arabic_font_family: "Amiri",
 };
 
+function parseReviewPhase(value: string | null): ReviewPhase {
+  return value === "translation" ? "translation" : "structure";
+}
+
 export function TocPanel({ projectUuid, className }: TocPanelProps): JSX.Element {
+  const [searchParams, setSearchParams] = useSearchParams();
   const q = useQuery(queries.projectToc(projectUuid));
   const styleQ = useQuery(queries.projectStyleProfile(projectUuid));
   const qc = useQueryClient();
-  const [phase, setPhase] = useState<ReviewPhase>("structure");
+  const [phase, setPhase] = useState<ReviewPhase>(() => parseReviewPhase(searchParams.get("toc_phase")));
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [ocrLines, setOcrLines] = useState<EditableTocLine[]>([]);
   const [draftLine, setDraftLine] = useState("");
@@ -75,6 +81,23 @@ export function TocPanel({ projectUuid, className }: TocPanelProps): JSX.Element
   const [exportSettings, setExportSettings] = useState<ExportSettings>(BASE_EXPORT_SETTINGS);
   const [settingsSaved, setSettingsSaved] = useState<string | null>(null);
   const [redetectMessage, setRedetectMessage] = useState<string | null>(null);
+  const [sourceRangeDraft, setSourceRangeDraft] = useState("");
+
+  useEffect(() => {
+    setPhase(parseReviewPhase(searchParams.get("toc_phase")));
+  }, [searchParams]);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (phase === "structure") {
+      next.delete("toc_phase");
+    } else {
+      next.set("toc_phase", phase);
+    }
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [phase, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (!q.data) return;
@@ -93,6 +116,13 @@ export function TocPanel({ projectUuid, className }: TocPanelProps): JSX.Element
     }));
     setOcrLines(next);
     setSelectedKey((current) => current ?? next[0]?.key ?? null);
+    const selectedPages =
+      q.data.selected_source_page_indices.length > 0
+        ? q.data.selected_source_page_indices
+        : q.data.source_candidates
+            .filter((candidate) => candidate.selected)
+            .map((candidate) => candidate.page_index);
+    setSourceRangeDraft(formatPageRange(selectedPages));
   }, [q.data]);
 
   const selectedLine = ocrLines.find((line) => line.key === selectedKey) ?? ocrLines[0] ?? null;
@@ -189,6 +219,31 @@ export function TocPanel({ projectUuid, className }: TocPanelProps): JSX.Element
     },
   });
 
+  const sourceDecisionMutation = useMutation({
+    mutationFn: (payload: { action: string; page_indices?: number[] }) =>
+      api.post<{ decision_event_uuid: string; workflow_state: string }>(
+        `/projects/${projectUuid}/toc/source-decision`,
+        {
+          action: payload.action,
+          page_indices: payload.page_indices ?? [],
+        },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.projectToc(projectUuid) });
+    },
+  });
+
+  const translatedReviewMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ decision_event_uuid: string; workflow_state: string }>(
+        `/projects/${projectUuid}/toc/translated-review/confirm`,
+        { note: "Confirmed final translated TOC review." },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.projectToc(projectUuid) });
+    },
+  });
+
   if (q.isLoading || styleQ.isLoading) {
     return <p className={cn("p-3 text-sm text-muted-foreground", className)}>Loading TOC review...</p>;
   }
@@ -202,6 +257,9 @@ export function TocPanel({ projectUuid, className }: TocPanelProps): JSX.Element
     issueSummary.blocking === 0;
 
   const styleProfile = styleQ.data ?? null;
+  const hasSource = q.data.selected_source_page_indices.length > 0;
+  const hasCandidate = q.data.source_candidates.length > 0;
+  const canShowReview = hasSource || q.data.entries.length > 0;
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-background", className)}>
@@ -248,7 +306,10 @@ export function TocPanel({ projectUuid, className }: TocPanelProps): JSX.Element
           />
           <PhaseCard
             active={phase === "translation"}
-            complete={q.data.confirmation_state === "confirmed"}
+            complete={
+              q.data.translated_review_state === "confirmed" ||
+              q.data.translated_review_state === "not_required"
+            }
             locked={q.data.confirmation_state !== "confirmed"}
             index={2}
             title="Step 2: Final TOC review"
@@ -258,128 +319,173 @@ export function TocPanel({ projectUuid, className }: TocPanelProps): JSX.Element
         </div>
       </header>
 
-      <main className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[minmax(16rem,0.95fr)_minmax(17rem,0.82fr)_minmax(28rem,1.55fr)]">
-        <ScanPanel
-          selectedEntry={selectedEntry}
-          selectedIndex={selectedIndex}
-          total={ocrLines.length}
-          onPrev={() => setSelectedKey(ocrLines[Math.max(0, selectedIndex - 1)]?.key ?? selectedKey)}
-          onNext={() =>
-            setSelectedKey(
-              ocrLines[Math.min(ocrLines.length - 1, selectedIndex + 1)]?.key ?? selectedKey,
-            )
-          }
-          onRerun={() =>
-            redetectMutation.mutate()
-          }
-          onAreaOcr={() => {
-            if (!selectedLine) return;
-            window.location.href = `/projects/${projectUuid}?page=${selectedLine.pageUuid}&panel=dpi`;
-          }}
+      <SourceStepPanel
+        candidates={q.data.source_candidates}
+        selectedPages={q.data.selected_source_page_indices}
+        sourceState={q.data.source_selection_state}
+        pageCount={q.data.page_count}
+        rangeDraft={sourceRangeDraft}
+        onRangeDraftChange={setSourceRangeDraft}
+        busy={sourceDecisionMutation.isPending}
+        onAcceptDetected={() => {
+          const pages = q.data.source_candidates
+            .filter((candidate) => candidate.selected)
+            .map((candidate) => candidate.page_index);
+          sourceDecisionMutation.mutate({
+            action: "confirm_source_pages",
+            page_indices: pages,
+          });
+        }}
+        onSaveRange={() =>
+          sourceDecisionMutation.mutate({
+            action: "set_source_pages",
+            page_indices: parsePageRange(sourceRangeDraft, q.data.page_count),
+          })
+        }
+        onNoToc={() => sourceDecisionMutation.mutate({ action: "no_toc" })}
+        onAuto={() => sourceDecisionMutation.mutate({ action: "auto" })}
+      />
+
+      {phase === "translation" && (
+        <TranslatedReviewPanel
+          required={q.data.translated_review_required}
+          state={q.data.translated_review_state}
+          confirmedAt={q.data.translated_review_confirmed_at}
+          structureConfirmed={q.data.confirmation_state === "confirmed"}
+          busy={translatedReviewMutation.isPending}
+          onConfirm={() => translatedReviewMutation.mutate()}
         />
-        <OcrLinesPanel
-          lines={ocrLines}
-          selectedKey={selectedLine?.key ?? null}
-          draftLine={draftLine}
-          editing={lineEditing}
-          onSelect={(line) => {
-            setSelectedKey(line.key);
-            setDraftLine(line.text);
-            setLineEditing(false);
-          }}
-          onDraftChange={setDraftLine}
-          onStartEdit={() => {
-            if (selectedLine) setDraftLine(selectedLine.text);
-            setLineEditing(true);
-          }}
-          onSave={() => {
-            if (!selectedLine) return;
-            lineDecisionMutation.mutate({
-              action: "correct",
-              line_key: selectedLine.key,
-              text: draftLine,
-            });
-            setLineEditing(false);
-          }}
-          onCancel={() => {
-            setDraftLine(selectedLine?.text ?? "");
-            setLineEditing(false);
-          }}
-          onSplit={() => {
-            if (!selectedLine) return;
-            const midpoint = Math.max(1, Math.floor(selectedLine.text.length / 2));
-            const first = selectedLine.text.slice(0, midpoint).trim();
-            const second = selectedLine.text.slice(midpoint).trim();
-            lineDecisionMutation.mutate({
-              action: "split",
-              line_key: selectedLine.key,
-              first_text: first || selectedLine.text,
-              second_text: second,
-              new_line_key: `${selectedLine.key}:split:${Date.now()}`,
-            });
-          }}
-          onMerge={() => {
-            if (!selectedLine) return;
-            const next = ocrLines[selectedIndex + 1];
-            if (!next) return;
-            lineDecisionMutation.mutate({
-              action: "merge_next",
-              line_key: selectedLine.key,
-            });
-          }}
-          onToggleToc={(isTocEntry) => {
-            if (!selectedLine) return;
-            lineDecisionMutation.mutate({
-              action: isTocEntry ? "mark_toc" : "mark_not_toc",
-              line_key: selectedLine.key,
-            });
-          }}
-          busy={lineDecisionMutation.isPending}
+      )}
+
+      {canShowReview ? (
+        <main className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden xl:grid-cols-[minmax(16rem,0.95fr)_minmax(17rem,0.82fr)_minmax(28rem,1.55fr)]">
+          <ScanPanel
+            selectedPageUuid={selectedLine?.pageUuid ?? selectedEntry?.page_uuid ?? null}
+            selectedIndex={selectedIndex}
+            total={ocrLines.length}
+            onPrev={() => setSelectedKey(ocrLines[Math.max(0, selectedIndex - 1)]?.key ?? selectedKey)}
+            onNext={() =>
+              setSelectedKey(
+                ocrLines[Math.min(ocrLines.length - 1, selectedIndex + 1)]?.key ?? selectedKey,
+              )
+            }
+            onRerun={() =>
+              redetectMutation.mutate()
+            }
+            onAreaOcr={() => {
+              if (!selectedLine) return;
+              window.location.href = `/projects/${projectUuid}?page=${selectedLine.pageUuid}&panel=dpi`;
+            }}
         />
-        <StructuredPanel
-          projectUuid={projectUuid}
-          entries={q.data.entries}
-          selectedEntry={selectedEntry}
-          selectedLine={selectedLine}
-          selectedKey={selectedLine?.key ?? null}
-          statuses={issueSummary.statuses}
-          fallbackKind={q.data.fallback_kind}
-          onSelect={(entry, index) => setSelectedKey(tocEntryKey(entry, index))}
-          onAddEntry={(line) =>
-            entryDecisionMutation.mutate({
-              action: "add_from_source",
-              line_key: line.key,
-              level: 1,
-              ar_text: line.text,
-              target_page_index: line.pageIndex,
-              target_page_uuid: line.pageUuid,
-            })
-          }
-          onConfirmMatch={(entry) =>
-            entryDecisionMutation.mutate({
-              action: "confirm_match",
-              line_key: entry.line_key,
-            })
-          }
-          onRelinkPage={(entry, pageIndex) =>
-            entryDecisionMutation.mutate({
-              action: "relink_page",
-              line_key: entry.line_key,
-              target_page_index: pageIndex,
-            })
-          }
-          onSetLevel={(entry, level) =>
-            entryDecisionMutation.mutate({
-              action: "set_level",
-              line_key: entry.line_key,
-              level,
-            })
-          }
-          busy={entryDecisionMutation.isPending}
-          redetectMessage={redetectMessage}
-          phase={phase}
+          <OcrLinesPanel
+            lines={ocrLines}
+            selectedKey={selectedLine?.key ?? null}
+            draftLine={draftLine}
+            editing={lineEditing}
+            onSelect={(line) => {
+              setSelectedKey(line.key);
+              setDraftLine(line.text);
+              setLineEditing(false);
+            }}
+            onDraftChange={setDraftLine}
+            onStartEdit={() => {
+              if (selectedLine) setDraftLine(selectedLine.text);
+              setLineEditing(true);
+            }}
+            onSave={() => {
+              if (!selectedLine) return;
+              lineDecisionMutation.mutate({
+                action: "correct",
+                line_key: selectedLine.key,
+                text: draftLine,
+              });
+              setLineEditing(false);
+            }}
+            onCancel={() => {
+              setDraftLine(selectedLine?.text ?? "");
+              setLineEditing(false);
+            }}
+            onSplit={() => {
+              if (!selectedLine) return;
+              const midpoint = Math.max(1, Math.floor(selectedLine.text.length / 2));
+              const first = selectedLine.text.slice(0, midpoint).trim();
+              const second = selectedLine.text.slice(midpoint).trim();
+              lineDecisionMutation.mutate({
+                action: "split",
+                line_key: selectedLine.key,
+                first_text: first || selectedLine.text,
+                second_text: second,
+                new_line_key: `${selectedLine.key}:split:${Date.now()}`,
+              });
+            }}
+            onMerge={() => {
+              if (!selectedLine) return;
+              const next = ocrLines[selectedIndex + 1];
+              if (!next) return;
+              lineDecisionMutation.mutate({
+                action: "merge_next",
+                line_key: selectedLine.key,
+              });
+            }}
+            onToggleToc={(isTocEntry) => {
+              if (!selectedLine) return;
+              lineDecisionMutation.mutate({
+                action: isTocEntry ? "mark_toc" : "mark_not_toc",
+                line_key: selectedLine.key,
+              });
+            }}
+            busy={lineDecisionMutation.isPending}
+          />
+          <StructuredPanel
+            projectUuid={projectUuid}
+            entries={q.data.entries}
+            selectedEntry={selectedEntry}
+            selectedLine={selectedLine}
+            selectedKey={selectedLine?.key ?? null}
+            statuses={issueSummary.statuses}
+            fallbackKind={q.data.fallback_kind}
+            onSelect={(entry, index) => setSelectedKey(tocEntryKey(entry, index))}
+            onAddEntry={(line) =>
+              entryDecisionMutation.mutate({
+                action: "add_from_source",
+                line_key: line.key,
+                level: 1,
+                ar_text: line.text,
+                target_page_index: line.pageIndex,
+                target_page_uuid: line.pageUuid,
+              })
+            }
+            onConfirmMatch={(entry) =>
+              entryDecisionMutation.mutate({
+                action: "confirm_match",
+                line_key: entry.line_key,
+              })
+            }
+            onRelinkPage={(entry, pageIndex) =>
+              entryDecisionMutation.mutate({
+                action: "relink_page",
+                line_key: entry.line_key,
+                target_page_index: pageIndex,
+              })
+            }
+            onSetLevel={(entry, level) =>
+              entryDecisionMutation.mutate({
+                action: "set_level",
+                line_key: entry.line_key,
+                level,
+              })
+            }
+            busy={entryDecisionMutation.isPending}
+            redetectMessage={redetectMessage}
+            phase={phase}
+          />
+        </main>
+      ) : (
+        <NoTocState
+          hasCandidate={hasCandidate}
+          onNoToc={() => sourceDecisionMutation.mutate({ action: "no_toc" })}
         />
-      </main>
+      )}
 
       <footer className="grid border-t bg-[#fbfaf6] lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <ExportSettingsPanel
@@ -411,6 +517,191 @@ interface EditableTocLine {
   manual: boolean;
   protected: boolean;
   entry: TocEntryDto | null;
+}
+
+function SourceStepPanel({
+  candidates,
+  selectedPages,
+  sourceState,
+  pageCount,
+  rangeDraft,
+  onRangeDraftChange,
+  onAcceptDetected,
+  onSaveRange,
+  onNoToc,
+  onAuto,
+  busy,
+}: {
+  candidates: Array<{
+    page_index: number;
+    score: number;
+    reason: string;
+    selected: boolean;
+  }>;
+  selectedPages: number[];
+  sourceState: string;
+  pageCount: number;
+  rangeDraft: string;
+  onRangeDraftChange: (value: string) => void;
+  onAcceptDetected: () => void;
+  onSaveRange: () => void;
+  onNoToc: () => void;
+  onAuto: () => void;
+  busy: boolean;
+}): JSX.Element {
+  const detectedPages = candidates
+    .filter((candidate) => candidate.selected)
+    .map((candidate) => candidate.page_index);
+  const hasDetectedPages = detectedPages.length > 0;
+  const activePages = selectedPages.length > 0 ? selectedPages : detectedPages;
+  return (
+    <section className="border-b bg-white px-4 py-3">
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)] lg:items-center">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded bg-[#e7f0ef] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#0b4a36]">
+              1. TOC source
+            </span>
+            <h3 className="text-sm font-semibold">
+              {activePages.length > 0
+                ? `Source pages: ${formatPageRange(activePages)}`
+                : sourceState === "no_toc"
+                  ? "No TOC selected"
+                  : "Choose the TOC source pages"}
+            </h3>
+          </div>
+          <p className="mt-1 max-w-3xl text-xs text-muted-foreground">
+            Start by confirming the scanned pages that contain the table of contents.
+            The app then extracts TOC lines and matches them to headings in the book.
+          </p>
+          {candidates.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+              {candidates.map((candidate) => (
+                <span
+                  key={candidate.page_index}
+                  className={cn(
+                    "rounded border px-2 py-1",
+                    candidate.selected
+                      ? "border-[#0b4a36] bg-[#e7f0ef] text-[#0b4a36]"
+                      : "border-border bg-muted/30 text-muted-foreground",
+                  )}
+                  title={candidate.reason}
+                >
+                  Page {candidate.page_index} · {Math.round(candidate.score * 100)}%
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            <input
+              value={rangeDraft}
+              onChange={(event) => onRangeDraftChange(event.target.value)}
+              placeholder={pageCount > 0 ? `e.g. ${Math.max(1, pageCount - 2)}-${pageCount}` : "e.g. 157-159"}
+              className="h-9 min-w-0 flex-1 rounded border bg-background px-2 text-sm"
+            />
+            <Button size="sm" onClick={onSaveRange} disabled={busy}>
+              Save pages
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onAcceptDetected}
+              disabled={!hasDetectedPages || busy}
+            >
+              Accept detected
+            </Button>
+            <Button size="sm" variant="outline" onClick={onNoToc} disabled={busy}>
+              No TOC in this book
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onAuto} disabled={busy}>
+              Re-run auto
+            </Button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function NoTocState({
+  hasCandidate,
+  onNoToc,
+}: {
+  hasCandidate: boolean;
+  onNoToc: () => void;
+}): JSX.Element {
+  return (
+    <main className="grid min-h-0 flex-1 place-items-center bg-[#f5f1e8] p-6">
+      <div className="max-w-xl rounded border bg-white p-6 text-center shadow-sm">
+        <h3 className="text-lg font-semibold">No TOC source is active</h3>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {hasCandidate
+            ? "The app found possible TOC pages. Accept the detected range above or enter the correct page range."
+            : "No table of contents was detected. Enter the TOC page range above, or explicitly use page-by-page fallback."}
+        </p>
+        <Button className="mt-4" variant="outline" onClick={onNoToc}>
+          Use page-by-page fallback
+        </Button>
+      </div>
+    </main>
+  );
+}
+
+function TranslatedReviewPanel({
+  required,
+  state,
+  confirmedAt,
+  structureConfirmed,
+  busy,
+  onConfirm,
+}: {
+  required: boolean;
+  state: "not_required" | "confirmed" | "unconfirmed";
+  confirmedAt: string | null;
+  structureConfirmed: boolean;
+  busy: boolean;
+  onConfirm: () => void;
+}): JSX.Element {
+  return (
+    <section className="border-b bg-[#fbfaf6] px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="rounded bg-[#efe7d8] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#5b4630]">
+              2. Final translated TOC review
+            </span>
+            <span className="text-sm font-semibold">
+              {state === "confirmed"
+                ? "Translated TOC confirmed"
+                : required
+                  ? "Review translated headings before export"
+                  : "No translated TOC review required yet"}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Confirm this after translation when the TOC headings and chapter names look right.
+            Export preflight blocks while this review is required and unconfirmed.
+          </p>
+          {confirmedAt && (
+            <p className="mt-1 text-[11px] text-muted-foreground">Confirmed at {confirmedAt}</p>
+          )}
+        </div>
+        <Button
+          size="sm"
+          className="ml-auto"
+          onClick={onConfirm}
+          disabled={!required || state === "confirmed" || !structureConfirmed || busy}
+        >
+          <Check className="mr-1 h-4 w-4" />
+          {busy ? "Confirming..." : state === "confirmed" ? "Confirmed" : "Confirm final review"}
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 function PhaseCard({
@@ -456,7 +747,7 @@ function PhaseCard({
 }
 
 function ScanPanel({
-  selectedEntry,
+  selectedPageUuid,
   selectedIndex,
   total,
   onPrev,
@@ -464,7 +755,7 @@ function ScanPanel({
   onRerun,
   onAreaOcr,
 }: {
-  selectedEntry: TocEntryDto | null;
+  selectedPageUuid: string | null;
   selectedIndex: number;
   total: number;
   onPrev: () => void;
@@ -473,7 +764,7 @@ function ScanPanel({
   onAreaOcr: () => void;
 }): JSX.Element {
   const [zoom, setZoom] = useState(100);
-  const image = useRenderedPage(selectedEntry?.page_uuid ?? null, 160);
+  const image = useRenderedPage(selectedPageUuid, 160);
   return (
     <section className="flex min-h-0 flex-col border-r">
       <PanelHeader title="Original TOC scan">
@@ -517,7 +808,7 @@ function ScanPanel({
           <RefreshCw className="mr-1 h-4 w-4" />
           Re-detect TOC
         </Button>
-        <Button size="sm" variant="outline" onClick={onAreaOcr} disabled={!selectedEntry}>
+        <Button size="sm" variant="outline" onClick={onAreaOcr} disabled={!selectedPageUuid}>
           Area OCR
         </Button>
       </div>
@@ -567,11 +858,13 @@ function OcrLinesPanel({
             type="button"
             onClick={() => onSelect(line)}
             className={cn(
-              "grid w-full grid-cols-[2.5rem_minmax(0,1fr)_2rem] items-center gap-2 border-b px-2 py-2 text-left text-sm",
+              "grid w-full grid-cols-[4.25rem_minmax(0,1fr)_2.75rem] items-center gap-2 border-b px-2 py-2 text-left text-sm",
               line.key === selectedKey ? "bg-[#e7f0ef]" : "hover:bg-muted/50",
             )}
           >
-            <span className="text-xs font-medium text-muted-foreground">{line.lineNo}</span>
+            <span className="text-[11px] font-medium text-muted-foreground">
+              P{line.pageIndex} · L{line.lineNo}
+            </span>
             <span dir="rtl" lang="ar" className="truncate font-arabic">
               {line.text}
             </span>
@@ -689,9 +982,9 @@ function StructuredPanel({
           <thead className="sticky top-0 z-10 bg-muted text-left text-[10px] uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="px-2 py-2">Level</th>
-              <th className="px-2 py-2">P.</th>
+              <th className="px-2 py-2">Target page</th>
               <th className="px-2 py-2">Arabic OCR</th>
-              <th className="px-2 py-2">Target</th>
+              <th className="px-2 py-2">Source page</th>
               <th className="px-2 py-2">Status</th>
               <th className="px-2 py-2">Translation preview</th>
               <th className="px-2 py-2">Actions</th>
@@ -870,7 +1163,6 @@ function IssueResolutionPanel({
           </p>
         )}
         <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <Button size="sm" variant="outline">Edit heading</Button>
           <label className="flex items-center gap-2 text-muted-foreground">
             Target page
             <input
@@ -1287,6 +1579,47 @@ function entryToLine(entry: TocEntryDto, index: number): TocOcrLineDto {
     block_uuid: entry.block_uuid,
     source_kind: "entry",
   };
+}
+
+function formatPageRange(pages: number[]): string {
+  const sorted = [...new Set(pages)].sort((a, b) => a - b);
+  if (sorted.length === 0) return "";
+  const groups: string[] = [];
+  let start = sorted[0];
+  let previous = sorted[0];
+  for (const page of sorted.slice(1)) {
+    if (page === previous + 1) {
+      previous = page;
+      continue;
+    }
+    groups.push(start === previous ? String(start) : `${start}-${previous}`);
+    start = page;
+    previous = page;
+  }
+  groups.push(start === previous ? String(start) : `${start}-${previous}`);
+  return groups.join(", ");
+}
+
+function parsePageRange(value: string, pageCount: number): number[] {
+  const pages = new Set<number>();
+  for (const part of value.split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const range = trimmed.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      for (let page = Math.min(start, end); page <= Math.max(start, end); page += 1) {
+        if (page >= 1 && (!pageCount || page <= pageCount)) pages.add(page);
+      }
+      continue;
+    }
+    const page = Number(trimmed);
+    if (Number.isFinite(page) && page >= 1 && (!pageCount || page <= pageCount)) {
+      pages.add(page);
+    }
+  }
+  return [...pages].sort((a, b) => a - b);
 }
 
 function entryStatus(entry: TocEntryDto, fallbackKind: string): EntryStatus {

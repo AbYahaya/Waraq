@@ -191,14 +191,30 @@ type ResolvedDecisionFilter =
   | "historical"
   | "ignored_deleted";
 
+const RESOLVED_DECISION_FILTERS: ResolvedDecisionFilter[] = [
+  "all",
+  "accepted",
+  "warning",
+  "unresolved",
+  "superseded",
+  "historical",
+  "ignored_deleted",
+];
+
+const AUDIT_FILTER_VALUES = new Set(FILTER_OPTIONS.map((option) => option.value));
+
 export function ProjectAuditPage(): JSX.Element {
   const { projectUuid } = useParams<{ projectUuid: string }>();
-  const [searchParams] = useSearchParams();
-  const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeFilters, setActiveFilters] = useState<Set<string>>(() =>
+    parseAuditFilters(searchParams),
+  );
   const [auditTab, setAuditTab] = useState<AuditTab>(
     searchParams.get("tab") === "resolved" ? "resolved" : "active",
   );
-  const [resolvedFilter, setResolvedFilter] = useState<ResolvedDecisionFilter>("all");
+  const [resolvedFilter, setResolvedFilter] = useState<ResolvedDecisionFilter>(() =>
+    parseResolvedDecisionFilter(searchParams.get("resolved")),
+  );
 
   const summary = useQuery<ProjectAuditSummary>({
     queryKey: ["audit", "summary", projectUuid],
@@ -239,6 +255,29 @@ export function ProjectAuditPage(): JSX.Element {
       return next;
     });
   };
+
+  useEffect(() => {
+    setActiveFilters(parseAuditFilters(searchParams));
+    setAuditTab(searchParams.get("tab") === "resolved" ? "resolved" : "active");
+    setResolvedFilter(parseResolvedDecisionFilter(searchParams.get("resolved")));
+  }, [searchParams]);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    setSearchParamOrDelete(next, "tab", auditTab === "resolved" ? "resolved" : null);
+    next.delete("filter");
+    for (const filter of [...activeFilters].sort()) {
+      next.append("filter", filter);
+    }
+    setSearchParamOrDelete(
+      next,
+      "resolved",
+      auditTab === "resolved" && resolvedFilter !== "all" ? resolvedFilter : null,
+    );
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [activeFilters, auditTab, resolvedFilter, searchParams, setSearchParams]);
 
   if (!projectUuid) {
     return (
@@ -314,6 +353,28 @@ function ErrorBox({ error }: { error: unknown }): JSX.Element {
       {error instanceof ApiError ? error.detail : String(error)}
     </div>
   );
+}
+
+function parseAuditFilters(searchParams: URLSearchParams): Set<string> {
+  return new Set(searchParams.getAll("filter").filter((value) => AUDIT_FILTER_VALUES.has(value)));
+}
+
+function parseResolvedDecisionFilter(value: string | null): ResolvedDecisionFilter {
+  return RESOLVED_DECISION_FILTERS.includes(value as ResolvedDecisionFilter)
+    ? (value as ResolvedDecisionFilter)
+    : "all";
+}
+
+function setSearchParamOrDelete(
+  params: URLSearchParams,
+  key: string,
+  value: string | null,
+): void {
+  if (value === null || value === "") {
+    params.delete(key);
+    return;
+  }
+  params.set(key, value);
 }
 
 function SummaryCard({ summary }: { summary: ProjectAuditSummary }): JSX.Element {

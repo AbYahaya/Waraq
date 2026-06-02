@@ -165,10 +165,18 @@ export interface TocOcrLineDto {
   source_kind: string;
 }
 
+export interface TocSourceCandidateDto {
+  page_index: number;
+  page_uuid: string;
+  score: number;
+  reason: string;
+  selected: boolean;
+}
+
 export interface TocResponseDto {
   entries: TocEntryDto[];
   ocr_lines: TocOcrLineDto[];
-  fallback_kind: "none" | "page_by_page";
+  fallback_kind: "none" | "source_pages" | "page_by_page";
   detected_heading_count: number;
   page_count: number;
   workflow_state:
@@ -183,6 +191,12 @@ export interface TocResponseDto {
   confirmed_at: string | null;
   confirmed_by_decision_event_uuid: string | null;
   export_settings_summary: Record<string, string | number | boolean>;
+  source_candidates: TocSourceCandidateDto[];
+  selected_source_page_indices: number[];
+  source_selection_state: string;
+  translated_review_required: boolean;
+  translated_review_state: "not_required" | "confirmed" | "unconfirmed";
+  translated_review_confirmed_at: string | null;
 }
 
 /**

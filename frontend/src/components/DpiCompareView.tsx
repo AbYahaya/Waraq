@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { api, apiPath } from "@/lib/api";
@@ -43,6 +44,34 @@ interface OcrRetryCandidate {
   warning: string | null;
 }
 
+function parseBoundedNumber(
+  value: string | null,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function parseOcrEngine(value: string | null): "openai" | "gemini" {
+  return value === "gemini" ? "gemini" : "openai";
+}
+
+function setNumericSearchParam(
+  params: URLSearchParams,
+  key: string,
+  value: number,
+  fallback: number,
+): void {
+  if (value === fallback) {
+    params.delete(key);
+    return;
+  }
+  params.set(key, String(value));
+}
+
 export interface DpiCompareViewProps {
   pageUuid: string;
   projectUuid?: string;
@@ -63,10 +92,19 @@ export function DpiCompareView({
   className,
 }: DpiCompareViewProps): JSX.Element {
   const queryClient = useQueryClient();
-  const [referenceDpi, setReferenceDpi] = useState(DEFAULT_REFERENCE_DPI);
-  const [retryDpi, setRetryDpi] = useState(DEFAULT_RETRY_DPI);
-  const [zoom, setZoom] = useState(100);
-  const [engine, setEngine] = useState<"openai" | "gemini">("openai");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [referenceDpi, setReferenceDpi] = useState(() =>
+    parseBoundedNumber(searchParams.get("ref_dpi"), DEFAULT_REFERENCE_DPI, DPI_MIN, DPI_MAX),
+  );
+  const [retryDpi, setRetryDpi] = useState(() =>
+    parseBoundedNumber(searchParams.get("retry_dpi"), DEFAULT_RETRY_DPI, DPI_MIN, DPI_MAX),
+  );
+  const [zoom, setZoom] = useState(() =>
+    parseBoundedNumber(searchParams.get("dpi_zoom"), 100, 50, 240),
+  );
+  const [engine, setEngine] = useState<"openai" | "gemini">(() =>
+    parseOcrEngine(searchParams.get("dpi_engine")),
+  );
   const [selection, setSelection] = useState<CropBox | null>(null);
   const [candidate, setCandidate] = useState<OcrRetryCandidate | null>(null);
   const [candidateDraft, setCandidateDraft] = useState("");
@@ -84,6 +122,28 @@ export function DpiCompareView({
     setError(null);
     setAcceptedMessage(null);
   }, [pageUuid]);
+
+  useEffect(() => {
+    setReferenceDpi(parseBoundedNumber(searchParams.get("ref_dpi"), DEFAULT_REFERENCE_DPI, DPI_MIN, DPI_MAX));
+    setRetryDpi(parseBoundedNumber(searchParams.get("retry_dpi"), DEFAULT_RETRY_DPI, DPI_MIN, DPI_MAX));
+    setZoom(parseBoundedNumber(searchParams.get("dpi_zoom"), 100, 50, 240));
+    setEngine(parseOcrEngine(searchParams.get("dpi_engine")));
+  }, [searchParams]);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    setNumericSearchParam(next, "ref_dpi", referenceDpi, DEFAULT_REFERENCE_DPI);
+    setNumericSearchParam(next, "retry_dpi", retryDpi, DEFAULT_RETRY_DPI);
+    setNumericSearchParam(next, "dpi_zoom", zoom, 100);
+    if (engine === "openai") {
+      next.delete("dpi_engine");
+    } else {
+      next.set("dpi_engine", engine);
+    }
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [engine, referenceDpi, retryDpi, searchParams, setSearchParams, zoom]);
 
   const retry = async (scope: "region" | "full_page") => {
     setError(null);

@@ -385,6 +385,64 @@ Clarity to resolve during implementation:
 - Selected-area OCR exists in the DPI recovery tool; the TOC screen opens that recovery flow for the selected page instead of duplicating crop OCR logic.
 - Step 2 final translated TOC review is scaffolded as a workflow phase and becomes meaningful after structural confirmation/translation output.
 
+User-test correction implemented:
+
+- The current TOC / IVZ implementation is not sufficient for real books whose table of contents appears as scanned source pages.
+- Current behavior mostly builds the TOC from detected heading blocks in the body. When no heading-derived TOC is detected, it falls back to one row per page, which is confusing for a 160-page book and does not help the user review actual TOC pages such as pages 157-159.
+- Rework the TOC workflow so it starts with TOC source detection and confirmation:
+  - Automatically score pages for TOC likelihood using signals such as Arabic/English TOC titles (`فهرس`, `الفهرس`, `المحتويات`, `Contents`, `Table of Contents`), repeated short lines, dot leaders, line-ending page numbers, list density, and adjacent-page continuity.
+  - Propose a TOC page range when confidence is high, for example "Possible TOC detected: pages 157-159".
+  - Allow the user to adjust or confirm the TOC source page range.
+  - Allow the user to explicitly choose "No TOC in this book" and use page-by-page fallback.
+  - If automatic detection misses the TOC, allow the user to mark existing scanned pages as TOC source pages. This is canon-aligned as TOC source confirmation, not a free manual TOC builder.
+- Parse TOC entries from confirmed TOC source pages:
+  - OCR source page line
+  - heading text
+  - target page number
+  - probable level
+  - confidence
+  - source page and source line reference
+- Match parsed TOC entries to body content:
+  - target page index / printed page number
+  - nearby detected heading block
+  - fuzzy heading-text similarity
+  - page-number offset handling for books where printed page numbers differ from PDF/page indices
+- Replace the current giant page-by-page fallback table with a clear no-TOC state:
+  - "No TOC detected."
+  - "Use page-by-page fallback" as an explicit confirmation.
+  - "Mark TOC pages" for books where the detector missed the TOC.
+- Simplify the UI with progressive disclosure:
+  1. TOC Source: detected range, accept/change/no TOC.
+  2. Review TOC Lines: scan plus extracted editable lines.
+  3. Match To Book: TOC line -> target page -> matched heading -> status.
+  4. Resolve Issues: plain-language explanation and targeted actions.
+  5. Confirm Structure: release gate.
+  6. Export Settings: collapsed by default.
+- Keep necessary existing capabilities, but hide advanced controls until relevant:
+  - scan zoom and page navigation
+  - line edit/split/merge/ignore
+  - target-page relink
+  - heading-level adjustment
+  - confirm mismatch/verify
+  - re-detect while preserving protected manual decisions
+- Canon boundary:
+  - Allowed: detected or user-confirmed TOC source pages from the actual document, followed by OCR line review and source-based entry matching.
+  - Not allowed as default v1 behavior: a free manual TOC builder that creates arbitrary entries unrelated to detected/source pages.
+- Implementation files:
+  - `backend/waraq/toc/service.py`
+  - `backend/waraq/api/routers/toc_router.py`
+  - `backend/waraq/release_gate/service.py`
+  - `backend/waraq/preflight/service.py`
+  - `backend/waraq/preflight/enums.py`
+  - `frontend/src/components/TocPanel.tsx`
+  - `frontend/src/components/TranslationExportDialog.tsx`
+  - `frontend/src/lib/queries.ts`
+- Full E2E wiring added:
+  - TOC Phase 4 structural confirmation now blocks translation release when required.
+  - TOC Step 2 final translated review now persists `toc_translated_review_confirmed`.
+  - Export preflight now blocks when translated TOC review is required and unconfirmed.
+  - Saved TOC/export settings prefill the Translate & Export Pflichtfragen while still requiring active confirmation for the export run.
+
 Visual reference:
 
 ![TOC / IVZ mockup](assets/changes2-toc-ivz-mockup.png)
@@ -506,3 +564,37 @@ Possible implementation:
   - Decision Events should record `span_uuid`, crop, before-span text, after-span text, and resulting segment revision UUID when a text change is written.
 
 This is not required for the current Workstream 5 completion because the present Waraq text model is segment-level.
+
+## Reference Stack Gap Closure
+
+Status: implemented backend pass on 2026-06-01.
+
+Implemented:
+
+- Added lightweight sunnah.com citation extraction for inline references such as `Sahih al-Bukhari 1`, `Bukhari, no. 1`, and Arabic equivalents.
+- Hadith verification now uses the app settings loader for `SUNNAH_COM_API_KEY` / `sunnah_com_api_key`, so keys added to backend `.env` are visible to production routes.
+- `POST /segments/{satz_uuid}/hadith/verify` now infers sunnah.com lookup details from the segment text when a recognizable citation exists. Manual lookup bodies still work.
+- Protected translation hadith verification also calls sunnah.com automatically when a recognizable citation is present, then continues with Shamela and dorar.net candidates.
+- Hadith verification now creates an open `HadithPassageStatus` row when a persisted verification aggregate is created, so the result can be reviewed and resolved instead of being provenance-only.
+- Added `GET /segments/{satz_uuid}/hadith/review` to return the active aggregate, source rows, open status, available action types, and extended-source states for the review UI.
+- Added `POST /segments/{satz_uuid}/hadith/status/{hadith_status_uuid}/decision` to acknowledge H-1 with `go_with_warning` or resolve H-2 with the seven canonical action types.
+- Wired CAMeL morphology lexeme comparison into hadith consensus vocalization checks. If the morphology adapter has no data, the existing text-only comparison still works.
+- Protected Qur'an translation is now target-language-aware internally: English target language selects `english_rwwad`; the current default remains `german_rwwad` until the app exposes a project/job target-language field.
+- Diagnostics now reports sunnah.com key presence from the same settings loader used by production hadith code.
+- Settings now explicitly load `backend/.env` in addition to the process working-directory `.env`, so diagnostics and production routes see the same local key even if the backend is started from the repository root.
+- Hadith-like passages with zero external candidates now create an H-2/N-7 review status instead of silently falling through as normal LLM translation. Translation skips such segments with `hadith_external_verification_unavailable`.
+- Manual `POST /segments/{satz_uuid}/hadith/verify` also records N-7 when hadith-like text or manually triggered extended verification returns no source candidates.
+
+Known follow-up:
+
+- Add a first-class project or translation-job target-language setting in the UI/API. The protected Qur'an carrier selector is ready for it, but current translation job creation does not yet pass a target language into `resolve_protected_translation`.
+- Add the frontend Hadith Review panel that consumes the new `/hadith/review` and `/hadith/status/.../decision` endpoints. The backend is now wired for it.
+- E-5 remains structurally represented as active special role with a stub fetcher. Full Official Live API integration still requires the concrete API contract/key details for `موسوعة الأحاديث النبوية`.
+
+Verification:
+
+- `backend/.venv/bin/python -m py_compile backend/waraq/hadith/citation_extract.py backend/waraq/hadith/consensus.py backend/waraq/translation/protected_passages.py backend/waraq/api/routers/hadith_router.py backend/waraq/api/routers/diagnostics_router.py` passed.
+- `.venv/bin/python -c "import waraq.api.main; print('api import ok')"` from `backend/` passed.
+- `timeout 30 .venv/bin/pytest tests/api/test_hadith_router.py -q` timed out after collection before completing any test; no failure traceback was produced.
+- After adding the sunnah.com key, `.venv/bin/python -c "from waraq.db.session import get_settings; print(bool(get_settings().sunnah_com_api_key))"` from `backend/` returned `True`.
+- After testing a non-Kutub/non-sunnah-address hadith passage, no-candidate behavior was tightened and verified with `pytest tests/translation/test_protected_passages.py -q` plus API import.

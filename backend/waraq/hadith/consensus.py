@@ -49,6 +49,7 @@ from waraq.arabic import to_skeleton
 from waraq.hadith.enums import Quellenrolle, Vokalisierungsklasse
 from waraq.hadith.vocalization import (
     aggregate_vocalization_class,
+    camel_lexeme_default,
     classify_vocalization_class,
 )
 
@@ -144,6 +145,7 @@ _TIE_EPSILON = 0.05
 # two hits are considered to "carry the same matn" when their
 # skeleton-stripped Levenshtein ratio is at least this value.
 _CARRIAGE_THRESHOLD = 0.85
+_MORPH_LEXEME_FN = camel_lexeme_default()
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,7 +367,11 @@ def _score_dimensions(
             other = candidates[i]
             if not other.matn_vocalized:
                 continue
-            klasse = classify_vocalization_class(candidate.matn_vocalized, other.matn_vocalized)
+            klasse = classify_vocalization_class(
+                candidate.matn_vocalized,
+                other.matn_vocalized,
+                lexeme_fn=_MORPH_LEXEME_FN,
+            )
             if klasse == Vokalisierungsklasse.V_0:
                 comparisons.append(1.0)
             elif klasse == Vokalisierungsklasse.V_1:
@@ -438,7 +444,7 @@ def _pick_vocalization(
         for j, voc_j in voc_candidates:
             if i == j:
                 continue
-            klasse = classify_vocalization_class(voc_i, voc_j)
+            klasse = classify_vocalization_class(voc_i, voc_j, lexeme_fn=_MORPH_LEXEME_FN)
             pairwise_classes.append(klasse)
             if klasse == Vokalisierungsklasse.V_0:
                 score += 1.0

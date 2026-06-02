@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
+import { LayoutDashboard } from "lucide-react";
 
 import { DeleteProjectDialog } from "@/components/DeleteProjectDialog";
 import { DifficultyBadge } from "@/components/DifficultyBadge";
@@ -43,7 +44,7 @@ export function ProjectWorkspaceSidebar({
     <>
       <div
         className={cn(
-          "flex min-h-0 flex-1 flex-col overflow-hidden",
+          "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain",
           isDark
             ? "text-white"
             : "rounded-[2rem] border border-border/80 bg-card/95 shadow-sm",
@@ -75,6 +76,20 @@ export function ProjectWorkspaceSidebar({
           <div className="mt-2">
             <DifficultyBadge scope="project" uuid={projectUuid} projectUuid={projectUuid} />
           </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className={cn(
+              "mt-3 w-full justify-start gap-2 rounded-xl px-2 text-xs",
+              isDark && "bg-white text-foreground hover:bg-white/90",
+            )}
+            asChild
+          >
+            <Link to="/">
+              <LayoutDashboard className="h-4 w-4" />
+              Dashboard
+            </Link>
+          </Button>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <Button
               size="sm"

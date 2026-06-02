@@ -48,6 +48,7 @@ from sqlalchemy import desc, select
 
 from waraq.api._ownership import owned_segment_or_404
 from waraq.api.dependencies import CurrentAccount, DbSession
+from waraq.db.session import get_settings
 from waraq.morphology import (
     MorphologyDataMissing,
     MorphologyNotInstalled,
@@ -367,7 +368,7 @@ async def environment_diagnostic(
         openai_key_present=bool(os.environ.get("OPENAI_API_KEY")),
         google_ai_key_present=bool(os.environ.get("GOOGLE_AI_API_KEY")),
         google_application_credentials_set=bool(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")),
-        sunnah_com_api_key_present=bool(os.environ.get("SUNNAH_COM_API_KEY")),
+        sunnah_com_api_key_present=bool(get_settings().sunnah_com_api_key),
         morphology_db_available=morphology_is_available(),
     )
 

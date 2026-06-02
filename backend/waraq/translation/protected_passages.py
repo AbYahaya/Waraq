@@ -18,12 +18,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from waraq.db.session import get_settings
+from waraq.external.model_u import ModelUClassA, ModelUClassB
 from waraq.hadith import HadithCandidateHit, Quellenrolle, run_full_hadith_verification
+from waraq.hadith.citation_extract import extract_sunnah_lookup
+from waraq.hadith.detection import looks_like_hadith
 from waraq.hadith.dorar import DorarHadith
 from waraq.hadith.dorar import search_via_api as dorar_search_via_api
+from waraq.hadith.sunnah import SunnahApiKeyMissing, SunnahHadith
+from waraq.hadith.sunnah import fetch_hadith as sunnah_fetch_hadith
 from waraq.preflight.enums import HadithStellenTyp
 from waraq.preflight.hadith import record_hadith_status
 from waraq.quran import (
+    ENGLISH_RWWAD_KEY,
     GERMAN_RWWAD_KEY,
     lookup_translation_aya,
     recognize_quran_passage,
@@ -53,6 +59,7 @@ async def resolve_protected_translation(
     project_uuid: _uuid.UUID,
     segment: Segment,
     source_text: str,
+    target_language: str | None = None,
 ) -> ProtectedTranslationResult | None:
     text = source_text.strip()
     if not text:
@@ -63,6 +70,7 @@ async def resolve_protected_translation(
         project_uuid=project_uuid,
         segment=segment,
         source_text=text,
+        target_language=target_language,
     )
     if quran_result is not None:
         return quran_result
@@ -82,7 +90,9 @@ async def _resolve_quran_translation(
     project_uuid: _uuid.UUID,
     segment: Segment,
     source_text: str,
+    target_language: str | None,
 ) -> ProtectedTranslationResult | None:
+    translation_key = _quran_translation_key_for_target_language(target_language)
     existing = (
         await session.execute(
             select(ProjectQuranPassage)
@@ -94,11 +104,14 @@ async def _resolve_quran_translation(
         )
     ).scalar_one_or_none()
     if existing is not None and existing.snapshot_translation_text:
-        return ProtectedTranslationResult(
-            output_text=existing.snapshot_translation_text,
-            source_kind="quran",
-            reference_payload=_build_quran_reference_payload_from_passage(existing),
-        )
+        if existing.translation_key == translation_key:
+            return ProtectedTranslationResult(
+                output_text=existing.snapshot_translation_text,
+                source_kind="quran",
+                reference_payload=_build_quran_reference_payload_from_passage(existing),
+            )
+        # Older records may not know the requested target carrier. Do a fresh lookup
+        # instead of reusing the wrong language.
 
     recognition = await recognize_quran_passage(
         session,
@@ -117,7 +130,7 @@ async def _resolve_quran_translation(
             session,
             sura_index=recognition.sura_index,
             aya_index=aya_index,
-            translation_key=GERMAN_RWWAD_KEY,
+            translation_key=translation_key,
             phase="translation",
         )
         if verse.text is None:
@@ -127,21 +140,21 @@ async def _resolve_quran_translation(
                 skip_reason="protected_quran_translation_not_available",
                 reference_payload=_build_quran_reference_payload_from_recognition(
                     recognition=recognition,
-                    translation_key=GERMAN_RWWAD_KEY,
+                    translation_key=translation_key,
                     translation_source_version=None,
                 ),
             )
         verse_texts.append(verse.text.strip())
 
     translation_text = "\n".join(text for text in verse_texts if text)
-    if existing is None:
+    if existing is None or existing.translation_key != translation_key:
         await record_recognized_passage(
             session=session,
             project_uuid=project_uuid,
             satz_uuid=segment.satz_uuid,
             recognition=recognition,
             translation_text=translation_text,
-            translation_key=GERMAN_RWWAD_KEY,
+            translation_key=translation_key,
             translation_source_version=None,
         )
 
@@ -150,10 +163,10 @@ async def _resolve_quran_translation(
         source_kind="quran",
         reference_payload=(
             _build_quran_reference_payload_from_passage(existing)
-            if existing is not None
+            if existing is not None and existing.translation_key == translation_key
             else _build_quran_reference_payload_from_recognition(
                 recognition=recognition,
-                translation_key=GERMAN_RWWAD_KEY,
+                translation_key=translation_key,
                 translation_source_version=None,
             )
         ),
@@ -176,6 +189,12 @@ async def _resolve_hadith_translation(
             session=session,
             aggregate_uuid=aggregate.aggregate_uuid,
         )
+        await _ensure_hadith_status(
+            session=session,
+            project_uuid=project_uuid,
+            segment=segment,
+            stellen_typ=_stellen_typ_for_existing_hadith_aggregate(aggregate),
+        )
         return ProtectedTranslationResult(
             output_text=None,
             source_kind="hadith",
@@ -187,6 +206,26 @@ async def _resolve_hadith_translation(
 
     mandatory_hits = await _gather_hadith_candidates(session=session, query_text=source_text)
     if not mandatory_hits:
+        if looks_like_hadith(source_text):
+            await _ensure_hadith_status(
+                session=session,
+                project_uuid=project_uuid,
+                segment=segment,
+                stellen_typ=HadithStellenTyp.N_7,
+            )
+            return ProtectedTranslationResult(
+                output_text=None,
+                source_kind="hadith",
+                skip_reason="hadith_external_verification_unavailable",
+                reference_payload={
+                    "kind": "hadith",
+                    "title": "Hadith verification required",
+                    "subtitle": "No external source candidate was available",
+                    "sources": [],
+                    "state": "unverified",
+                    "hadith_stellen_typ": HadithStellenTyp.N_7.value,
+                },
+            )
         return None
 
     outcome = await run_full_hadith_verification(
@@ -216,6 +255,12 @@ async def _resolve_hadith_translation(
     )
     if aggregate is None:
         return None
+    await _ensure_hadith_status(
+        session=session,
+        project_uuid=project_uuid,
+        segment=segment,
+        stellen_typ=_stellen_typ_for_hadith_outcome(outcome=outcome, aggregate=aggregate),
+    )
     return ProtectedTranslationResult(
         output_text=None,
         source_kind="hadith",
@@ -470,6 +515,18 @@ def _humanize_shamela_collection(slug: str) -> str:
     return mapping.get(slug, slug.replace("_", " "))
 
 
+def _quran_translation_key_for_target_language(target_language: str | None) -> str:
+    """Select the protected Qur'an translation carrier for the target language.
+
+    Existing translation jobs do not yet persist a project target language, so
+    the current production default remains German. English is enabled as soon
+    as callers pass an English target language.
+    """
+    if target_language and target_language.strip().casefold().startswith(("en", "english")):
+        return ENGLISH_RWWAD_KEY
+    return GERMAN_RWWAD_KEY
+
+
 async def _gather_hadith_candidates(
     *,
     session: AsyncSession,
@@ -479,6 +536,7 @@ async def _gather_hadith_candidates(
         return []
 
     candidates: list[HadithCandidateHit] = []
+    sunnah_lookup = extract_sunnah_lookup(query_text)
     shamela_hits = await find_by_skeleton(
         session,
         candidate_text=query_text,
@@ -487,10 +545,22 @@ async def _gather_hadith_candidates(
     )
     candidates.extend(shamela_hits_to_consensus_candidates(shamela_hits))
 
-    if not candidates and not _looks_like_hadith(query_text):
+    if not candidates and sunnah_lookup is None and not looks_like_hadith(query_text):
         return []
 
     settings = get_settings()
+    if sunnah_lookup is not None:
+        try:
+            sunnah_hit = await sunnah_fetch_hadith(
+                collection=sunnah_lookup.collection,
+                hadith_number=sunnah_lookup.hadith_number,
+                api_key=settings.sunnah_com_api_key,
+            )
+        except (SunnahApiKeyMissing, ModelUClassA, ModelUClassB):
+            sunnah_hit = None
+        if sunnah_hit is not None:
+            candidates.append(_sunnah_to_candidate(sunnah_hit))
+
     try:
         dorar_hits = await dorar_search_via_api(
             query=query_text,
@@ -501,6 +571,25 @@ async def _gather_hadith_candidates(
         dorar_hits = []
     candidates.extend(_dorar_to_candidates(dorar_hits))
     return candidates
+
+
+def _sunnah_to_candidate(hadith: SunnahHadith) -> HadithCandidateHit:
+    grade_values: list[str] = []
+    for grade in hadith.grades:
+        value = grade.get("grade") if isinstance(grade, dict) else None
+        if isinstance(value, str) and value.strip():
+            grade_values.append(value.strip())
+    return HadithCandidateHit(
+        source_name="sunnah.com",
+        quellen_rolle=Quellenrolle.PFLICHT,
+        matn_arabic=hadith.matn_arabic,
+        matn_vocalized=None,
+        isnad_chain=[],
+        collection_label=hadith.collection,
+        hadith_number=hadith.hadith_number,
+        authenticity_grade=", ".join(grade_values) if grade_values else None,
+        raw_payload=dict(hadith.raw_payload),
+    )
 
 
 def _dorar_to_candidates(hits: list[DorarHadith]) -> list[HadithCandidateHit]:
@@ -539,20 +628,27 @@ def _pick_preferred_hadith_translation(rows: list[HadithSingleSourceResult]) -> 
 
 
 def _looks_like_hadith(text: str) -> bool:
-    lowered = text.strip()
-    if not lowered:
-        return False
-    markers = (
-        "قال رسول",
-        "صلى الله عليه وسلم",
-        "روى",
-        "رواه",
-        "حدثنا",
-        "عن أبي",
-        "عن عائشة",
-        "عن ابن",
-    )
-    return any(marker in lowered for marker in markers)
+    return looks_like_hadith(text)
+
+
+def _stellen_typ_for_hadith_outcome(
+    *,
+    outcome: Any,
+    aggregate: HadithAggregateResult,
+) -> HadithStellenTyp:
+    if aggregate.vokalisierungs_konflikt or aggregate.vokalisierungsklasse == "V-2":
+        return HadithStellenTyp.N_8
+    if outcome.two_tier.extended_set_triggered:
+        return HadithStellenTyp.N_2
+    return HadithStellenTyp.N_1
+
+
+def _stellen_typ_for_existing_hadith_aggregate(
+    aggregate: HadithAggregateResult,
+) -> HadithStellenTyp:
+    if aggregate.vokalisierungs_konflikt or aggregate.vokalisierungsklasse == "V-2":
+        return HadithStellenTyp.N_8
+    return HadithStellenTyp.N_1
 
 
 async def _ensure_hadith_status(

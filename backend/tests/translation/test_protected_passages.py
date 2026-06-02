@@ -10,6 +10,8 @@ from waraq.translation.protected_passages import (
 
 def test_detects_common_hadith_markers() -> None:
     assert _looks_like_hadith("قال رسول الله صلى الله عليه وسلم")
+    assert _looks_like_hadith("أن رسول الله ﷺ قال : «مَنْ حَفِظَ على أُمَّتِي أَرْبَعِينَ حَدِيثاً»")
+    assert _looks_like_hadith("وفي رواية أبي الدرداء : وكنت له يوم القيامة شافعاً")
     assert not _looks_like_hadith("هذا شرح لغوي في باب الهمزة")
 
 

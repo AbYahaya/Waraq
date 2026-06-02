@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Link,
   NavLink,
@@ -26,6 +27,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useIdleTimeout } from "@/lib/use-idle-timeout";
 import { useAuthStore } from "@/store/auth";
+import { readLastWorkspaceUrl } from "@/lib/workspace-memory";
+import { queries } from "@/lib/queries";
 
 export function AppShell(): JSX.Element {
   const navigate = useNavigate();
@@ -46,12 +49,19 @@ export function AppShell(): JSX.Element {
     onIdleTimeout: onLogout,
   });
 
-  const isProjectRoute =
-    location.pathname === "/" || location.pathname.startsWith("/projects/");
   const isWorkspaceRoute =
     location.pathname.startsWith("/projects/") ||
     location.pathname.startsWith("/diagnostics");
 
+  const lastWorkspaceUrl = readLastWorkspaceUrl();
+  const lastWorkspaceProject = getWorkspaceProject(lastWorkspaceUrl ?? "");
+  const lastWorkspaceQ = useQuery({
+    ...queries.project(lastWorkspaceProject?.projectUuid ?? ""),
+    enabled: lastWorkspaceProject !== null,
+    retry: false,
+  });
+  const workspaceDisabled =
+    lastWorkspaceProject === null || lastWorkspaceQ.isLoading || lastWorkspaceQ.isError;
   const primaryNav = [
     {
       label: "Dashboard",
@@ -60,10 +70,11 @@ export function AppShell(): JSX.Element {
       active: location.pathname === "/",
     },
     {
-      label: "Projects",
-      to: "/",
+      label: "Workspace",
+      to: lastWorkspaceUrl ?? "",
       icon: FolderOpen,
-      active: isProjectRoute,
+      active: location.pathname.startsWith("/projects/"),
+      disabled: workspaceDisabled,
     },
     {
       label: "Diagnostics",
@@ -152,6 +163,7 @@ export function AppShell(): JSX.Element {
                     label={item.label}
                     icon={item.icon}
                     active={item.active}
+                    disabled={item.disabled}
                   />
                 ))}
               </nav>
@@ -282,9 +294,23 @@ interface NavItemProps {
   label: string;
   icon: typeof LayoutDashboard;
   active: boolean;
+  disabled?: boolean;
 }
 
-function NavItem({ to, label, icon: Icon, active }: NavItemProps): JSX.Element {
+function NavItem({ to, label, icon: Icon, active, disabled = false }: NavItemProps): JSX.Element {
+  if (disabled) {
+    return (
+      <button
+        type="button"
+        disabled
+        className="flex w-full cursor-not-allowed items-center gap-3 rounded-2xl px-4 py-3 text-sm text-white/35"
+        title="Open a project workspace first."
+      >
+        <Icon className="h-4 w-4" />
+        <span>{label}</span>
+      </button>
+    );
+  }
   return (
     <NavLink
       to={to}
@@ -342,7 +368,8 @@ function getWorkspaceProject(pathname: string): {
   projectUuid: string;
   pageUuid?: string;
 } | null {
-  const match = pathname.match(/^\/projects\/([^/]+)(?:\/pages\/([^/]+))?\/?$/);
+  const cleanPath = pathname.split(/[?#]/)[0] ?? pathname;
+  const match = cleanPath.match(/^\/projects\/([^/]+)(?:\/pages\/([^/]+))?\/?$/);
   if (match === null) return null;
   return {
     projectUuid: decodeURIComponent(match[1] ?? ""),

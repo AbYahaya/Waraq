@@ -252,6 +252,12 @@ async def evaluate_preflight(
         blocking.append(BlockingReason.HADITH_H2)
     if not konfig_complete:
         blocking.append(BlockingReason.KONFIGURATIONSSCHICHT_UNVOLLSTAENDIG)
+    from waraq.toc import toc_translated_review_blocks_export
+
+    if await toc_translated_review_blocks_export(
+        session=session, project_uuid=project_uuid
+    ):
+        blocking.append(BlockingReason.TOC_TRANSLATED_REVIEW_UNCONFIRMED)
 
     open_warnings: list[WarningSlot] = []
     if w_01_mittel_befunde:

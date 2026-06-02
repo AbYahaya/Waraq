@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import { ApiError, api } from "@/lib/api";
 import { qk } from "@/lib/queries";
+import { clearLastWorkspaceUrl } from "@/lib/workspace-memory";
 
 export interface DeleteProjectDialogProps {
   open: boolean;
@@ -55,6 +56,7 @@ export function DeleteProjectDialog({
       // back-button can't show a stale workspace.
       qc.removeQueries({ queryKey: qk.project(projectUuid) });
       qc.removeQueries({ queryKey: qk.projectPages(projectUuid) });
+      clearLastWorkspaceUrl(projectUuid);
       onOpenChange(false);
       navigate("/", { replace: true });
     },
