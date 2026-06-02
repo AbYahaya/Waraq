@@ -26,7 +26,6 @@ import { OcrPane } from "@/components/OcrPane";
 import { OcrReviewBar } from "@/components/OcrReviewBar";
 import { PageTranslationPanel } from "@/components/PageTranslationPanel";
 import { OriginalPane } from "@/components/OriginalPane";
-import { DifficultyBadge } from "@/components/DifficultyBadge";
 import { ProjectWorkspaceSidebar } from "@/components/ProjectWorkspaceSidebar";
 import { TocPanel } from "@/components/TocPanel";
 import { TranslationPane } from "@/components/TranslationPane";
@@ -261,7 +260,6 @@ export function ProjectWorkspacePage(): JSX.Element {
               >
                 {bookPreviewOpen ? "Close book preview" : "Book preview"}
               </Button>
-              <DifficultyBadge scope="page" uuid={pageUuid} projectUuid={projectUuid} />
               <PageTranslationPanel
                 projectUuid={projectUuid}
                 pageUuid={pageUuid}

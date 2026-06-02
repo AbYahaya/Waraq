@@ -12,6 +12,8 @@ from __future__ import annotations
 import uuid as _uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from difflib import SequenceMatcher
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -31,10 +33,14 @@ from waraq.preflight.hadith import record_hadith_status
 from waraq.quran import (
     ENGLISH_RWWAD_KEY,
     GERMAN_RWWAD_KEY,
+    RecognitionResult,
+    lookup_aya,
     lookup_translation_aya,
+    parse_author_citation,
     recognize_quran_passage,
     record_recognized_passage,
 )
+from waraq.arabic import to_skeleton
 from waraq.schemas import (
     HadithAggregateResult,
     HadithPassageStatus,
@@ -51,6 +57,13 @@ class ProtectedTranslationResult:
     source_kind: str
     skip_reason: str | None = None
     reference_payload: dict[str, Any] | None = None
+    source_text_override: str | None = None
+    output_replacements: dict[str, str] | None = None
+
+
+_INLINE_QURAN_RE = re.compile(
+    r"﴿(?P<ayah>[^﴾]{3,500})﴾(?P<citation>\s*[\[\(][^\]\)]{1,100}[\]\)])?"
+)
 
 
 async def resolve_protected_translation(
@@ -93,6 +106,16 @@ async def _resolve_quran_translation(
     target_language: str | None,
 ) -> ProtectedTranslationResult | None:
     translation_key = _quran_translation_key_for_target_language(target_language)
+    inline_result = await _resolve_inline_quran_translations(
+        session=session,
+        project_uuid=project_uuid,
+        segment=segment,
+        source_text=source_text,
+        translation_key=translation_key,
+    )
+    if inline_result is not None:
+        return inline_result
+
     existing = (
         await session.execute(
             select(ProjectQuranPassage)
@@ -148,15 +171,30 @@ async def _resolve_quran_translation(
 
     translation_text = "\n".join(text for text in verse_texts if text)
     if existing is None or existing.translation_key != translation_key:
-        await record_recognized_passage(
-            session=session,
-            project_uuid=project_uuid,
-            satz_uuid=segment.satz_uuid,
-            recognition=recognition,
-            translation_text=translation_text,
-            translation_key=translation_key,
-            translation_source_version=None,
-        )
+        existing = (
+            await session.execute(
+                select(ProjectQuranPassage)
+                .where(ProjectQuranPassage.project_uuid == project_uuid)
+                .where(ProjectQuranPassage.satz_uuid == segment.satz_uuid)
+                .where(ProjectQuranPassage.sura_index == recognition.sura_index)
+                .where(ProjectQuranPassage.aya_index_start == recognition.aya_index_start)
+                .where(ProjectQuranPassage.aya_index_end == recognition.aya_index_end)
+                .where(ProjectQuranPassage.translation_key == translation_key)
+                .where(ProjectQuranPassage.state != "rejected")
+                .order_by(ProjectQuranPassage.detected_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            await record_recognized_passage(
+                session=session,
+                project_uuid=project_uuid,
+                satz_uuid=segment.satz_uuid,
+                recognition=recognition,
+                translation_text=translation_text,
+                translation_key=translation_key,
+                translation_source_version=None,
+            )
 
     return ProtectedTranslationResult(
         output_text=translation_text,
@@ -171,6 +209,177 @@ async def _resolve_quran_translation(
             )
         ),
     )
+
+
+async def _resolve_inline_quran_translations(
+    *,
+    session: AsyncSession,
+    project_uuid: _uuid.UUID,
+    segment: Segment,
+    source_text: str,
+    translation_key: str,
+) -> ProtectedTranslationResult | None:
+    matches = list(_INLINE_QURAN_RE.finditer(source_text))
+    if not matches:
+        return None
+
+    output_replacements: dict[str, str] = {}
+    source_parts: list[str] = []
+    last_end = 0
+    payload_items: list[dict[str, Any]] = []
+    matched_any = False
+
+    for idx, match in enumerate(matches, start=1):
+        source_parts.append(source_text[last_end : match.start()])
+        quoted_ayah = match.group("ayah").strip()
+        citation = (match.group("citation") or "").strip()
+        recognition = await _recognize_inline_quran_quote(
+            session,
+            quoted_ayah=quoted_ayah,
+            citation=citation,
+        )
+        if not recognition.matched:
+            source_parts.append(match.group(0))
+            last_end = match.end()
+            continue
+
+        assert recognition.sura_index is not None
+        assert recognition.aya_index_start is not None
+        assert recognition.aya_index_end is not None
+
+        verse_texts: list[str] = []
+        for aya_index in range(recognition.aya_index_start, recognition.aya_index_end + 1):
+            verse = await lookup_translation_aya(
+                session,
+                sura_index=recognition.sura_index,
+                aya_index=aya_index,
+                translation_key=translation_key,
+                phase="translation",
+            )
+            if verse.text is None:
+                return ProtectedTranslationResult(
+                    output_text=None,
+                    source_kind="quran",
+                    skip_reason="protected_quran_translation_not_available",
+                    reference_payload=_build_quran_reference_payload_from_recognition(
+                        recognition=recognition,
+                        translation_key=translation_key,
+                        translation_source_version=None,
+                    ),
+                )
+            verse_texts.append(verse.text.strip())
+
+        translation_text = "\n".join(text for text in verse_texts if text)
+        await record_recognized_passage(
+            session=session,
+            project_uuid=project_uuid,
+            satz_uuid=segment.satz_uuid,
+            recognition=recognition,
+            translation_text=translation_text,
+            translation_key=translation_key,
+            translation_source_version=None,
+        )
+
+        placeholder = f"ZXPROTECTEDQURAN{idx:04d}ZX"
+        replacement = f"﴿{translation_text}﴾"
+        if citation:
+            replacement = f"{replacement} {citation}"
+        output_replacements[placeholder] = replacement
+        source_parts.append(placeholder)
+        payload_items.append(
+            {
+                "placeholder": placeholder,
+                "replacement": replacement,
+                "sura_index": recognition.sura_index,
+                "aya_index_start": recognition.aya_index_start,
+                "aya_index_end": recognition.aya_index_end,
+                "author_citation": citation or None,
+                "translation_key": translation_key,
+            }
+        )
+        matched_any = True
+        last_end = match.end()
+
+    source_parts.append(source_text[last_end:])
+    if not matched_any:
+        return None
+
+    return ProtectedTranslationResult(
+        output_text=None,
+        source_kind="quran",
+        reference_payload={
+            "kind": "quran",
+            "title": "Protected inline Qur'an references",
+            "subtitle": f"{len(output_replacements)} protected inline passage(s)",
+            "sources": [
+                _format_quran_source_line(
+                    label="Translation source",
+                    source_name=translation_key,
+                    source_version=None,
+                )
+            ],
+            "inline_passages": payload_items,
+        },
+        source_text_override="".join(source_parts),
+        output_replacements=output_replacements,
+    )
+
+
+async def _recognize_inline_quran_quote(
+    session: AsyncSession,
+    *,
+    quoted_ayah: str,
+    citation: str,
+) -> RecognitionResult:
+    recognition = await recognize_quran_passage(
+        session,
+        candidate_text=quoted_ayah,
+    )
+    if recognition.matched:
+        return recognition
+
+    parsed_citation = parse_author_citation(citation)
+    if parsed_citation is None:
+        return recognition
+    sura_index, aya_index_start, aya_index_end = parsed_citation
+    verses = []
+    for aya_index in range(aya_index_start, aya_index_end + 1):
+        verse = await lookup_aya(
+            session,
+            sura_index=sura_index,
+            aya_index=aya_index,
+        )
+        if verse is None:
+            return recognition
+        verses.append(verse)
+    if not verses:
+        return recognition
+
+    matched_text = " ".join(verse.text_vocalized for verse in verses)
+    if not _quran_quote_matches_reference(quoted_ayah, matched_text):
+        return recognition
+
+    first = verses[0]
+    return RecognitionResult(
+        matched=True,
+        confidence=0.9,
+        sura_index=sura_index,
+        aya_index_start=aya_index_start,
+        aya_index_end=aya_index_end,
+        ar_source_name=first.source_name,
+        ar_source_version=first.source_version,
+        matched_text_vocalized=matched_text,
+    )
+
+
+def _quran_quote_matches_reference(quoted_ayah: str, reference_text: str) -> bool:
+    quoted = to_skeleton(quoted_ayah).replace(" ", "")
+    reference = to_skeleton(reference_text).replace(" ", "")
+    if not quoted or not reference:
+        return False
+    if quoted == reference or quoted in reference or reference in quoted:
+        return True
+    return SequenceMatcher(a=quoted, b=reference).ratio() >= 0.78
 
 
 async def _resolve_hadith_translation(

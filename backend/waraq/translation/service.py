@@ -49,6 +49,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from waraq.canon_rules import apply_all as apply_canon_rules
 from waraq.identity.service import new_uuid
 from waraq.invariant.enums import LockFlag
 from waraq.jobs import (
@@ -665,7 +666,17 @@ async def _execute(
                 output_text = input_text
             else:
                 try:
-                    output_text = await translator(input_text, chunk_context)
+                    translator_input = (
+                        protected.source_text_override
+                        if protected is not None and protected.source_text_override
+                        else input_text
+                    )
+                    output_text = await translator(translator_input, chunk_context)
+                    if protected is not None and protected.output_replacements:
+                        output_text = _apply_protected_output_replacements(
+                            output_text,
+                            protected.output_replacements,
+                        )
                 except Exception as exc:
                     reason = f"translation_failed:{type(exc).__name__}: {exc!s}"[:500]
                     chunks.append(
@@ -773,6 +784,15 @@ async def _execute(
         },
     )
     return TranslationJobResult(job=job, chunks=chunks, skipped=skipped, final_context=context)
+
+
+def _apply_protected_output_replacements(
+    output_text: str,
+    replacements: dict[str, str],
+) -> str:
+    for placeholder, replacement in replacements.items():
+        output_text = output_text.replace(placeholder, replacement)
+    return apply_canon_rules(output_text)
 
 
 def _write_progress(job: Job, *, total: int, translated: int, processed: int) -> None:

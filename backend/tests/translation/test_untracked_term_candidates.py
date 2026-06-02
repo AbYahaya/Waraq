@@ -19,13 +19,13 @@ def _resolver_with_no_data() -> ChunkContextResolver:
 
 class TestUntrackedDetection:
     def test_arabic_only_words_become_candidates(self) -> None:
-        brief = _resolver_with_no_data().resolve("ذكر العلماء كتاب الفقه")
+        brief = _resolver_with_no_data().resolve("ذكر العلماء كتاب الفقه والتوحيد")
         forms = [c.surface_form for c in brief.untracked_term_candidates]
-        # Each Arabic word ≥ 4-skeleton-chars surfaces; "ذكر" / "كتاب"
-        # are < 4 skeleton chars only by `to_skeleton`'s alif-collapse,
-        # so we don't pin specific entries — just assert non-empty +
-        # subset properties.
+        # Conservative §4.17 fallback keeps obvious technical terms while
+        # filtering ordinary prose words.
         assert len(forms) >= 2
+        assert "العلماء" not in forms
+        assert "كتاب" not in forms
         assert all(c.surface_form.isprintable() for c in brief.untracked_term_candidates)
 
     def test_stopword_filter_excludes_common_words(self) -> None:
@@ -35,6 +35,25 @@ class TestUntrackedDetection:
         forms = {c.surface_form for c in brief.untracked_term_candidates}
         assert "في" not in forms
         assert "هذا" not in forms
+        assert "الفصل" not in forms
+
+    def test_divine_names_and_common_religious_prose_are_not_candidates(self) -> None:
+        brief = _resolver_with_no_data().resolve(
+            "بِسْمِ اللَّهِ الرَّحْمَنِ الرَّحِيمِ وأسأل الله الكريم رب العرش العظيم"
+        )
+        assert brief.untracked_term_candidates == []
+
+    def test_quran_spans_are_not_scanned_for_ai_source_candidates(self) -> None:
+        brief = _resolver_with_no_data().resolve(
+            "قال تعالى: ﴿وما خلقت الجن والإنس إلا ليعبدون﴾ ثم ذكر التوحيد"
+        )
+        forms = [c.surface_form for c in brief.untracked_term_candidates]
+        assert forms == ["التوحيد"]
+
+    def test_obvious_technical_terms_still_surface(self) -> None:
+        brief = _resolver_with_no_data().resolve("العبادة لا تسمى عبادة إلا مع التوحيد")
+        forms = {c.surface_form for c in brief.untracked_term_candidates}
+        assert {"العبادة", "التوحيد"}.issubset(forms)
 
     def test_empty_text_yields_no_candidates(self) -> None:
         brief = _resolver_with_no_data().resolve("")

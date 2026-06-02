@@ -39,6 +39,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from waraq.arabic import to_skeleton
 from waraq.schemas import ProjectQuranPassage
 
 
@@ -63,6 +64,128 @@ class CitationVerificationResult:
 # (sura, aya, aya2-as-trailing-annotation).
 _RANGE_DETECT_RE = re.compile(r"\d+\s*[-–—]\s*\d+")
 _NUMBER_RE = re.compile(r"\d+")
+_ARABIC_SURA_NAMES: tuple[str, ...] = (
+    "الفاتحة",
+    "البقرة",
+    "آل عمران",
+    "النساء",
+    "المائدة",
+    "الأنعام",
+    "الأعراف",
+    "الأنفال",
+    "التوبة",
+    "يونس",
+    "هود",
+    "يوسف",
+    "الرعد",
+    "إبراهيم",
+    "الحجر",
+    "النحل",
+    "الإسراء",
+    "الكهف",
+    "مريم",
+    "طه",
+    "الأنبياء",
+    "الحج",
+    "المؤمنون",
+    "النور",
+    "الفرقان",
+    "الشعراء",
+    "النمل",
+    "القصص",
+    "العنكبوت",
+    "الروم",
+    "لقمان",
+    "السجدة",
+    "الأحزاب",
+    "سبأ",
+    "فاطر",
+    "يس",
+    "الصافات",
+    "ص",
+    "الزمر",
+    "غافر",
+    "فصلت",
+    "الشورى",
+    "الزخرف",
+    "الدخان",
+    "الجاثية",
+    "الأحقاف",
+    "محمد",
+    "الفتح",
+    "الحجرات",
+    "ق",
+    "الذاريات",
+    "الطور",
+    "النجم",
+    "القمر",
+    "الرحمن",
+    "الواقعة",
+    "الحديد",
+    "المجادلة",
+    "الحشر",
+    "الممتحنة",
+    "الصف",
+    "الجمعة",
+    "المنافقون",
+    "التغابن",
+    "الطلاق",
+    "التحريم",
+    "الملك",
+    "القلم",
+    "الحاقة",
+    "المعارج",
+    "نوح",
+    "الجن",
+    "المزمل",
+    "المدثر",
+    "القيامة",
+    "الإنسان",
+    "المرسلات",
+    "النبأ",
+    "النازعات",
+    "عبس",
+    "التكوير",
+    "الانفطار",
+    "المطففين",
+    "الانشقاق",
+    "البروج",
+    "الطارق",
+    "الأعلى",
+    "الغاشية",
+    "الفجر",
+    "البلد",
+    "الشمس",
+    "الليل",
+    "الضحى",
+    "الشرح",
+    "التين",
+    "العلق",
+    "القدر",
+    "البينة",
+    "الزلزلة",
+    "العاديات",
+    "القارعة",
+    "التكاثر",
+    "العصر",
+    "الهمزة",
+    "الفيل",
+    "قريش",
+    "الماعون",
+    "الكوثر",
+    "الكافرون",
+    "النصر",
+    "المسد",
+    "الإخلاص",
+    "الفلق",
+    "الناس",
+)
+_SURA_NAME_TO_INDEX: dict[str, int] = {}
+for index, name in enumerate(_ARABIC_SURA_NAMES, start=1):
+    skeleton = to_skeleton(name).replace(" ", "")
+    _SURA_NAME_TO_INDEX[skeleton] = index
+    if skeleton.startswith("ال"):
+        _SURA_NAME_TO_INDEX[skeleton[1:]] = index
 
 
 def parse_author_citation(citation: str) -> tuple[int, int, int] | None:
@@ -90,6 +213,9 @@ def parse_author_citation(citation: str) -> tuple[int, int, int] | None:
     if not citation:
         return None
     numbers = [int(m.group()) for m in _NUMBER_RE.finditer(citation)]
+    by_name = _parse_arabic_sura_name_citation(citation, numbers)
+    if by_name is not None:
+        return by_name
     if len(numbers) < 2:
         return None
     sura = numbers[0]
@@ -102,6 +228,33 @@ def parse_author_citation(citation: str) -> tuple[int, int, int] | None:
     if aya1 < 1 or aya2 < aya1:
         return None
     return (sura, aya1, aya2)
+
+
+def _parse_arabic_sura_name_citation(
+    citation: str,
+    numbers: list[int],
+) -> tuple[int, int, int] | None:
+    if len(numbers) < 1:
+        return None
+    citation_skeleton = to_skeleton(citation).replace(" ", "")
+    matched_sura: int | None = None
+    for name_skeleton, sura_index in sorted(
+        _SURA_NAME_TO_INDEX.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        if name_skeleton and name_skeleton in citation_skeleton:
+            matched_sura = sura_index
+            break
+    if matched_sura is None:
+        return None
+    aya1 = numbers[0]
+    aya2 = aya1
+    if len(numbers) >= 2 and _RANGE_DETECT_RE.search(citation):
+        aya2 = numbers[1]
+    if aya1 < 1 or aya2 < aya1:
+        return None
+    return (matched_sura, aya1, aya2)
 
 
 def format_canonical_citation(

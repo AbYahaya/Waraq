@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -78,6 +79,16 @@ interface ExportRunResponse {
   artefact_size_bytes: number;
   gate_mode: string;
   n_segments_exported: number;
+}
+
+interface SegmentWithPage extends Segment {
+  page_uuid: string;
+  page_index: number;
+}
+
+interface CanonViolationDto {
+  satz_uuid: string;
+  kind: string;
 }
 
 type PdfFormatChoice = "digital_rgb" | "print_pdf_x_1a";
@@ -166,12 +177,46 @@ const PREFLIGHT_LABELS: Record<string, string> = {
 
 const describeCode = (code: string): string => PREFLIGHT_LABELS[code] ?? code;
 
+const CANON_RULE_LABELS: Record<string, string> = {
+  arabic_indic_digits: "Arabic-Indic digits must be converted to Western digits",
+  ei2_transliteration: "EI2 transliteration must use Q/J forms",
+  religious_formula_not_glyph: "Religious formulas must use canonical glyphs",
+};
+
+const describeCanonRule = (kind: string): string => CANON_RULE_LABELS[kind] ?? kind;
+
+const getCanonViolations = (err: unknown): CanonViolationDto[] => {
+  if (!(err instanceof ApiError)) return [];
+  const body = err.body as { detail?: unknown } | null;
+  const detail = body?.detail;
+  if (!detail || typeof detail !== "object") return [];
+  const reason = "reason" in detail ? String((detail as { reason?: unknown }).reason) : "";
+  if (reason !== "canon_rule_violations") return [];
+  const raw = (detail as { violations?: unknown }).violations;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item): CanonViolationDto | null => {
+      if (!item || typeof item !== "object") return null;
+      const satzUuid = (item as { satz_uuid?: unknown }).satz_uuid;
+      const kind = (item as { kind?: unknown }).kind;
+      if (typeof satzUuid !== "string" || typeof kind !== "string") return null;
+      return { satz_uuid: satzUuid, kind };
+    })
+    .filter((item): item is CanonViolationDto => item !== null);
+};
+
 const describeApiError = (err: unknown, fallback: string): string => {
   if (!(err instanceof ApiError)) return fallback;
   const body = err.body as { detail?: unknown } | null;
   const detail = body?.detail;
   if (detail && typeof detail === "object") {
     const reason = "reason" in detail ? String((detail as { reason?: unknown }).reason) : null;
+    if (reason === "canon_rule_violations") {
+      const count = getCanonViolations(err).length;
+      return count > 0
+        ? `Export blocked by canon rules in ${count} segment${count === 1 ? "" : "s"}.`
+        : "Export blocked by canon rules.";
+    }
     const blockers = Array.isArray((detail as { blockers?: unknown }).blockers)
       ? ((detail as { blockers: unknown[] }).blockers as unknown[]).map(String)
       : [];
@@ -214,6 +259,7 @@ export function TranslationExportDialog({
     null,
   );
   const [exportResult, setExportResult] = useState<ExportRunResponse | null>(null);
+  const [canonViolations, setCanonViolations] = useState<CanonViolationDto[]>([]);
   const [projectTitle, setProjectTitle] = useState(projectName);
 
   const buildAnswer = (key: PflichtfrageDef["key"]): PflichtfrageAnswer => {
@@ -282,13 +328,20 @@ export function TranslationExportDialog({
 
   // Collect every segment UUID across all pages — translation runs
   // project-wide.
-  const allSegmentsQuery = useQuery<Segment[]>({
+  const allSegmentsQuery = useQuery<SegmentWithPage[]>({
     queryKey: ["projects", projectUuid, "all-segments"],
     enabled: open && !!pagesQ.data && pagesQ.data.length > 0,
     queryFn: async () => {
       const pages = pagesQ.data ?? [];
       const lists = await Promise.all(
-        pages.map((p: Page) => api.get<Segment[]>(`/pages/${p.page_uuid}/segments`)),
+        pages.map(async (p: Page) => {
+          const segments = await api.get<Segment[]>(`/pages/${p.page_uuid}/segments`);
+          return segments.map((segment) => ({
+            ...segment,
+            page_uuid: p.page_uuid,
+            page_index: p.page_index,
+          }));
+        }),
       );
       return lists.flat();
     },
@@ -298,6 +351,13 @@ export function TranslationExportDialog({
     () => (allSegmentsQuery.data ?? []).map((s) => s.satz_uuid),
     [allSegmentsQuery.data],
   );
+  const segmentPageLookup = useMemo(() => {
+    const map = new Map<string, SegmentWithPage>();
+    for (const segment of allSegmentsQuery.data ?? []) {
+      map.set(segment.satz_uuid, segment);
+    }
+    return map;
+  }, [allSegmentsQuery.data]);
 
   const translateMutation = useMutation({
     mutationFn: async (): Promise<Job> => {
@@ -435,9 +495,14 @@ export function TranslationExportDialog({
         preflight_run_uuid: preflightRunUuid,
       });
     },
-    onSuccess: (r) => setExportResult(r),
-    onError: (err) =>
-      setError(describeApiError(err, "Export failed")),
+    onSuccess: (r) => {
+      setCanonViolations([]);
+      setExportResult(r);
+    },
+    onError: (err) => {
+      setCanonViolations(getCanonViolations(err));
+      setError(describeApiError(err, "Export failed"));
+    },
   });
 
   const reset = (): void => {
@@ -449,6 +514,7 @@ export function TranslationExportDialog({
     setPdfFormatChoice("print_pdf_x_1a");
     setPreflightState(null);
     setExportResult(null);
+    setCanonViolations([]);
   };
 
   const allConfirmed = confirmedFragen.size === PFLICHTFRAGEN.length;
@@ -940,6 +1006,7 @@ export function TranslationExportDialog({
                 disabled={!exportable || exportMutation.isPending}
                 onClick={() => {
                   setError(null);
+                  setCanonViolations([]);
                   exportMutation.mutate();
                 }}
               >
@@ -949,6 +1016,47 @@ export function TranslationExportDialog({
           </section>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
+          {canonViolations.length > 0 && (
+            <div className="rounded-2xl border border-destructive/25 bg-destructive/5 p-3 text-sm">
+              <p className="font-medium text-destructive">Segments to fix before export</p>
+              <ul className="mt-2 space-y-1.5">
+                {canonViolations.slice(0, 8).map((violation) => {
+                  const segment = segmentPageLookup.get(violation.satz_uuid);
+                  const href =
+                    segment !== undefined
+                      ? `/projects/${projectUuid}/pages/${segment.page_uuid}?view=single_fullscreen&pane=translation&focus=${segment.page_uuid}:${segment.block_uuid}:${segment.satz_uuid}`
+                      : null;
+                  return (
+                    <li
+                      key={`${violation.satz_uuid}:${violation.kind}`}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-background/80 px-3 py-2"
+                    >
+                      <span className="text-muted-foreground">
+                        {describeCanonRule(violation.kind)}
+                      </span>
+                      {href !== null ? (
+                        <Button size="sm" variant="outline" asChild>
+                          <Link to={href}>
+                            Page {segment?.page_index}
+                          </Link>
+                        </Button>
+                      ) : (
+                        <span className="font-mono text-[11px] text-muted-foreground">
+                          {violation.satz_uuid.slice(0, 8)}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              {canonViolations.length > 8 && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  +{canonViolations.length - 8} more segment(s). Retranslate the affected pages
+                  or open the listed pages and save the translation text once.
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <DialogFooter className="pt-3">

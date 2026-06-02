@@ -12,6 +12,7 @@ export interface ProtectedReferenceSummary {
   subtitle: string | null;
   sources: string[];
   hoverText: string;
+  inlineOnly: boolean;
 }
 
 export function getLatestSourceRevision(
@@ -61,6 +62,7 @@ export function getLatestProtectedReference(
   const sources = Array.isArray(raw.sources)
     ? raw.sources.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
     : [];
+  const inlineOnly = kind === "quran" && Array.isArray(raw.inline_passages);
   const hoverParts = [title, subtitle, ...sources.slice(0, 3)].filter(
     (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
   );
@@ -72,6 +74,7 @@ export function getLatestProtectedReference(
     subtitle,
     sources,
     hoverText: hoverParts.join(" | "),
+    inlineOnly,
   };
 }
 
@@ -125,6 +128,7 @@ function getQuranProtectedReferenceFallback(
     subtitle,
     sources,
     hoverText: hoverParts.join(" | "),
+    inlineOnly: false,
   };
 }
 

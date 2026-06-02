@@ -584,6 +584,10 @@ Implemented:
 - Settings now explicitly load `backend/.env` in addition to the process working-directory `.env`, so diagnostics and production routes see the same local key even if the backend is started from the repository root.
 - Hadith-like passages with zero external candidates now create an H-2/N-7 review status instead of silently falling through as normal LLM translation. Translation skips such segments with `hadith_external_verification_unavailable`.
 - Manual `POST /segments/{satz_uuid}/hadith/verify` also records N-7 when hadith-like text or manually triggered extended verification returns no source candidates.
+- Inline Qur'an spans in mixed prose are now protected. Text matching `﴿...﴾` is recognized against the local Arabic Qur'an reference collection, replaced with a protected placeholder before LLM translation, and deterministically restored with the quranenc/local carrier translation after translation output returns.
+- Inline Qur'an protection now has a citation fallback for OCR variants. Arabic surah-name citations such as `[النساء: ٤٨]`, `[يونس: ٣١]`, and `[الفاتحة: ١-٧]` are parsed; if direct quote recognition fails, the cited local verse is used only when the quote skeleton is close enough to the reference skeleton.
+- Translator prompts now explicitly preserve `ZXPROTECTEDQURAN....ZX` placeholders.
+- `[Source: AI]` overuse is calibrated rather than removed. The marker remains available for Document 1 §4.17 no-glossary-hit technical-term footnotes, but untracked candidates are now conservative: Qur'an spans, divine names/formulas, ordinary prose, headings, personal names, and hadith/Qur'an wording are filtered out. OpenAI and Gemini receive at most six candidates and are instructed to use no more than two AI-sourced notes per segment.
 
 Known follow-up:
 
@@ -598,3 +602,5 @@ Verification:
 - `timeout 30 .venv/bin/pytest tests/api/test_hadith_router.py -q` timed out after collection before completing any test; no failure traceback was produced.
 - After adding the sunnah.com key, `.venv/bin/python -c "from waraq.db.session import get_settings; print(bool(get_settings().sunnah_com_api_key))"` from `backend/` returned `True`.
 - After testing a non-Kutub/non-sunnah-address hadith passage, no-candidate behavior was tightened and verified with `pytest tests/translation/test_protected_passages.py -q` plus API import.
+- Inline Qur'an protection was verified with `py_compile` for translation modules and `pytest tests/translation/test_protected_passages.py tests/quran/test_citation.py -q`.
+- Inline Qur'an citation fallback was verified with `py_compile`, `pytest backend/tests/quran/test_citation.py backend/tests/translation/test_protected_passages.py -q`, and API import.

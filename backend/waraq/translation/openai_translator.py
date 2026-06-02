@@ -50,6 +50,7 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- Never answer with commentary such as 'cannot translate'; always return only the best text output for the input span.\n"
     "- Input lines may be prefixed with tags like [[L0001]]. You must return every tag exactly once and in order.\n"
     "- For lines that are only page numbers or pagination markers, copy the tagged line's text exactly instead of translating it.\n"
+    "- Preserve protected placeholders matching ZXPROTECTEDQURAN0001ZX exactly; do not translate, remove, or alter them.\n"
     "- If a source line is blank, return the same tag with no translated prose for that line.\n"
     "Return ONLY the translated text — no commentary."
 )
@@ -133,22 +134,25 @@ def make_openai_translator(
                     "NAMED ENTITIES (use the canonical Arabic spelling "
                     "transliterated into German per EI2):\n" + "\n".join(lines)
                 )
-            # §4.17 "no glossary hit" — surface untracked candidates so
-            # the LLM emits the AI-footnote pattern when it judges any
-            # of them to be a technical term. We cap at 16 to bound
-            # the prompt budget; longer chunks naturally surface fewer
-            # standalone candidates anyway.
+            # §4.17 "no glossary hit" — surface conservative candidates so
+            # the LLM can emit the AI-footnote pattern for genuinely
+            # specialized terms missing from the glossary.
             if brief.untracked_term_candidates:
-                cands = brief.untracked_term_candidates[:16]
+                cands = brief.untracked_term_candidates[:6]
                 lines = [f"  - {c.surface_form}" for c in cands]
                 prompt_blocks.append(
                     "POTENTIAL TECHNICAL TERMS NOT IN GLOSSARY (§4.17 — "
-                    "when you treat any of these as a technical term, render "
-                    'on first occurrence as: "{German rendering} '
-                    "({Arabic original}) [Anm.: brief explanation; "
-                    'Source: AI]"; subsequent occurrences use the German '
-                    "rendering alone. If a candidate is NOT a technical "
-                    "term, translate normally — no footnote):\n" + "\n".join(lines)
+                    "use [Source: AI] sparingly. Only annotate a candidate "
+                    "when it is a genuinely specialized Islamic/legal/"
+                    "theological term central to the sentence and no glossary "
+                    "hit exists. Do NOT annotate divine names, formulas, "
+                    "ordinary nouns, headings, personal names, Qur'an wording, "
+                    "or hadith wording. Most candidates should be translated "
+                    "normally without a footnote. Maximum two AI-sourced "
+                    "term notes in this segment. If annotated on first "
+                    'occurrence, use: "{German rendering} ({Arabic original}) '
+                    '[Anm.: brief explanation; Source: AI]"; subsequent '
+                    "occurrences use the German rendering alone):\n" + "\n".join(lines)
                 )
 
         if context.upstream_window:

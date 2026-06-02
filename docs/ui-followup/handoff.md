@@ -154,3 +154,23 @@ Important visual assets:
   - Protected translation now records H-2/N-7 and skips with `hadith_external_verification_unavailable` when hadith-like text has no external candidates, preventing silent ordinary LLM translation.
   - Manual hadith verification now records H-2/N-7 in the no-candidate hadith-like/manual-extended case, so `/hadith/review` can show an open status even without aggregate/source rows.
   - Verified with py_compile, `pytest tests/translation/test_protected_passages.py -q`, and API import.
+- Inline Qur'an protection, 2026-06-02:
+  - User reported mixed prose containing `﴿وَمَا خَلَقْتُ الْجِنَّ وَالْإِنسَ إِلَّا لِيَعْبُدُونِ﴾ [الذاريات: 56]` was translated by LLM inline.
+  - Added inline span protection in `translation/protected_passages.py`: recognized `﴿...﴾` spans are matched locally, replaced with `ZXPROTECTEDQURAN....ZX` before translation, and restored with quranenc/local carrier translation after the LLM response.
+  - `translation/service.py` now applies protected source overrides and output replacements.
+  - OpenAI and Gemini prompts now instruct models to preserve protected placeholders exactly.
+  - Frontend protected-reference summaries now mark inline Qur'an references as `inlineOnly`; `TranslationPane` no longer underlines/click-wraps the whole segment for inline-only references. Provenance remains available via the `Qur'an source` button.
+  - Verified with py_compile and `pytest tests/translation/test_protected_passages.py tests/quran/test_citation.py -q`.
+  - `Source: AI` markers are canonically mentioned in Document 1 §4.17 for no-glossary-hit technical-term footnotes. They come from translation prompts, not from Qur'an/hadith protection.
+- `Source: AI` overuse calibration, 2026-06-02:
+  - Kept `[Source: AI]` available because Document 1 §4.17 requires it for no-glossary-hit technical-term footnotes.
+  - Tightened `translation/chunk_context.py` so untracked AI-footnote candidates are conservative: Qur'an spans are excluded, divine names/formulas/common prose are excluded, and only an allow-list of obvious Islamic/legal/theological technical terms is surfaced when missing from the glossary.
+  - Added lookup normalization for attached particles such as `والتوحيد` / `بالفقه` so real terms still surface without widening the net.
+  - OpenAI and Gemini prompts now cap no-hit candidates at 6 and instruct models to use `[Source: AI]` sparingly, with a maximum of two AI-sourced term notes per segment.
+  - Verified with `py_compile`, `pytest backend/tests/translation/test_untracked_term_candidates.py -q`, `pytest backend/tests/translation/test_protected_passages.py backend/tests/quran/test_citation.py -q`, and API import.
+- Inline Qur'an citation fallback, 2026-06-02:
+  - User found inline Qur'an protection worked for `[الذاريات: 56]` but missed other inline passages such as `[النساء: ٤٨]` and `[يونس: ٣١]`.
+  - Root cause: exact local quote recognition can miss OCR variants, and the citation parser did not understand Arabic surah-name citations.
+  - `quran/citation.py` now parses Arabic surah-name citations with Arabic-Indic or Western digits, e.g. `[النساء: ٤٨]`, `[يونس: ٣١]`, `[الفاتحة: ١-٧]`.
+  - `translation/protected_passages.py` now falls back to the author citation when direct quote recognition fails, but only if the quoted Arabic skeleton is close enough to the locally referenced verse text.
+  - Verified with `py_compile`, `pytest backend/tests/quran/test_citation.py backend/tests/translation/test_protected_passages.py -q`, and API import.

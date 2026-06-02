@@ -56,6 +56,7 @@ from waraq.schemas import Concept, Entity
 # prompt-construction site so the budget can vary by engine.
 _ARABIC_WORD_RE_CTX = re.compile(r"[؀-ۿ]+")
 _UNTRACKED_TERM_MIN_SKELETON_LEN: int = 4
+_QURAN_SPAN_RE_CTX = re.compile(r"﴿.*?﴾")
 _UNTRACKED_TERM_STOPWORDS: frozenset[str] = frozenset(
     {
         # Articles / particles the heuristic must not surface.
@@ -94,6 +95,146 @@ _UNTRACKED_TERM_STOPWORDS: frozenset[str] = frozenset(
         "ولكن",
     }
 )
+_UNTRACKED_TERM_STOP_SKELETONS: frozenset[str] = frozenset(
+    {
+        # Divine names, religious formulas, and common prose nouns should
+        # be translated normally unless the project glossary explicitly
+        # says otherwise. Surfacing these as no-hit candidates caused
+        # the LLM to over-produce "[Source: AI]" notes in ordinary text.
+        "الله",
+        "اللهم",
+        "الرحمن",
+        "الرحيم",
+        "الكريم",
+        "العظيم",
+        "الرب",
+        "رب",
+        "الدني",
+        "الخرة",
+        "العرش",
+        "النس",
+        "السمء",
+        "البيت",
+        "النعمة",
+        "السعدة",
+        "الغلم",
+        "زوجته",
+        "العصر",
+        "القيمة",
+        "الجنة",
+        "النر",
+        "العلمء",
+        "الشهدا",
+        "المة",
+        "الحديث",
+        "الحاديث",
+        "الرواية",
+        "الروايت",
+        "الطرق",
+        "مصدر",
+        "كتا",
+        "الكتا",
+        "الفصل",
+        "النص",
+    }
+)
+_UNTRACKED_TERM_ALLOWED_SKELETONS: frozenset[str] = frozenset(
+    {
+        # Conservative v1 list for §4.17 no-hit technical-term fallback.
+        # New domain terms should ideally enter through the glossary; this
+        # list exists only so obvious Islamic technical terms can still get
+        # an AI-backed first-occurrence note when missing from the glossary.
+        "التوحيد",
+        "توحيد",
+        "الشرك",
+        "شرك",
+        "العبدة",
+        "عبدة",
+        "الطهرة",
+        "طهرة",
+        "الحنيفية",
+        "حنيفية",
+        "الفقه",
+        "فقه",
+        "الفقيه",
+        "فقيه",
+        "الفقهء",
+        "فقهء",
+        "اليمن",
+        "ايمن",
+        "السلم",
+        "اسلم",
+        "الحسن",
+        "احسن",
+        "السنة",
+        "سنة",
+        "البدعة",
+        "بدعة",
+        "الكفر",
+        "كفر",
+        "النفاق",
+        "نفاق",
+        "النية",
+        "نية",
+        "الفرض",
+        "فرض",
+        "الواجب",
+        "واجب",
+        "المستحب",
+        "مستحب",
+        "المكروه",
+        "مكروه",
+        "الحرام",
+        "حرم",
+        "الحلل",
+        "حلل",
+        "الصلوة",
+        "الصلت",
+        "الصلة",
+        "صلة",
+        "الزكة",
+        "زكة",
+        "الصوم",
+        "صوم",
+        "الحج",
+        "القياس",
+        "قيس",
+        "الجمع",
+        "الجمعة",
+        "اجمع",
+        "الإجمع",
+        "الجمع",
+        "الاجتهد",
+        "اجتهد",
+        "المذهب",
+        "مذهب",
+        "العقيدة",
+        "عقيدة",
+        "التفسير",
+        "تفسير",
+        "السناد",
+        "اسند",
+        "المتن",
+        "متن",
+    }
+)
+
+
+def _candidate_lookup_skeletons(skeleton: str) -> tuple[str, ...]:
+    """Return skeleton variants used only for conservative candidate lookup.
+
+    Arabic particles commonly attach to the token (`والتوحيد`, `بالفقه`).
+    We keep the original surface form in the prompt, but test both the
+    raw skeleton and a single stripped-prefix variant against the allow /
+    stop lists.
+    """
+    variants = [skeleton]
+    if len(skeleton) > 4 and skeleton[0] in {"و", "ف", "ب", "ك", "ل"}:
+        stripped = skeleton[1:]
+        variants.append(stripped)
+        if stripped.startswith("ل") and len(stripped) > 3:
+            variants.append(f"ا{stripped}")
+    return tuple(variants)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -275,6 +416,7 @@ class ChunkContextResolver:
         pattern. Returns each unique surface form once (first
         occurrence wins). Order is source-position to preserve a
         deterministic prompt ordering."""
+        source_text = _QURAN_SPAN_RE_CTX.sub(" ", source_text)
         seen_skeletons: set[str] = set(covered_skeletons)
         out: list[UntrackedTermCandidate] = []
         for match in _ARABIC_WORD_RE_CTX.finditer(source_text):
@@ -283,6 +425,11 @@ class ChunkContextResolver:
                 continue
             skel = to_skeleton(word)
             if len(skel) < _UNTRACKED_TERM_MIN_SKELETON_LEN:
+                continue
+            lookup_skels = _candidate_lookup_skeletons(skel)
+            if any(s in _UNTRACKED_TERM_STOP_SKELETONS for s in lookup_skels):
+                continue
+            if not any(s in _UNTRACKED_TERM_ALLOWED_SKELETONS for s in lookup_skels):
                 continue
             if skel in seen_skeletons:
                 continue

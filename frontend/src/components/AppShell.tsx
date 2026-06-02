@@ -225,7 +225,7 @@ export function AppShell(): JSX.Element {
         </aside>
 
         <div className="flex min-h-screen min-w-0 flex-1 flex-col">
-          <header className="border-b border-border/80 bg-background/80 backdrop-blur">
+          <header className="sticky top-0 z-40 border-b border-border/80 bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/75">
             <div className="flex h-20 items-center justify-between px-6 sm:px-8">
               <div className="min-w-0">
                 <div className="flex items-start gap-3">
@@ -278,7 +278,9 @@ export function AppShell(): JSX.Element {
           <main
             className={cn(
               "min-h-0 flex-1",
-              isWorkspaceRoute ? "overflow-hidden p-4 sm:p-6" : "overflow-y-auto px-4 py-6 sm:px-8 sm:py-8",
+              isWorkspaceRoute
+                ? "overflow-y-auto p-4 sm:p-6"
+                : "overflow-y-auto px-4 py-6 sm:px-8 sm:py-8",
             )}
           >
             <Outlet />

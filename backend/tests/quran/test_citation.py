@@ -46,6 +46,14 @@ class TestParseAuthorCitation:
     def test_arabic_comma_separator(self) -> None:
         assert parse_author_citation("سورة 1، 1") == (1, 1, 1)
 
+    def test_arabic_sura_name_with_arabic_indic_ayah(self) -> None:
+        assert parse_author_citation("[النساء: ٤٨]") == (4, 48, 48)
+        assert parse_author_citation("[يونس: ٣١]") == (10, 31, 31)
+        assert parse_author_citation("[الذاريات: 56]") == (51, 56, 56)
+
+    def test_arabic_sura_name_range(self) -> None:
+        assert parse_author_citation("[الفاتحة: ١-٧]") == (1, 1, 7)
+
     def test_unparseable_returns_none(self) -> None:
         assert parse_author_citation("") is None
         assert parse_author_citation("not a citation") is None

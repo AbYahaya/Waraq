@@ -148,11 +148,12 @@ async def edit_segment_translation_text(
     revision stream.
     """
     segment = await owned_segment_or_404(session, satz_uuid, current.account_uuid)
+    normalized = apply_canon_rules(req.after_text)
     try:
         await create_revision(
             session=session,
             segment=segment,
-            after_text=req.after_text,
+            after_text=normalized,
             change_source=ChangeSource.RE_TRANSLATE,
             operation_mode=OperationMode.MANUAL_WITH_CONFIRMATION,
             author_uuid=current.account_uuid,

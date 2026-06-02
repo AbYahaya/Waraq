@@ -1400,6 +1400,9 @@ function TranslationText({
 }): JSX.Element {
   const [referenceOpen, setReferenceOpen] = useState(false);
   const canOpenProtectedReference = Boolean(entry.protectedReference && entry.translation);
+  const paragraphReferenceClick = Boolean(
+    canOpenProtectedReference && !entry.protectedReference?.inlineOnly,
+  );
 
   if (!entry.translation) {
     return (
@@ -1419,7 +1422,7 @@ function TranslationText({
               className={cn(
                 "whitespace-pre-line",
                 entry.stale && "text-amber-950",
-                canOpenProtectedReference &&
+                paragraphReferenceClick &&
                   "cursor-pointer underline decoration-dotted underline-offset-4",
               )}
               style={{
@@ -1428,7 +1431,7 @@ function TranslationText({
               }}
               title={entry.protectedReference?.hoverText}
               onClick={() => {
-                if (canOpenProtectedReference) setReferenceOpen(true);
+                if (paragraphReferenceClick) setReferenceOpen(true);
               }}
             >
               <InlineMarkedText text={block.text} />
