@@ -174,3 +174,14 @@ Important visual assets:
   - `quran/citation.py` now parses Arabic surah-name citations with Arabic-Indic or Western digits, e.g. `[النساء: ٤٨]`, `[يونس: ٣١]`, `[الفاتحة: ١-٧]`.
   - `translation/protected_passages.py` now falls back to the author citation when direct quote recognition fails, but only if the quoted Arabic skeleton is close enough to the locally referenced verse text.
   - Verified with `py_compile`, `pytest backend/tests/quran/test_citation.py backend/tests/translation/test_protected_passages.py -q`, and API import.
+- Inline Qur'an quote-form expansion, 2026-06-03:
+  - User found production/local mismatch and another missed form in teaching text: Arabic guillemet quotes with dash citations, e.g. `« أتخذتم عند الله عهداً — البقرة — 80 )` and `« آلذكرين حرَّم أم الأنثيين ؟ — الانعام 144 »`.
+  - Added a second inline scanner for `«... — surah — ayah»` / `«... — surah ayah»` forms. It extracts the quote and citation, then reuses the guarded citation fallback.
+  - Production note: identical code is not enough; Qur'an detection requires the production DB to have `ar_referenz_verses` populated. Check `/diagnostics/quran/verse?sura=4&aya=48` and `/diagnostics/quran/translation?sura=4&aya=48&key=german_rwwad`.
+  - Operator setup if missing: from backend, run `.venv/bin/python scripts/ingest_tanzil_quran.py data/tanzil/quran-uthmani.txt tanzil-1.1.0` and `.venv/bin/python scripts/sync_quranenc.py both`.
+  - Verified with `py_compile` and `pytest backend/tests/translation/test_protected_passages.py backend/tests/quran/test_citation.py -q`.
+- Translation engine role switch, 2026-06-03:
+  - User review found Gemini stronger than OpenAI for both OCR and AR->DE translation.
+  - `api/routers/translation_router.py` now makes Gemini the translation Primary and OpenAI the optional Check engine. Missing Gemini key returns 503; missing OpenAI key runs Gemini-only.
+  - `translation/gemini_translator.py` now has a more resilient primary-engine envelope: default 75s per call, `GEMINI_MAX_RETRIES` default 3 with exponential backoff/jitter, Gemini-specific batch envs (`GEMINI_TRANSLATION_BATCH_MAX_LINES`, `GEMINI_TRANSLATION_BATCH_MAX_CHARS`) defaulting smaller than the generic path, and line-by-line recovery when a multi-line batch fails.
+  - Existing cross-check semantics remain: user-facing output is the Primary draft; Check output is recorded for audit/comparison and does not silently replace Primary.

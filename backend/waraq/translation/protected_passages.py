@@ -64,6 +64,17 @@ class ProtectedTranslationResult:
 _INLINE_QURAN_RE = re.compile(
     r"﴿(?P<ayah>[^﴾]{3,500})﴾(?P<citation>\s*[\[\(][^\]\)]{1,100}[\]\)])?"
 )
+_GUILLEMET_QURAN_RE = re.compile(r"«(?P<body>[^»\n]{3,700}?)(?P<close>»|\))")
+_QURAN_QUOTE_SEPARATORS = ("—", "–", "-")
+
+
+@dataclass(frozen=True, slots=True)
+class _InlineQuranMatch:
+    start: int
+    end: int
+    literal: str
+    quoted_ayah: str
+    citation: str
 
 
 async def resolve_protected_translation(
@@ -219,7 +230,7 @@ async def _resolve_inline_quran_translations(
     source_text: str,
     translation_key: str,
 ) -> ProtectedTranslationResult | None:
-    matches = list(_INLINE_QURAN_RE.finditer(source_text))
+    matches = _collect_inline_quran_matches(source_text)
     if not matches:
         return None
 
@@ -230,17 +241,17 @@ async def _resolve_inline_quran_translations(
     matched_any = False
 
     for idx, match in enumerate(matches, start=1):
-        source_parts.append(source_text[last_end : match.start()])
-        quoted_ayah = match.group("ayah").strip()
-        citation = (match.group("citation") or "").strip()
+        source_parts.append(source_text[last_end : match.start])
+        quoted_ayah = match.quoted_ayah
+        citation = match.citation
         recognition = await _recognize_inline_quran_quote(
             session,
             quoted_ayah=quoted_ayah,
             citation=citation,
         )
         if not recognition.matched:
-            source_parts.append(match.group(0))
-            last_end = match.end()
+            source_parts.append(match.literal)
+            last_end = match.end
             continue
 
         assert recognition.sura_index is not None
@@ -298,7 +309,7 @@ async def _resolve_inline_quran_translations(
             }
         )
         matched_any = True
-        last_end = match.end()
+        last_end = match.end
 
     source_parts.append(source_text[last_end:])
     if not matched_any:
@@ -323,6 +334,54 @@ async def _resolve_inline_quran_translations(
         source_text_override="".join(source_parts),
         output_replacements=output_replacements,
     )
+
+
+def _collect_inline_quran_matches(source_text: str) -> list[_InlineQuranMatch]:
+    matches: list[_InlineQuranMatch] = []
+    occupied: list[tuple[int, int]] = []
+
+    for match in _INLINE_QURAN_RE.finditer(source_text):
+        item = _InlineQuranMatch(
+            start=match.start(),
+            end=match.end(),
+            literal=match.group(0),
+            quoted_ayah=match.group("ayah").strip(),
+            citation=(match.group("citation") or "").strip(),
+        )
+        matches.append(item)
+        occupied.append((item.start, item.end))
+
+    for match in _GUILLEMET_QURAN_RE.finditer(source_text):
+        if any(match.start() < end and match.end() > start for start, end in occupied):
+            continue
+        split = _split_quran_quote_with_citation(match.group("body"))
+        if split is None:
+            continue
+        quoted_ayah, citation = split
+        item = _InlineQuranMatch(
+            start=match.start(),
+            end=match.end(),
+            literal=match.group(0),
+            quoted_ayah=quoted_ayah,
+            citation=citation,
+        )
+        matches.append(item)
+        occupied.append((item.start, item.end))
+
+    return sorted(matches, key=lambda item: item.start)
+
+
+def _split_quran_quote_with_citation(body: str) -> tuple[str, str] | None:
+    for separator in _QURAN_QUOTE_SEPARATORS:
+        positions = [match.start() for match in re.finditer(re.escape(separator), body)]
+        for pos in reversed(positions):
+            quote = body[:pos].strip(" \t\r\n،؛:؟?\"'")
+            citation = body[pos + len(separator) :].strip(" \t\r\n،؛:.?؟\"'")
+            if len(quote) < 3:
+                continue
+            if parse_author_citation(citation) is not None:
+                return quote, citation
+    return None
 
 
 async def _recognize_inline_quran_quote(

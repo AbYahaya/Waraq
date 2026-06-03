@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from waraq.translation.protected_passages import (
     _build_hadith_reference_payload,
+    _collect_inline_quran_matches,
     _looks_like_hadith,
     _pick_preferred_hadith_translation,
     _quran_quote_matches_reference,
@@ -27,6 +28,22 @@ def test_quran_quote_similarity_tolerates_small_ocr_variants() -> None:
         "يَمْلِكُ السَّمْعَ وَالْأَبْصَارَ"
     )
     assert _quran_quote_matches_reference(quoted, reference)
+
+
+def test_collects_guillemet_quran_quote_with_dash_citation() -> None:
+    text = "وتحذف همزة الوصل خطأ إذا وقعت بعد همزة استفهام « أتخذتم عند الله عهداً — البقرة — 80 ) لكن"
+    matches = _collect_inline_quran_matches(text)
+    assert len(matches) == 1
+    assert matches[0].quoted_ayah == "أتخذتم عند الله عهداً"
+    assert matches[0].citation == "البقرة — 80"
+
+
+def test_collects_guillemet_quran_quote_with_sura_name_and_closing_quote() -> None:
+    text = "« آلذكرين حرَّم أم الأنثيين ؟ — الانعام 144 »"
+    matches = _collect_inline_quran_matches(text)
+    assert len(matches) == 1
+    assert matches[0].quoted_ayah == "آلذكرين حرَّم أم الأنثيين"
+    assert matches[0].citation == "الانعام 144"
 
 
 def test_protected_quran_replacement_is_canon_normalized() -> None:

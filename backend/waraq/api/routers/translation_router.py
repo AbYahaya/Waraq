@@ -96,31 +96,30 @@ async def get_translation_job(
 
 
 def _build_translator_and_label() -> tuple[object, str]:
-    """Build the canonical Primary + Check translator pair from env.
+    """Build the current Primary + Check translator pair from env.
 
-    Returns `(translator, engine_label)`. Raises HTTPException(503) if
-    `OPENAI_API_KEY` is unset (Primary is mandatory). Falls back to
-    Primary-only when GEMINI is unset — canon-compliant per §3.6 "no
-    silent role swap": Check absence is recorded as cross_check=None on
-    each TRANSLATION-PO, never as a Primary substitution.
+    Gemini is now the translation Primary because user-side review found
+    it consistently stronger for classical Arabic -> German. OpenAI
+    remains the Check engine when configured. If OpenAI is absent, the
+    job runs Gemini-only and records no cross-check block.
     """
     try:
-        primary = make_openai_translator()
-    except OpenAITranslatorUnconfigured as exc:
+        primary = make_gemini_translator()
+    except GeminiTranslatorUnconfigured as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
-    engine_label_primary = "openai/gpt-4o"
+    engine_label_primary = "google/gemini-2.5-pro"
     try:
-        check = make_gemini_translator()
+        check = make_openai_translator()
         translator: object = make_cross_checked_translator(
             primary=primary,
             check=check,
             primary_engine_label=engine_label_primary,
-            check_engine_label="google/gemini-2.5-pro",
+            check_engine_label="openai/gpt-4o",
         )
-        return translator, f"{engine_label_primary}+google/gemini-2.5-pro"
-    except GeminiTranslatorUnconfigured:
+        return translator, f"{engine_label_primary}+openai/gpt-4o"
+    except OpenAITranslatorUnconfigured:
         return primary, engine_label_primary
 
 

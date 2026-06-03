@@ -1,10 +1,11 @@
 """§3.6 Primary/Check cross-check orchestrator.
 
-Per Dokument 1 §3.6, every translation passes through TWO engines in
-parallel:
+Per Dokument 1 §3.6, every translation can pass through TWO engines in
+parallel. The concrete Primary/Check assignment is provided by the API
+router so it can follow the currently best-performing production model:
 
-- **Primary** (lead translation draft): GPT-4o.
-- **Check** (parallel counter-translation and quality check): Gemini 2.5 Pro.
+- **Primary**: lead translation draft adopted as the user-facing output.
+- **Check**: parallel counter-translation and quality check.
 
 The Check has no general silent correction right. Four situation types
 apply to the comparison:

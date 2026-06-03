@@ -1,9 +1,9 @@
-"""Gemini-backed Translator factory for the §3.6 Check role.
+"""Gemini-backed Translator factory for the §3.6 translation role.
 
-Per Dokument 1 §3.6 the canonical Check model is Gemini 2.5 Pro,
-parallel to the OpenAI Primary (GPT-4o). The Check pass produces a
-counter-translation that the cross-check orchestrator compares to the
-Primary; the Check is *not* a fallback.
+Gemini is currently used as the translation Primary by the HTTP route
+because user-side review found it stronger for classical Arabic ->
+German. The same callable can still be used as a Check translator in
+tests or alternate deployments.
 
 Mirrors `openai_translator.py` deliberately — same `Translator`
 signature, same chunk-brief injection from §3.6 chunk rules, same
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 from collections.abc import Awaitable, Callable
 
 from waraq.canon_rules import apply_all as apply_canon_rules
@@ -34,8 +35,7 @@ Translator = Callable[[str, TranslationContext], Awaitable[str]]
 
 class GeminiTranslatorUnconfigured(RuntimeError):
     """`GOOGLE_AI_API_KEY` not present when a translator was requested.
-    Surfaces as 503 from the cross-check translator if Check is
-    requested but unavailable."""
+    Surfaces as 503 from the translation route when Gemini is Primary."""
 
 
 _DEFAULT_SYSTEM_PROMPT = (
@@ -78,13 +78,31 @@ def make_gemini_translator(
     chosen_model = model or settings.gemini_translation_model
     chosen_system = system_prompt or _DEFAULT_SYSTEM_PROMPT
 
-    # Same fail-fast bounding as the OpenAI translator. Gemini's SDK
-    # doesn't expose a per-call timeout cleanly, so we wrap the sync
-    # call in `asyncio.wait_for` below.
-    timeout_s = float(os.environ.get("GEMINI_HTTP_TIMEOUT", "60"))
+    # Gemini is the primary translation engine, so give it a slightly
+    # more forgiving retry envelope than the OpenAI check path while
+    # keeping every individual call bounded.
+    timeout_s = float(os.environ.get("GEMINI_HTTP_TIMEOUT", "75"))
     protocol_attempts = max(1, int(os.environ.get("TRANSLATION_LINE_PROTOCOL_MAX_ATTEMPTS", "2")))
-    batch_max_lines = max(1, int(os.environ.get("TRANSLATION_BATCH_MAX_LINES", "20")))
-    batch_max_chars = max(200, int(os.environ.get("TRANSLATION_BATCH_MAX_CHARS", "2500")))
+    api_attempts = max(1, int(os.environ.get("GEMINI_MAX_RETRIES", "3")))
+    retry_base_s = max(0.0, float(os.environ.get("GEMINI_RETRY_BASE_SECONDS", "1.0")))
+    batch_max_lines = max(
+        1,
+        int(
+            os.environ.get(
+                "GEMINI_TRANSLATION_BATCH_MAX_LINES",
+                os.environ.get("TRANSLATION_BATCH_MAX_LINES", "12"),
+            )
+        ),
+    )
+    batch_max_chars = max(
+        200,
+        int(
+            os.environ.get(
+                "GEMINI_TRANSLATION_BATCH_MAX_CHARS",
+                os.environ.get("TRANSLATION_BATCH_MAX_CHARS", "1800"),
+            )
+        ),
+    )
 
     async def _translate(source_text: str, context: TranslationContext) -> str:
         # Build the system prompt with the §3.6 chunk brief and upstream
@@ -192,30 +210,63 @@ def make_gemini_translator(
 
         normalized_output_lines: list[str] = []
         last_exc: Exception | None = None
-        for batch in batches:
+
+        async def _call_with_retries(payload: str) -> str:
+            nonlocal last_exc
+            for attempt in range(1, api_attempts + 1):
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(_call_sync, payload),
+                        timeout=timeout_s,
+                    )
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt >= api_attempts:
+                        raise
+                    # Small jitter avoids a retry herd when several
+                    # translation chunks hit the same upstream hiccup.
+                    delay = retry_base_s * (2 ** (attempt - 1))
+                    if retry_base_s > 0:
+                        delay += random.uniform(0, retry_base_s / 4)
+                        await asyncio.sleep(delay)
+            assert last_exc is not None
+            raise last_exc
+
+        async def _translate_batch(batch) -> list[str]:
+            nonlocal last_exc
             combined = f"{full_system_prompt}\n\n---\n\nSOURCE:\n{batch.prompt_text}"
             for _attempt in range(1, protocol_attempts + 1):
                 try:
-                    raw_output = await asyncio.wait_for(
-                        asyncio.to_thread(_call_sync, combined),
-                        timeout=timeout_s,
-                    )
+                    raw_output = await _call_with_retries(combined)
                     translated_lines = parse_tagged_translation_output(raw_output, batch)
-                    normalized_output_lines.extend(
-                        [
-                            apply_canon_rules(line)
-                            if line != source_line.source_text or source_line.kind == "text"
-                            else line
-                            for line, source_line in zip(translated_lines, batch.lines, strict=True)
-                        ]
-                    )
-                    last_exc = None
-                    break
+                    return [
+                        apply_canon_rules(line)
+                        if line != source_line.source_text or source_line.kind == "text"
+                        else line
+                        for line, source_line in zip(translated_lines, batch.lines, strict=True)
+                    ]
                 except Exception as exc:
                     last_exc = exc
 
-            if last_exc is not None:
-                raise last_exc
+            if len(batch.lines) > 1:
+                recovered: list[str] = []
+                for line in batch.lines:
+                    single = type(batch)(
+                        lines=(line,),
+                        prompt_text=(
+                            f"[[{line.tag}]] <BLANK_LINE>"
+                            if line.kind == "blank"
+                            else f"[[{line.tag}]] {line.source_text}"
+                        ),
+                    )
+                    recovered.extend(await _translate_batch(single))
+                return recovered
+
+            assert last_exc is not None
+            raise last_exc
+
+        for batch in batches:
+            normalized_output_lines.extend(await _translate_batch(batch))
 
         return "\n".join(normalized_output_lines)
 
