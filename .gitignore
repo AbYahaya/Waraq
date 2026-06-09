@@ -61,7 +61,7 @@ Thumbs.db
 !/README.md
 !/handover.md
 !/CLAUDE.md
-
+!/docs/canon/**/*.md
 *.docx
 
 # GCP / cloud service-account JSON keys (Phase 4 sub-batch C)
